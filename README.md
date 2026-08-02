@@ -123,7 +123,7 @@ which this project does not do.
 | **Cinemark** | full grid, per-seat status | same |
 | **Regal** | full grid via the booking API | same *(implemented from bundle evidence; unverified — see below)* |
 | **C360** | exact sold count + auditorium shape | **estimate** whether the party can sit together |
-| Alamo | sold-out flag only | availability ranking |
+| Alamo | sold-out flag only — no count exists | availability ranking |
 | Independents | none | availability ranking |
 
 Every one of these is a **plain GET**. No login, no cart, and no hold — a hold
@@ -310,8 +310,12 @@ Stated plainly, because a plausible-looking gap is worse than a named one.
   throughout. So there is nothing to wait out. Getting a response most likely
   needs whatever the real booking flow carries that a bare GET does not — an
   order session token, most plausibly.
-* **Alamo seat maps** need the ticket-type step before the picker renders,
-  which is the one place a request would start an order. Left alone.
+* **Alamo has no read-only seat or count surface.** Probed five ways:
+  `/session/{id}/seats` (wants a cinema id), `/schedule/session/{cinemaId}/
+  {sessionId}` (works, carries no seats), the `/tickets/{slug}/{id}` URL
+  (redirects to the theatre page), and `/schedule/venue/{slug}` (same fields
+  as the market feed). Availability is `ONSALE` / `SOLDOUT` and nothing finer,
+  so there is not even a count to estimate from.
 * **Elevent / Agile** not built — Metrograph turned out to be Vista, not
   Elevent, and the Vista link extractor covers it and a large slice of the
   art-house tail instead.
