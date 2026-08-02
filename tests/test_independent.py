@@ -727,3 +727,103 @@ class TestWindowIsAnchoredOnVenueLocalDate:
 
         local_today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
         assert found and all(s.starts_at_local.date() == local_today for s in found)
+
+
+class TestDayHeadingsAreNotFilms:
+    """Day headings sit between a film and its links - exactly where a
+    proximity search for the title looks.
+
+    Metrograph writes `<h5 class="sr-only">Sun Aug <span>2</span></h5>` before
+    each group, so the nearest heading to a showtime link is a date. Once
+    Vista stopped keeping its own title lookup and started using the shared
+    proximity one, 114 distinct films collapsed to seven dates wearing film
+    names.
+    """
+
+    def title(self, html):
+        from screenwatch.adapters.listing_common import nearest_title_before
+
+        return nearest_title_before(html, len(html))
+
+    def test_a_day_heading_between_film_and_link_is_skipped(self):
+        html = '<h3>Good Morning</h3><h5 class="sr-only">Sun Aug 2</h5>'
+        assert self.title(html) == "Good Morning"
+
+    def test_a_day_heading_split_by_a_span_is_also_skipped(self):
+        """The captured text is "Sun Aug " - a written day missing the part
+        that makes it parse as a date, which is what made it pass as a film."""
+        html = ('<h3>Good Morning</h3>'
+                '<h5 class="sr-only">Sun Aug <span class="day-number">2</span></h5>')
+        assert self.title(html) == "Good Morning"
+
+    def test_section_furniture_is_skipped(self):
+        html = "<h3>Vertigo</h3><h2>Now Playing</h2>"
+        assert self.title(html) == "Vertigo"
+
+    def test_a_real_film_still_wins_on_proximity(self):
+        html = "<h1>Metrograph</h1><h3>Vertigo</h3><h3>La Notte</h3>"
+        assert self.title(html) == "La Notte"
+
+
+class TestWrittenDayContainers:
+    """`<div id="day_Sun_Aug_2">` - a day grouping that spells the date out.
+
+    Metrograph's only day signal. Unsupported, its 183 showtimes all carried
+    the caller's default date: the Aug 8 screenings claimed to be on Aug 2.
+    """
+
+    def parse(self, html, default=date(2026, 8, 2)):
+        from screenwatch.adapters.listing_common import nearest_date_before
+
+        return nearest_date_before(html, len(html), default)
+
+    def test_a_written_day_in_a_container_id_is_read(self):
+        assert self.parse('<div id="day_Sun_Aug_8" class="film_day">') == date(2026, 8, 8)
+
+    def test_the_picker_above_it_does_not_win(self):
+        """The chooser is `<li><a data-day="Sat_Aug_8">`; anchors are not day
+        groupings, or the last entry in the picker would date the whole page."""
+        html = ('<ul class="film_day_chooser">'
+                '<li><a data-day="Sun_Aug_2">Sun Aug 2</a></li>'
+                '<li><a data-day="Sat_Aug_8">Sat Aug 8</a></li></ul>'
+                '<div id="day_Sun_Aug_2" class="film_day">')
+        assert self.parse(html) == date(2026, 8, 2)
+
+    def test_a_heading_whose_number_is_in_a_span_still_parses(self):
+        html = '<h5 class="sr-only">Sat Aug <span class="day-number">8</span></h5>'
+        assert self.parse(html) == date(2026, 8, 8)
+
+    def test_the_closest_signal_wins_regardless_of_style(self):
+        html = ('<div id="day_Sun_Aug_2"></div>'
+                '<div id="calendar-day-2026-08-09"></div>')
+        assert self.parse(html) == date(2026, 8, 9)
+
+
+class TestVistaAndAgileShareOneImplementation:
+    """Both kept private copies of the date, time and title helpers, and the
+    copies drifted - Vista's title lookup was still pattern-priority, the bug
+    that put one film name on all of Roxie's showtimes."""
+
+    def test_vista_resolves_titles_by_proximity_not_pattern_priority(self):
+        from screenwatch.adapters.vista.links import extract
+
+        html = (
+            '<h1 class="page-title">Metrograph</h1>'
+            "<h3>Vertigo</h3>"
+            '<a href="https://t.metrograph.com/Ticketing/visSelectTickets.aspx'
+            '?cinemacode=9999&txtSessionId=1">11:00am</a>'
+            "<h3>La Notte</h3>"
+            '<a href="https://t.metrograph.com/Ticketing/visSelectTickets.aspx'
+            '?cinemacode=9999&txtSessionId=2">2:00pm</a>'
+        )
+        titles = [s.title for s in extract(html, default_date=date(2026, 8, 2))]
+        assert titles == ["Vertigo", "La Notte"]
+
+    def test_both_modules_use_the_shared_helpers(self):
+        from screenwatch.adapters import listing_common
+        from screenwatch.adapters.agile import links as agile
+        from screenwatch.adapters.vista import links as vista
+
+        for module in (vista, agile):
+            assert module.nearest_date_before is listing_common.nearest_date_before
+            assert module.parse_clock is listing_common.parse_clock

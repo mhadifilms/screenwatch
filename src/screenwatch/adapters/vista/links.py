@@ -19,6 +19,12 @@ sites because it is how listings are *shaped*, not how they are styled.
 The date comes from a container id or a `data-` attribute where one exists,
 falling back to a date supplied by the caller. Times are local wall clock -
 Vista links carry no timezone, so the venue's zone is applied upstream.
+
+Dates, times and titles all come from `listing_common`. They used to be
+duplicated here, and the copies drifted: this one still resolved titles by
+pattern priority rather than proximity - the bug that once put the same film
+name on all of Roxie's showtimes - and knew only two of the three ways a venue
+spells out the day.
 """
 
 from __future__ import annotations
@@ -26,9 +32,25 @@ from __future__ import annotations
 import html as html_lib
 import re
 from dataclasses import dataclass
-from datetime import date as date_cls
-from datetime import datetime
-from datetime import time as time_cls
+from datetime import date as date_cls, datetime
+
+from ..listing_common import (
+    DATE_CONTAINER,
+    nearest_date_before,
+    nearest_title_before,
+    parse_clock,
+)
+
+__all__ = [
+    "DATE_CONTAINER",
+    "VISTA_LINK",
+    "VistaParseError",
+    "VistaShowtime",
+    "extract",
+    "has_vista_links",
+    "nearest_date_before",
+    "parse_clock",
+]
 
 VISTA_LINK = re.compile(
     r'href="(?P<url>https?://(?P<host>[^/"]+)/Ticketing/visSelectTickets\.aspx'
@@ -36,78 +58,6 @@ VISTA_LINK = re.compile(
     r'[^>]*>(?P<label>[^<]{1,40})</a>',
     re.IGNORECASE,
 )
-
-# A date that groups showtimes, e.g. `<div id="calendar-list-day-2026-08-02">`.
-#
-# Restricted to block containers on purpose. Every listing page also carries a
-# date *picker*, and its entries look identical in isolation - Metrograph's is
-# `<a id="day-selector-day-2026-08-02">`, the Coolidge's is
-# `<td id="showtimes_calendar-2026-09-05">`. Taking the nearest preceding date
-# without this filter picked a picker entry and dated the Coolidge's entire
-# schedule to September. Navigation is anchors and table cells; day groupings
-# are block elements.
-DATE_CONTAINER = re.compile(
-    r'<(?:div|section|article|li|ul|main)\b[^>]*'
-    r'(?:id|data-date|data-day|data-vars-ga-label)="[^"]*?'
-    r'(\d{4}-\d{2}-\d{2})[^"]*"'
-)
-
-
-# Not every venue puts an ISO date in an attribute. IFC Center groups its
-# listings under plain headings - "Sun Aug 2" - so a textual day heading is a
-# second, weaker signal, used only when no ISO container is closer.
-_TEXT_DAY = re.compile(
-    r"<h[1-6][^>]*>\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*[,\s]+"
-    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})",
-    re.IGNORECASE,
-)
-_MONTHS = {m: i + 1 for i, m in enumerate(
-    ["jan", "feb", "mar", "apr", "may", "jun",
-     "jul", "aug", "sep", "oct", "nov", "dec"])}
-
-
-def nearest_date_before(html: str, pos: int, default: date_cls) -> date_cls:
-    """The day this position sits under, or `default`.
-
-    Prefers an ISO date on a block container; falls back to a textual day
-    heading. A textual heading carries no year, so the default's year is
-    assumed and a December-to-January rollover is corrected by assuming the
-    listing is forward-looking rather than eleven months stale.
-    """
-    iso, text = None, None
-    for m in DATE_CONTAINER.finditer(html, 0, pos):
-        iso = m
-    for m in _TEXT_DAY.finditer(html, 0, pos):
-        text = m
-
-    if iso is not None and (text is None or text.start() < iso.start()):
-        try:
-            return date_cls.fromisoformat(iso.group(1))
-        except ValueError:
-            return default
-
-    if text is not None:
-        month = _MONTHS[text.group(1).lower()[:3]]
-        day = int(text.group(2))
-        year = default.year
-        try:
-            candidate = date_cls(year, month, day)
-        except ValueError:
-            return default
-        if (default - candidate).days > 300:
-            candidate = candidate.replace(year=year + 1)
-        return candidate
-
-    return default
-
-
-_TITLE = re.compile(
-    r'<(?:h[1-6]|a)[^>]*class="[^"]*title[^"]*"[^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})',
-    re.IGNORECASE,
-)
-_ANY_HEADING = re.compile(r"<h[1-6][^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})", re.IGNORECASE)
-_TIME = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\s*$", re.IGNORECASE)
-
 
 class VistaParseError(ValueError):
     pass
@@ -128,25 +78,6 @@ class VistaShowtime:
         return f"{self.cinema_code}-{self.session_id}"
 
 
-def parse_clock(label: str, on: date_cls) -> datetime | None:
-    """'11:00am' -> a local datetime on `on`. None if it is not a time."""
-    match = _TIME.match(html_lib.unescape(label))
-    if not match:
-        return None
-    hour = int(match.group(1)) % 12
-    minute = int(match.group(2) or 0)
-    if match.group(3).lower() == "p":
-        hour += 12
-    return datetime.combine(on, time_cls(hour, minute))
-
-
-def _nearest_before(pattern: re.Pattern[str], html: str, pos: int) -> str | None:
-    best = None
-    for m in pattern.finditer(html, 0, pos):
-        best = m
-    return html_lib.unescape(best.group(1)).strip() if best else None
-
-
 def extract(html: str, *, default_date: date_cls) -> list[VistaShowtime]:
     """Every Vista showtime link on the page, with its film and time.
 
@@ -165,10 +96,7 @@ def extract(html: str, *, default_date: date_cls) -> list[VistaShowtime]:
         if when is None:
             continue          # a "Buy Tickets" button rather than a time
 
-        title = (
-            _nearest_before(_TITLE, html, match.start())
-            or _nearest_before(_ANY_HEADING, html, match.start())
-        )
+        title = nearest_title_before(html, match.start())
         if not title:
             continue
 

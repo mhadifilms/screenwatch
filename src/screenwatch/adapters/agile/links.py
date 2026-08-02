@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import date as date_cls
 from datetime import datetime
 
-from ..vista.links import nearest_date_before, parse_clock
+from ..listing_common import nearest_date_before, nearest_title_before, parse_clock
 
 # The wrapper is optional. The Coolidge wraps each link in a
 # `sales-state--` div with the time in a nested span; IFC Center emits a bare
@@ -113,13 +113,6 @@ def has_agile_links(html: str) -> bool:
     return AGILE_LINK.search(html) is not None
 
 
-def _nearest_before(pattern: re.Pattern[str], html: str, pos: int) -> str | None:
-    best = None
-    for m in pattern.finditer(html, 0, pos):
-        best = m
-    return html_lib.unescape(best.group(1)).strip() if best else None
-
-
 def extract(html: str, *, default_date: date_cls) -> list[AgileShowtime]:
     out: list[AgileShowtime] = []
     previous_end = 0
@@ -140,11 +133,10 @@ def extract(html: str, *, default_date: date_cls) -> list[AgileShowtime]:
         if when is None:
             continue                      # a "more info" link, not a showtime
 
-        title = (
-            _nearest_before(_TITLE, html, match.start())
-            or _nearest_before(_ANY_TITLE, html, match.start())
-            or _nearest_before(_ANY_HEADING, html, match.start())
-        )
+        # `film-card__title` first only as a tie-break: proximity decides,
+        # which is what stops a hero banner at the top of the page winning
+        # over the heading directly above this link.
+        title = nearest_title_before(html, match.start(), _TITLE)
         if not title:
             continue
 

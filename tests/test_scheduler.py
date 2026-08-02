@@ -6,6 +6,7 @@ scheduler tested with real sleeps is a scheduler nobody runs in CI.
 
 from __future__ import annotations
 
+import importlib
 import random
 from datetime import date, datetime, timedelta, timezone
 
@@ -243,21 +244,39 @@ class TestDefaultWiringDoesNotDrift:
     silently never saw those chains.
     """
 
-    def test_every_entry_point_uses_the_same_factory(self):
-        import inspect
+    def test_every_entry_point_builds_the_same_providers(self, tmp_path, monkeypatch):
+        """Behavioural, not textual.
 
-        from screenwatch.api import app as api_mod
-        from screenwatch.mcp import server as mcp_mod
-        from screenwatch.service import scheduler as sched_mod
+        This used to grep each function's source for "default_service", which
+        a comment mentioning it would satisfy just as well. What matters is
+        that all three end up with the same chains, so that is what is
+        asserted: each entry point is built for real and its provider list
+        compared against the factory's.
+        """
+        import screenwatch.service.defaults as defaults_mod
+        from screenwatch.service.defaults import default_providers
 
-        for module, fn in [(api_mod, "default_app"),
-                           (mcp_mod, "build_default"),
-                           (sched_mod, "main")]:
-            source = inspect.getsource(getattr(module, fn))
-            assert "default_service" in source, (
-                f"{module.__name__}.{fn} builds its own providers instead of "
-                "using service.defaults - that is how the drift happened"
-            )
+        built: list[list[str]] = []
+        real = defaults_mod.default_service
+
+        def spy(db=str(tmp_path / "t.db")):
+            search, watches, store = real(str(tmp_path / "t.db"))
+            built.append([p.chain for p in search.providers])
+            return search, watches, store
+
+        monkeypatch.setattr(defaults_mod, "default_service", spy)
+        for module_name, attr in [
+            ("screenwatch.api.app", "default_app"),
+            ("screenwatch.mcp.server", "build_default"),
+        ]:
+            module = importlib.import_module(module_name)
+            monkeypatch.setattr(module, "default_service", spy, raising=False)
+            getattr(module, attr)()
+
+        expected = [p.chain for p in default_providers()]
+        assert len(built) == 2, "an entry point bypassed the shared factory"
+        for chains in built:
+            assert chains == expected
 
     def test_the_factory_lists_every_provider(self):
         from screenwatch.service.defaults import default_providers

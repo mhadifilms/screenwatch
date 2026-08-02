@@ -76,14 +76,33 @@ DATE_CONTAINER = re.compile(
 # "Sun Aug 2", "Sunday, August 2, 2026", "Sunday, Aug 2" - written days, with
 # or without a year. Used as a heading and inline (accessibility spans).
 _WRITTEN_DAY = re.compile(
-    r"(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*[,\s]+"
-    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+"
+    r"(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*[,\s_-]+"
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[\s_-]+"
     r"(\d{1,2})(?:\s*,\s*(\d{4}))?",
     re.IGNORECASE,
 )
-_WRITTEN_DAY_HEADING = re.compile(
-    r"<h[1-6][^>]*>\s*(" + _WRITTEN_DAY.pattern + ")", re.IGNORECASE
+
+# A day grouping whose attribute spells the day out rather than in ISO -
+# Metrograph's is `<div id="day_Sun_Aug_2" class="film_day">`. Same role as
+# `DATE_CONTAINER`, same block-element restriction and for the same reason:
+# the picker right above it is `<li><a data-day="Sun_Aug_2">`, and taking that
+# would pick whichever day the picker happens to list last.
+#
+# Without this, Metrograph's 183 showtimes all carried the caller's default
+# date - its Aug 8 screenings claimed to be on Aug 2.
+WRITTEN_CONTAINER = re.compile(
+    r"<(?:div|section|article|main)\b[^>]*"
+    r'(?:id|data-date|data-day)="[^"]*?'
+    r"((?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*[_\s-]"
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[_\s-]\d{1,2})",
+    re.IGNORECASE,
 )
+
+# A heading naming the day. Inner markup is tolerated and stripped before
+# parsing, because venues break the number out for styling - Metrograph's
+# screen-reader heading is `<h5>Sun Aug <span class="day-number">2</span></h5>`,
+# which a contiguous-text pattern reads as "Sun Aug" and discards.
+_HEADING = re.compile(r"<h[1-6][^>]*>(.{0,120}?)</h[1-6]>", re.IGNORECASE | re.DOTALL)
 
 
 def parse_written_date(text: str, default: date_cls) -> date_cls | None:
@@ -108,26 +127,40 @@ def parse_written_date(text: str, default: date_cls) -> date_cls | None:
     return candidate
 
 
+def _iso_or_none(raw: str) -> date_cls | None:
+    try:
+        return date_cls.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
 def nearest_date_before(html: str, pos: int, default: date_cls) -> date_cls:
     """The day this position sits under, or `default`.
 
-    An ISO block container wins when it is the closer of the two signals;
-    otherwise a written day heading is used.
+    Three signals, all meaning the same thing and none universal: an ISO date
+    on a block container, a written day on a block container, and a heading
+    naming the day. The closest one above `pos` wins, because "the day this
+    showtime is listed under" is a question about proximity, not about which
+    markup style the venue chose. An ISO date breaks a tie, being the only one
+    that cannot be ambiguous about the year.
     """
-    iso = text = None
-    for m in DATE_CONTAINER.finditer(html, 0, pos):
-        iso = m
-    for m in _WRITTEN_DAY_HEADING.finditer(html, 0, pos):
-        text = m
-
-    if iso is not None and (text is None or text.start() < iso.start()):
-        try:
-            return date_cls.fromisoformat(iso.group(1))
-        except ValueError:
-            return default
-    if text is not None:
-        return parse_written_date(text.group(1), default) or default
-    return default
+    best_pos, best_date = -1, None
+    for pattern, convert in (
+        (DATE_CONTAINER, _iso_or_none),
+        (WRITTEN_CONTAINER, lambda raw: parse_written_date(raw, default)),
+        (_HEADING, lambda raw: parse_written_date(strip_tags(raw), default)),
+    ):
+        for m in pattern.finditer(html, 0, pos):
+            if m.start() < best_pos:
+                continue
+            when = convert(m.group(1))
+            if when is None:
+                continue
+            # `>` not `>=`: ties go to the pattern listed first, and ISO is
+            # listed first precisely so it wins them.
+            if m.start() > best_pos:
+                best_pos, best_date = m.start(), when
+    return best_date if best_date is not None else default
 
 
 # --------------------------------------------------------------- titles ---
@@ -137,6 +170,47 @@ TITLE_CLASSED = re.compile(
     re.IGNORECASE,
 )
 ANY_HEADING = re.compile(r"<h[1-6][^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})", re.IGNORECASE)
+
+
+# Headings that group or label showtimes rather than name a film. A listing
+# page is full of them, and they sit *between* the film title and its links -
+# which is exactly where a proximity search looks.
+NOT_A_FILM = re.compile(
+    r"^(now playing|coming soon|showtimes?|this week|next week|box.?office|"
+    r"theatre|theater|tickets?|calendar|schedule|events?|menu|home|"
+    r"today|tomorrow|series|our )\b",
+    re.IGNORECASE,
+)
+
+
+# A day heading whose number was broken out for styling. Metrograph writes
+# `<h5>Sun Aug <span class="day-number">2</span></h5>`, so the heading pattern
+# captures "Sun Aug " - a written day missing the one part that makes it parse
+# as a date, which is exactly the fragment that then poses as a film title.
+#
+# Matching a bare weekday too ("Sunday") costs the occasional real title -
+# *Friday* (1995) - but a one-word weekday heading in a listing is a day
+# grouping far more often than it is a film, and the cost of being wrong the
+# other way is every showtime under it losing its film.
+_DAY_LABEL = re.compile(
+    r"^(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*"
+    r"(?:[,\s]*$|[,\s]+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))",
+    re.IGNORECASE,
+)
+
+
+def is_film_title(text: str) -> bool:
+    """Could this heading be a film, or is it page furniture?
+
+    A day heading is the case that matters. Metrograph marks each group with
+    `<h5 class="sr-only">Sun Aug 2</h5>`, which sits between the film title
+    and its showtime links; treating it as the nearest title collapsed 114
+    distinct films to seven dates wearing film names.
+    """
+    text = (text or "").strip()
+    if len(text) < 2 or NOT_A_FILM.match(text) or _DAY_LABEL.match(text):
+        return False
+    return _WRITTEN_DAY.search(text) is None
 
 
 def nearest_match_before(pattern: re.Pattern[str], html: str, pos: int) -> str | None:
@@ -154,13 +228,24 @@ def nearest_title_before(html: str, pos: int, *extra: re.Pattern[str]) -> str | 
     banner near the top of the page won over every nearer heading - Roxie came
     back with the same film name on all nineteen of its showtimes.
 
-    Specificity only breaks ties at the same position.
+    Specificity only breaks ties at the same position - which is what the
+    `extra` patterns are for, being listed first.
+
+    Page furniture is skipped rather than returned: day headings in
+    particular sit between a film and its showtime links, so the *nearest*
+    heading is very often not a film at all.
     """
     best_pos, best_text = -1, None
-    for rank, pattern in enumerate((*extra, TITLE_CLASSED, ANY_HEADING)):
+    for pattern in (*extra, TITLE_CLASSED, ANY_HEADING):
         for m in pattern.finditer(html, 0, pos):
-            if m.start() >= best_pos:
-                best_pos, best_text = m.start(), html_lib.unescape(m.group(1)).strip()
+            # `>` not `>=`: at the same position the earlier - more specific -
+            # pattern keeps the tie, which is why `extra` is listed first.
+            if m.start() <= best_pos:
+                continue
+            text = html_lib.unescape(m.group(1)).strip()
+            if not is_film_title(text):
+                continue
+            best_pos, best_text = m.start(), text
     return best_text
 
 
