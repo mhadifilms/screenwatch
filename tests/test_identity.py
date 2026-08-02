@@ -283,3 +283,71 @@ class TestTmdbCatalog:
         resolver = WorkResolver(catalog, AliasCatalog(path=None))
         r = resolver.resolve("regal", "HO001", "The Third Man", hint_year=1949)
         assert r.work.tmdb_id == 2 and r.link.confidence >= 0.9
+
+
+class TestResolutionsPersist:
+    """`title_links` existed, had tests, and nothing ever wrote to it.
+
+    Resolution calls out to TMDB. A monitor that restarts hourly and keeps
+    its cache only in a dict re-asks for every title it has ever seen.
+    """
+
+    def store(self):
+        from screenwatch.service.store import Store
+
+        return Store.memory()
+
+    def resolver(self, store, catalog=None):
+        from screenwatch.identity.resolve import WorkResolver
+
+        return WorkResolver(catalog, store=store)
+
+    def test_a_resolution_is_written_to_the_store(self):
+        store = self.store()
+        resolution = self.resolver(store).resolve("amc", "76238", "The Odyssey")
+        row = store.get_link("amc", "76238")
+        assert row is not None
+        assert row["raw_title"] == "The Odyssey"
+        assert row["work_id"] == resolution.link.work_id
+
+    def test_a_fresh_resolver_reuses_the_stored_link(self):
+        store = self.store()
+        first = self.resolver(store).resolve("amc", "76238", "The Odyssey")
+
+        class ExplodingCatalog:
+            def search(self, *a, **k):
+                raise AssertionError("catalogue must not be consulted again")
+
+        second = self.resolver(store, ExplodingCatalog()).resolve(
+            "amc", "76238", "The Odyssey"
+        )
+        assert second.link.work_id == first.link.work_id
+        assert second.link.method == first.link.method
+
+    def test_variant_suffixes_are_re_analysed_rather_than_trusted(self):
+        """The cheap, pure part is recomputed; only the expensive lookup is
+        cached. A title-parsing improvement then applies to old rows too."""
+        store = self.store()
+        self.resolver(store).resolve("amc", "84080",
+                                     "The Odyssey - Private Theatre Rental")
+        again = self.resolver(store).resolve(
+            "amc", "84080", "The Odyssey - Private Theatre Rental"
+        )
+        assert not again.analysis.is_bookable
+
+    def test_a_broken_store_does_not_break_resolution(self):
+        class BrokenStore:
+            def get_link(self, *a):
+                raise RuntimeError("database is locked")
+
+            def put_link(self, *a):
+                raise RuntimeError("database is locked")
+
+            def put_work(self, *a):
+                raise RuntimeError("database is locked")
+
+            def get_work(self, *a):
+                raise RuntimeError("database is locked")
+
+        resolved = self.resolver(BrokenStore()).resolve("amc", "1", "Sholay")
+        assert resolved.analysis.clean == "Sholay"

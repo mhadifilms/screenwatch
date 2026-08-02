@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
-from .normalize import TitleAnalysis, analyze, match_key
+from .normalize import ProductKind, TitleAnalysis, analyze, match_key
 from .work import Method, TitleLink, Work
 
 _DATA = pathlib.Path(__file__).resolve().parents[1] / "data"
@@ -146,6 +146,12 @@ class WorkResolver:
     Caching is by (source, source_movie_id) because that pair is what a venue
     reuses; the raw title occasionally changes wording mid-run without the
     product changing at all.
+
+    Two tiers. The dict is per-process and free. The store, when given one,
+    survives restarts - which is the tier that matters, because resolution
+    calls out to TMDB and a monitor that restarts hourly would otherwise
+    re-ask for every title it has ever seen. `title_links` existed for exactly
+    this and nothing ever wrote to it.
     """
 
     def __init__(
@@ -154,10 +160,12 @@ class WorkResolver:
         aliases: AliasCatalog | None = None,
         *,
         cache: dict[tuple[str, str], Resolution] | None = None,
+        store=None,
     ) -> None:
         self.catalog = catalog or NullCatalog()
         self.aliases = aliases if aliases is not None else AliasCatalog()
         self._cache: dict[tuple[str, str], Resolution] = cache if cache is not None else {}
+        self.store = store
 
     # ------------------------------------------------------------------
     def resolve(
@@ -172,6 +180,9 @@ class WorkResolver:
         cache_key = (source, str(source_movie_id))
         if (hit := self._cache.get(cache_key)) is not None:
             return hit
+        if (hit := self._from_store(source, source_movie_id, raw_title)) is not None:
+            self._cache[cache_key] = hit
+            return hit
 
         analysis = analyze(raw_title)
 
@@ -180,7 +191,7 @@ class WorkResolver:
             resolution = self._pinned_resolution(
                 source, source_movie_id, raw_title, analysis, pinned
             )
-            self._cache[cache_key] = resolution
+            self._remember(cache_key, resolution)
             return resolution
 
         # A local alias hit is curated data, not a guess, so it is taken as
@@ -212,8 +223,58 @@ class WorkResolver:
             analysis=analysis,
             candidates=tuple(candidates),
         )
-        self._cache[cache_key] = resolution
+        self._remember(cache_key, resolution)
         return resolution
+
+    # ------------------------------------------------------------------
+    def _remember(self, cache_key: tuple[str, str], resolution: Resolution) -> None:
+        self._cache[cache_key] = resolution
+        if self.store is None:
+            return
+        try:
+            if resolution.work is not None:
+                self.store.put_work(resolution.work)
+            self.store.put_link(resolution.link)
+        except Exception:                                       # noqa: BLE001
+            # A cache is an optimisation. A locked or full database must not
+            # turn a working search into a failing one.
+            pass
+
+    def _from_store(
+        self, source: str, source_movie_id: str, raw_title: str
+    ) -> Resolution | None:
+        """A prior resolution of this exact product, if one was persisted.
+
+        The raw title is re-analysed rather than stored-and-trusted: it is
+        cheap, it is pure, and the variant suffixes it extracts are the part
+        most likely to have been improved since the row was written.
+        """
+        if self.store is None:
+            return None
+        try:
+            row = self.store.get_link(source, str(source_movie_id))
+        except Exception:                                       # noqa: BLE001
+            return None
+        if not row:
+            return None
+        work = self.store.get_work(row["work_id"]) if row["work_id"] else None
+        if row["work_id"] and work is None:
+            return None                    # link outlived its work; resolve again
+        return Resolution(
+            link=TitleLink(
+                source=source,
+                source_movie_id=str(source_movie_id),
+                raw_title=raw_title,
+                work_id=row["work_id"],
+                method=Method(row["method"]),
+                confidence=row["confidence"],
+                attrs=analyze(raw_title).attrs,
+                kind=ProductKind(row["kind"]),
+                linked_at=datetime.now(UTC),
+            ),
+            work=work,
+            analysis=analyze(raw_title),
+        )
 
     # ------------------------------------------------------------------
     def _pinned_resolution(self, source, source_movie_id, raw_title, analysis, work_id):

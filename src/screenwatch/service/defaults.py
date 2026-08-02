@@ -22,10 +22,14 @@ from .watch import WatchService
 DEFAULT_DB = "screenwatch.db"
 
 
-def default_resolver() -> WorkResolver:
+def default_resolver(store=None) -> WorkResolver:
     """Shared across every provider so a film resolved from one chain's
-    product id is the same Work when another chain reports it."""
-    return WorkResolver(TmdbCatalog.from_env())
+    product id is the same Work when another chain reports it.
+
+    Given a store, resolutions persist: a daemon that restarts does not
+    re-ask TMDB for every title it has ever seen.
+    """
+    return WorkResolver(TmdbCatalog.from_env(), store=store)
 
 
 def default_providers(resolver: WorkResolver | None = None, *, store=None) -> list:
@@ -50,7 +54,7 @@ def default_providers(resolver: WorkResolver | None = None, *, store=None) -> li
 
 def default_service(db: str = DEFAULT_DB) -> tuple[SearchService, WatchService, Store]:
     store = Store(db)
-    resolver = default_resolver()
+    resolver = default_resolver(store)
     search = SearchService(
         providers=default_providers(resolver, store=store),
         store=store,

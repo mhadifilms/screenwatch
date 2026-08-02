@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Protocol
 
-from ..identity.normalize import ProductKind
 from ..identity.resolve import WorkResolver
 from ..ranking.candidate import Option, Screening
 from ..ranking.coarse import coarse_rank
@@ -139,14 +138,22 @@ class SearchService:
         return screenings, errors, clipped
 
     def filter_by_work(self, screenings: list[Screening], spec: SearchSpec) -> list[Screening]:
-        """Keep only screenings of the requested film, and only bookable ones."""
+        """Keep only screenings of the requested film.
+
+        Unbookable products - private theatre rentals, marathons - are
+        already gone: every provider drops them at construction, on
+        `resolution.analysis.is_bookable`, which is where the information
+        actually is.
+
+        There used to be a second check here that read `title_links` for a
+        RENTAL kind. It never fired. It passed the internal `work_id` where
+        the query wanted the *source's* product id, so the lookup could not
+        match, and nothing wrote to that table anyway. A filter that cannot
+        match is worse than no filter: it reads as a safeguard.
+        """
         ref = spec.work
         out = []
         for s in screenings:
-            link = self.store.get_link(s.sources[0].split(":")[0] if s.sources else "unknown",
-                                       s.work.work_id)
-            if link and link["kind"] == ProductKind.RENTAL.value:
-                continue
             if ref.work_id and s.work.work_id != ref.work_id:
                 continue
             if ref.tmdb_id and s.work.tmdb_id != ref.tmdb_id:
