@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import pathlib
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -134,6 +134,14 @@ def _to_work(candidate: Candidate) -> Work:
     )
 
 
+# How much a display title tells you that a URL slug could not.
+_TITLE_PUNCTUATION = ":'&!?,.\u2019\u2013\u2014"
+
+
+def title_rank(title: str) -> tuple[int, int]:
+    return (sum(ch in _TITLE_PUNCTUATION for ch in title or ""), len(title or ""))
+
+
 @dataclass
 class Resolution:
     link: TitleLink
@@ -171,6 +179,7 @@ class WorkResolver:
         self.catalog = catalog or NullCatalog()
         self.aliases = aliases if aliases is not None else AliasCatalog()
         self._cache: dict[tuple[str, str], Resolution] = cache if cache is not None else {}
+        self._titles: dict[str, str] = {}
         self.store = store
 
     # ------------------------------------------------------------------
@@ -225,7 +234,7 @@ class WorkResolver:
                 kind=analysis.kind,
                 linked_at=datetime.now(UTC),
             ),
-            work=work,
+            work=self._best_title(work),
             analysis=analysis,
             candidates=tuple(candidates),
         )
@@ -369,3 +378,24 @@ class WorkResolver:
         if not analysis.match_key:
             return None
         return Work(work_id=f"local:{analysis.match_key}", title=analysis.clean)
+
+    def _best_title(self, work: Work | None) -> Work | None:
+        """Keep the richest title seen for a work, across sources.
+
+        Without a catalogue, two chains describing one film produce the same
+        `work_id` and different display titles: AMC derives its from a URL
+        slug, so "Spider Man Brand New Day", while Regal ships the real
+        "Spider-Man: Brand New Day". They group correctly and then whichever
+        was seen first decides what the user reads.
+
+        Richness is punctuation. A slug cannot carry a colon, an apostrophe or
+        an ampersand, so a title that has one came from a source that knew
+        more, and length breaks ties.
+        """
+        if work is None:
+            return None
+        best = self._titles.get(work.work_id)
+        if best is None or title_rank(work.title) > title_rank(best):
+            self._titles[work.work_id] = work.title
+            return work
+        return replace(work, title=best)

@@ -783,3 +783,36 @@ class TestWatchesFilterByFormat:
         provider._screenings = [screening("amc:100")]
         hits = watches.run(watch_id, today=date(2026, 8, 2))
         assert [h.option.screening.screening_id for h in hits] == ["amc:100"]
+
+
+class TestOneTitlePerFilm:
+    """Which chain was polled first is not a property a user should observe."""
+
+    def screenings_with(self, *titles):
+        from screenwatch.identity.work import Work
+
+        return [
+            replace(screening(f"amc:{i}"),
+                    work=Work(work_id="local:spider man", title=t))
+            for i, t in enumerate(titles)
+        ]
+
+    def test_the_richest_title_wins_regardless_of_order(self):
+        rich, poor = "Spider-Man: Brand New Day", "Spider Man Brand New Day"
+        for order in ((poor, rich), (rich, poor)):
+            unified = SearchService.unify_titles(self.screenings_with(*order))
+            assert {s.work.title for s in unified} == {rich}
+
+    def test_distinct_works_are_left_alone(self):
+        from screenwatch.identity.work import Work
+
+        rows = [
+            replace(screening("amc:1"), work=Work(work_id="w1", title="Vertigo")),
+            replace(screening("amc:2"), work=Work(work_id="w2", title="La Notte")),
+        ]
+        assert {s.work.title for s in SearchService.unify_titles(rows)} == {
+            "Vertigo", "La Notte"
+        }
+
+    def test_an_empty_set_is_fine(self):
+        assert SearchService.unify_titles([]) == []

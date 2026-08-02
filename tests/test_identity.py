@@ -351,3 +351,37 @@ class TestResolutionsPersist:
 
         resolved = self.resolver(BrokenStore()).resolve("amc", "1", "Sholay")
         assert resolved.analysis.clean == "Sholay"
+
+
+class TestDisplayTitles:
+    """Without a catalogue key, two chains describing one film agree on the
+    work_id and disagree on how it reads."""
+
+    def test_a_slug_becomes_a_cased_title(self):
+        from screenwatch.identity.normalize import from_slug
+
+        assert from_slug("the-odyssey") == "The Odyssey"
+        assert from_slug("spider-man-brand-new-day") == "Spider Man Brand New Day"
+
+    def test_minor_words_stay_lowercase_unless_they_lead(self):
+        from screenwatch.identity.normalize import from_slug
+
+        assert from_slug("the-lord-of-the-rings") == "The Lord of the Rings"
+        assert from_slug("a-star-is-born") == "A Star Is Born"
+
+    def test_a_trailing_number_is_part_of_the_title(self):
+        from screenwatch.identity.normalize import from_slug
+
+        assert from_slug("blade-runner-2049") == "Blade Runner 2049"
+
+    def test_punctuation_outranks_a_slug_derived_title(self):
+        from screenwatch.identity.resolve import title_rank
+
+        assert title_rank("Spider-Man: Brand New Day") > title_rank(
+            "Spider Man Brand New Day"
+        )
+
+    def test_length_breaks_ties_when_neither_has_punctuation(self):
+        from screenwatch.identity.resolve import title_rank
+
+        assert title_rank("The Long Goodbye") > title_rank("Goodbye")

@@ -10,11 +10,11 @@ into `Screening`s however it likes, and everything downstream is uniform.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import Protocol
 
-from ..identity.resolve import WorkResolver
+from ..identity.resolve import WorkResolver, title_rank
 from ..ranking.candidate import Option, Screening
 from ..ranking.coarse import coarse_rank
 from ..ranking.diversify import diversify
@@ -163,6 +163,31 @@ class SearchService:
             out.append(s)
         return out
 
+    @staticmethod
+    def unify_titles(screenings: list[Screening]) -> list[Screening]:
+        """One display title per work, chosen after every source has spoken.
+
+        Without a catalogue key, two chains describing one film agree on the
+        `work_id` and disagree on the title: AMC derives its from a URL slug,
+        so "Spider Man Brand New Day", while Regal ships the real
+        "Spider-Man: Brand New Day". The user then sees whichever chain was
+        polled first, which is not a property they should be able to observe.
+
+        Deliberately a pass over the gathered set rather than a rule inside
+        the resolver. The resolver sees products one at a time and cannot know
+        that a better title is coming; here, all of them have arrived.
+        """
+        best: dict[str, str] = {}
+        for s in screenings:
+            work_id = s.work.work_id
+            if work_id not in best or title_rank(s.work.title) > title_rank(best[work_id]):
+                best[work_id] = s.work.title
+        return [
+            s if s.work.title == best[s.work.work_id]
+            else replace(s, work=replace(s.work, title=best[s.work.work_id]))
+            for s in screenings
+        ]
+
     def search(self, spec: SearchSpec, *, today: date | None = None) -> SearchResult:
         today = today or datetime.now(UTC).date()
         screenings, errors, clipped = self.gather(spec)
@@ -172,6 +197,7 @@ class SearchService:
         screenings = [
             s for s in screenings if window.contains(s.starts_at_local.date())
         ]
+        screenings = self.unify_titles(screenings)
         if spec.strict_presentations and spec.presentations is not None:
             screenings = [
                 s for s in screenings if spec.presentations.wants(s.presentation)

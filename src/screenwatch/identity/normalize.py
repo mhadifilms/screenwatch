@@ -150,10 +150,30 @@ def analyze(raw_title: str) -> TitleAnalysis:
     )
 
 
+# Words a title keeps lowercase unless they lead it.
+_MINOR_WORDS = frozenset({
+    "a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into",
+    "nor", "of", "on", "or", "over", "the", "to", "up", "via", "with",
+})
+
+
 def from_slug(slug: str) -> str:
-    """Recover a rough title from a URL slug: `the-odyssey` -> `the odyssey`.
+    """Recover a rough title from a URL slug: `the-odyssey` -> `The Odyssey`.
+
+    Cased, because this is a *display* title. It used to return the words
+    lowercased, which is right for matching and wrong for reading: AMC derives
+    every title from its URL slug, so its options were listed as "spider man
+    brand new day" while other chains showed "Spider-Man: Brand New Day".
+
+    The punctuation is not recoverable - a slug spells both a hyphen and a
+    colon as "-" - so this is a best effort, and any source with a real title
+    should be preferred over it. `WorkResolver` does prefer one.
 
     Numeric ids must already be stripped by the adapter; a trailing number here
     is part of the title ("blade-runner-2049").
     """
-    return _WS.sub(" ", slug.replace("-", " ")).strip()
+    words = _WS.sub(" ", slug.replace("-", " ")).strip().split()
+    return " ".join(
+        word if i and word.lower() in _MINOR_WORDS else word[:1].upper() + word[1:]
+        for i, word in enumerate(words)
+    )
