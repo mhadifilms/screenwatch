@@ -159,7 +159,21 @@ class SearchService:
             provider = self._provider_for(option.screening.chain)
             if provider is None:
                 raise SeatDataUnavailable(f"no provider for {option.screening.chain}")
-            auditorium = provider.fetch_seats(option, self.transport)
+            try:
+                auditorium = provider.fetch_seats(option, self.transport)
+            except SeatDataUnavailable:
+                raise
+            except Exception as exc:                            # noqa: BLE001
+                # A seat fetch is an enrichment, never a precondition. Any
+                # provider-specific failure - a Cloudflare challenge, a changed
+                # schema, a timeout - degrades this one option to
+                # availability-only ranking instead of failing the whole
+                # search. Letting it propagate meant one blocked seat map
+                # returned zero results for every chain.
+                raise SeatDataUnavailable(
+                    f"{option.screening.chain} seat fetch failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
             fetched += 1
             self.store.put_seat_snapshot(
                 option.screening.screening_id,

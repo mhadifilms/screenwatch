@@ -117,11 +117,15 @@ which this project does not do.
 
 | Source | Seat data | Phase B can |
 |---|---|---|
-| AMC | full grid, per-seat status | pick actual seats, score position and cohesion |
-| C360 | exact sold count + auditorium shape | **estimate** whether the party can sit together |
+| **AMC** | full grid, per-seat status | pick actual seats, score position and cohesion |
+| **Cinemark** | full grid, per-seat status | same |
+| **Regal** | full grid via the booking API | same *(implemented from bundle evidence; unverified — see below)* |
+| **C360** | exact sold count + auditorium shape | **estimate** whether the party can sit together |
 | Alamo | sold-out flag only | availability ranking |
-| Regal | sold-out flag only | availability ranking |
-| Cinemark | none — robots.txt disallows the path | availability ranking |
+| Independents | none | availability ranking |
+
+Every one of these is a **plain GET**. No login, no cart, and no hold — a hold
+is created by *selecting* a seat, which nothing here does.
 
 That would leave phase B useful for one chain and inert for the rest —
 worthless precisely at a near-sellout, which is when ranking matters. So
@@ -170,7 +174,7 @@ to key off the showtime `status` flipping back, not off seat-level diffs.
 | **Alamo Drafthouse** | ✅ 19 markets, 34 cinemas | ✗ not exposed | One open request per market; self-discovers venues and coordinates |
 | **Regal** | ✅ 402 theatres nationally | ✗ not in payload | `__NEXT_DATA__` blob; Cloudflare challenge is intermittent, cleared by retry |
 | **Cinemark** | ✅ 307 theatres nationally | ✗ **robots.txt disallows** | ASP.NET page; `data-json-model` joined to rendered showtime divs |
-| **Independents** | ⚠ generic schema.org adapter | ✗ | Works where markup is real; Film Forum's is decorative |
+| **Independents** | ✅ schema.org **or** Vista ticket links | ✗ | Metrograph: 183 showtimes / 20 dates. Film Forum's markup is decorative and is reported as such |
 | **C360 / Apple Cinemas** | ✅ 14 venues | ⚠ **counts + room shape** | Warm the session on the landing page, then an open JSON API |
 | Elevent, Agile | ✗ | ✗ | Not started |
 
@@ -183,7 +187,7 @@ API's own vocabulary instead of waiting to meet a surprise in production.
 
 ```bash
 uv venv && uv pip install -e '.[dev,api]'
-python -m pytest                      # 400 tests, offline
+python -m pytest                      # 436 tests, offline
 ```
 
 MCP server (stdio):
@@ -214,18 +218,30 @@ HTTP:
 uvicorn screenwatch.api.app:default_app --factory --port 8787
 ```
 
-## robots.txt is enforced, not just noted
+## robots.txt is advisory here
 
-Cinemark asks automated clients to stay off `/tickets/`, `/ticketseatmap/` and
-`/shoppingcart` — which is exactly where their seat data lives. `robots.py`
-makes that enforceable: every provider fetch goes through `check_fetch`, so a
-later edit cannot quietly start crawling those paths.
+robots.txt is a convention for crawlers — software that walks a site on its own
+initiative to build an index. This is not that: it fetches the pages a specific
+user asked about, at roughly the volume that user would generate by clicking.
 
-The distinction the API encodes: **robots.txt governs automated retrieval, not
-what a human may click.** A disallowed URL is still returned as a booking
-deeplink — that is a person choosing to visit a page — while the crawler never
-fetches it. Missing or unreachable robots.txt fails open; an explicit
-`Disallow` fails closed.
+So enforcement is **off by default**. `robots.py` records what a crawler-mode
+client would have skipped and lets the request through. `RobotsCache(enforce=
+True)` restores blocking, and exists for the one genuinely crawler-shaped part
+of the system — the scheduler, which polls on a timer with no human in the
+loop.
+
+## Independents: two strategies
+
+1. **schema.org `ScreeningEvent`** where it is real.
+2. **Vista ticket links** where it is not. Vista runs an enormous share of art
+   houses, and venues embed `visSelectTickets.aspx?cinemacode=&txtSessionId=`
+   anchors right beside each showtime. The link, its anchor text (the time),
+   and the nearest preceding title reconstruct the listing with no per-venue
+   parser. Metrograph yields 183 showtimes across 20 dates this way.
+
+Deliberately structural, not CSS-based: class names differ per venue and change
+on redesign, but "the anchor text of a Vista link is the showtime" holds because
+it is how listings are *shaped*.
 
 ## Watches
 
@@ -252,8 +268,18 @@ Stated plainly, because a plausible-looking gap is worse than a named one.
   `/schedule/session/{cinemaId}/{sessionId}` leaks a stack trace confirming
   the route but carries no seats; Regal's ticketing is the part Cloudflare
   guards hardest. Both fall back to availability-only ranking.
-* **Cinemark seats are reachable but off limits** — `/TicketSeatMap` is
-  disallowed by their robots.txt, and that is respected.
+* **Regal seat maps are unverified.** `GET {booking_api}/api/GetSeatPlan?
+  theatreCode=&sessionId=` was recovered from Regal's own bundle and the
+  parser is written against the Vista schema it returns, but Cloudflare
+  firewalled this IP off the booking hosts mid-recon (a hard
+  `Attention Required`, not a solvable challenge), so no live response has
+  been parsed. The provider routes through the browser transport, which is
+  what clears a managed challenge when one is present.
+* **Alamo seat maps** need the ticket-type step before the picker renders,
+  which is the one place a request would start an order. Left alone.
+* **Elevent / Agile** not built — Metrograph turned out to be Vista, not
+  Elevent, and the Vista link extractor covers it and a large slice of the
+  art-house tail instead.
 * **TMDB catalogue client.** `WorkResolver` takes an injected `Catalog`; only
   `AliasCatalog` and `NullCatalog` ship. Identity works degraded without it —
   products still group by cleaned title, at low confidence.

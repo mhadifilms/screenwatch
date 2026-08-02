@@ -15,6 +15,15 @@ but carries no usable `startDate`. Film Forum is the canonical example - 56
 `IncompleteStructuredData`, which this provider surfaces as a named error
 rather than an empty result, because "this venue needs an HTML fallback" and
 "this venue is dark tonight" must never look the same.
+
+So there are two strategies, tried in order:
+
+  1. schema.org `ScreeningEvent` markup;
+  2. **Vista ticket links** - the `visSelectTickets.aspx?cinemacode=&txtSessionId=`
+     anchors that Vista-backed venues embed beside each showtime. Vista runs an
+     enormous share of art houses, and the link plus its anchor text plus the
+     nearest preceding title is enough to reconstruct the listing without any
+     per-venue parser. Metrograph yields 183 showtimes across 20 dates this way.
 """
 
 from __future__ import annotations
@@ -26,6 +35,7 @@ from zoneinfo import ZoneInfo
 
 from ..adapters.base import ParseError
 from ..adapters.generic.jsonld import IncompleteStructuredData, JsonLdScreenings
+from ..adapters.vista.links import extract as extract_vista, has_vista_links
 from ..identity.resolve import WorkResolver
 from ..models import Availability
 from ..presentation import assume_digital
@@ -89,21 +99,28 @@ class IndependentProvider:
             row = by_id.get(venue.venue_id)
             if not row or not row.get("url"):
                 continue
-            adapter = JsonLdScreenings(venue.venue_id, url=row["url"])
             try:
-                observations = adapter.parse(
-                    adapter.fetch(transport), strict=False
-                )
-            except IncompleteStructuredData as exc:
-                # Named, not swallowed: decorative markup needs a per-venue
-                # HTML fallback, and that is a different problem from a quiet
-                # night.
-                self.incomplete[venue.venue_id] = str(exc)
-                continue
-            except (ParseError, Exception):                     # noqa: BLE001
+                html = transport.get(row["url"]).text
+            except Exception:                                   # noqa: BLE001
                 continue
 
             tz = ZoneInfo(venue.tz) if venue.tz else timezone.utc
+            adapter = JsonLdScreenings(venue.venue_id, url=row["url"])
+            observations = []
+            try:
+                observations = adapter.parse(html, strict=False)
+            except IncompleteStructuredData as exc:
+                # Named, not swallowed: decorative markup needs a fallback,
+                # which is a different problem from a quiet night.
+                self.incomplete[venue.venue_id] = str(exc)
+            except ParseError:
+                pass
+            except Exception:                                   # noqa: BLE001
+                pass
+
+            if not observations and has_vista_links(html):
+                out.extend(self._from_vista(spec, venue, html, tz, window, today))
+                continue
             for obs in observations:
                 local = obs.key.starts_at_utc.astimezone(tz).replace(tzinfo=None)
                 if not window.contains(local.date()):
@@ -130,6 +147,36 @@ class IndependentProvider:
                         sources=(obs.source,),
                     )
                 )
+        return out
+
+    def _from_vista(self, spec, venue, html, tz, window, today) -> list[Screening]:
+        """Reconstruct listings from embedded Vista ticket links."""
+        out: list[Screening] = []
+        for show in extract_vista(html, default_date=today):
+            if not window.contains(show.starts_at_local.date()):
+                continue
+            resolution = self.work_resolver.resolve(
+                venue.venue_id, show.title, show.title
+            )
+            if not resolution.analysis.is_bookable:
+                continue
+            out.append(
+                Screening(
+                    screening_id=f"vista:{show.screening_key}",
+                    work=resolution.work,
+                    venue_id=venue.venue_id,
+                    venue_name=venue.name,
+                    chain=self.chain,
+                    starts_at_utc=show.starts_at_local.replace(tzinfo=tz)
+                                                       .astimezone(timezone.utc),
+                    starts_at_local=show.starts_at_local,
+                    presentation=assume_digital(resolution.analysis.presentation),
+                    availability=Availability.UNKNOWN,
+                    deeplink=show.url,
+                    distance_km=venue.distance_km(spec.location.origin),
+                    sources=("vista:links",),
+                )
+            )
         return out
 
     # ------------------------------------------------------------------

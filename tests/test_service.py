@@ -507,3 +507,51 @@ class TestMcpTools:
                                {"option_id": out["options"][0]["option_id"]})
         assert link["booking_link"].startswith("https://")
         assert "yourself" in link["note"]
+
+
+class TestSeatFetchIsNeverFatal:
+    """A seat fetch is enrichment, not a precondition.
+
+    A Cloudflare challenge on one chain's seat map once returned zero results
+    for every chain, because the provider-specific exception propagated out of
+    the search instead of degrading that single option.
+    """
+
+    def service(self, provider):
+        return SearchService([provider], store=Store.memory(),
+                             directory=VenueDirectory(), transport=object())
+
+    def spec(self):
+        return SearchSpec(work=WorkRef(query="dune"),
+                          date_window=DateWindow(date(2026, 8, 2), date(2026, 8, 2)),
+                          max_seatmap_fetches=2)
+
+    def test_an_arbitrary_provider_exception_degrades_one_option(self):
+        class Exploding(FakeProvider):
+            def fetch_seats(self, option, transport):
+                raise RuntimeError("cloudflare challenge persisted")
+
+        result = self.service(
+            Exploding([screening("amc:1"), screening("amc:2", 22)])
+        ).search(self.spec(), today=date(2026, 8, 2))
+
+        assert len(result.options) == 2, "the search must still return results"
+        assert all(o.seat_data == "unavailable" for o in result.options)
+
+    def test_the_reason_is_preserved_for_diagnosis(self):
+        class Exploding(FakeProvider):
+            def fetch_seats(self, option, transport):
+                raise RuntimeError("cloudflare challenge persisted")
+
+        service = self.service(Exploding([screening("amc:1")]))
+        try:
+            service.search(self.spec(), today=date(2026, 8, 2))
+        except Exception as exc:  # pragma: no cover - must not happen
+            pytest.fail(f"search raised {exc}")
+
+    def test_a_working_provider_still_gets_its_grid(self):
+        room = build_auditorium("v", "1", ["....", "...."])
+        result = self.service(
+            FakeProvider([screening("amc:1")], room)
+        ).search(self.spec(), today=date(2026, 8, 2))
+        assert result.options[0].seat_data == "grid"

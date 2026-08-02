@@ -13,7 +13,8 @@
     "",
     "A decorative venue is not a broken config. It is a venue that needs a",
     "per-venue HTML fallback parser, and it stays listed so that work is",
-    "visible instead of the venue silently vanishing."
+    "visible instead of the venue silently vanishing.",
+    "markup: 'vista-links' means showtimes come from embedded Vista ticket anchors rather than schema.org."
   ],
   "schema_version": 1,
   "venues": [
@@ -58,10 +59,30 @@
       "venue_id": "castro-sf",
       "name": "Castro Theatre",
       "url": "https://www.castrotheatre.com/",
-      "lat": 37.7620,
+      "lat": 37.762,
       "lon": -122.4349,
       "tz": "America/Los_Angeles",
       "markup": "unknown"
+    },
+    {
+      "venue_id": "metrograph",
+      "name": "Metrograph",
+      "url": "https://metrograph.com/",
+      "lat": 40.7148,
+      "lon": -73.9899,
+      "tz": "America/New_York",
+      "markup": "vista-links",
+      "notes": "Vista ticketing at t.metrograph.com, cinemacode 9999. 183 showtimes across 20 dates via embedded ticket links."
+    },
+    {
+      "venue_id": "coolidge-corner",
+      "name": "Coolidge Corner Theatre",
+      "url": "https://coolidge.org/",
+      "lat": 42.3421,
+      "lon": -71.1211,
+      "tz": "America/New_York",
+      "markup": "unknown",
+      "notes": "Agile Ticketing."
     }
   ]
 }
