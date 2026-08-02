@@ -1,0 +1,22 @@
+{
+  "_comment": [
+    "Curated identity fixes, consulted before any network catalogue.",
+    "",
+    "`works` maps titles and aliases onto a canonical film. Use it for festival",
+    "titles, rep-house programming, and anything TMDB has not indexed.",
+    "",
+    "`pins` bind one venue product id straight to a work_id and always win.",
+    "That is the escape hatch for a product the heuristics get wrong every time -",
+    "e.g. a chain listing a film under a promotional name."
+  ],
+  "schema_version": 1,
+  "works": [
+    {
+      "title": "The Third Man",
+      "year": 1949,
+      "runtime_min": 104,
+      "aliases": ["The Third Man 2026", "Carol Reed's The Third Man"]
+    }
+  ],
+  "pins": []
+}

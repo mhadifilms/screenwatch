@@ -1,0 +1,67 @@
+{
+  "_comment": [
+    "Independent venues read through the generic schema.org adapter.",
+    "",
+    "Curated rather than discovered: there is no registry of independent",
+    "cinemas to crawl, and a list of the ones a user actually cares about is",
+    "cheaper and more honest than pretending to enumerate them.",
+    "",
+    "`markup` records what was observed at capture time:",
+    "  usable      - ScreeningEvent nodes with real startDate values",
+    "  decorative  - valid markup, empty startDate; raises IncompleteStructuredData",
+    "  unknown     - not yet checked",
+    "",
+    "A decorative venue is not a broken config. It is a venue that needs a",
+    "per-venue HTML fallback parser, and it stays listed so that work is",
+    "visible instead of the venue silently vanishing."
+  ],
+  "schema_version": 1,
+  "venues": [
+    {
+      "venue_id": "filmforum",
+      "name": "Film Forum",
+      "url": "https://filmforum.org/",
+      "lat": 40.7291,
+      "lon": -74.0048,
+      "tz": "America/New_York",
+      "markup": "decorative",
+      "notes": "56 ScreeningEvent nodes, every startDate empty. Format lives in the event title ('THE THIRD MAN in 35mm')."
+    },
+    {
+      "venue_id": "ifc-center",
+      "name": "IFC Center",
+      "url": "https://www.ifccenter.com/",
+      "lat": 40.7311,
+      "lon": -74.0027,
+      "tz": "America/New_York",
+      "markup": "unknown"
+    },
+    {
+      "venue_id": "roxie-sf",
+      "name": "The Roxie",
+      "url": "https://roxie.com/",
+      "lat": 37.7648,
+      "lon": -122.4222,
+      "tz": "America/Los_Angeles",
+      "markup": "unknown"
+    },
+    {
+      "venue_id": "music-box-chicago",
+      "name": "Music Box Theatre",
+      "url": "https://musicboxtheatre.com/",
+      "lat": 41.9494,
+      "lon": -87.6595,
+      "tz": "America/Chicago",
+      "markup": "unknown"
+    },
+    {
+      "venue_id": "castro-sf",
+      "name": "Castro Theatre",
+      "url": "https://www.castrotheatre.com/",
+      "lat": 37.7620,
+      "lon": -122.4349,
+      "tz": "America/Los_Angeles",
+      "markup": "unknown"
+    }
+  ]
+}

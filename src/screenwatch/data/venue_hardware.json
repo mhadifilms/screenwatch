@@ -1,0 +1,155 @@
+{
+  "_comment": [
+    "Per-venue screen hardware - the oracle that listings cannot give you.",
+    "",
+    "Chains advertise one brand string for hardware that differs materially:",
+    "'IMAX with Laser at AMC' covers both 1.43:1 GT houses and standard 1.90:1",
+    "houses. Independents rarely say which room a print is screening in at all.",
+    "",
+    "Applies to every format, not just IMAX: a rep house's 70mm-capable screen,",
+    "a Dolby Cinema room, a nitrate-certified booth. Only a handful of venues",
+    "worldwide can project nitrate, which is exactly the kind of fact that",
+    "belongs here and nowhere else.",
+    "",
+    "SEED DATA - every row says source:seed-unverified. Verify against the",
+    "venue and set verified_at. Rooms get converted with no announcement.",
+    "An absent venue is not an error; refine() is simply a no-op.",
+    "lat/lon are approximate venue coordinates used for distance ranking; market is the chain's own URL segment."
+  ],
+  "schema_version": 2,
+  "venues": {
+    "amc-lincoln-square-13": {
+      "chain": "amc",
+      "name": "AMC Lincoln Square 13",
+      "tz": "America/New_York",
+      "screens": [
+        {
+          "brand": "IMAX",
+          "projection": "FILM_70MM_15PERF",
+          "aspect": "1.43"
+        },
+        {
+          "projection": "FILM_70MM"
+        },
+        {
+          "brand": "DOLBY_CINEMA",
+          "projection": "DIGITAL_LASER"
+        }
+      ],
+      "notes": "Listings show only 'IMAX with Laser at AMC'. Has both a 15/70 IMAX screen and a separate standard 70mm screen - verified live 2026-08-02, imax70mm and 70mm showtimes appeared for the same film on the same day.",
+      "verified_at": null,
+      "source": "seed-unverified",
+      "lat": 40.7754,
+      "lon": -73.9819,
+      "market": "new-york-city"
+    },
+    "amc-metreon-16": {
+      "chain": "amc",
+      "name": "AMC Metreon 16",
+      "tz": "America/Los_Angeles",
+      "screens": [
+        {
+          "brand": "IMAX",
+          "projection": "DIGITAL_LASER",
+          "aspect": "1.43"
+        }
+      ],
+      "verified_at": null,
+      "source": "seed-unverified",
+      "lat": 37.7847,
+      "lon": -122.4032,
+      "market": "san-francisco"
+    },
+    "amc-universal-citywalk-19": {
+      "chain": "amc",
+      "name": "AMC Universal CityWalk 19",
+      "tz": "America/Los_Angeles",
+      "screens": [
+        {
+          "brand": "IMAX",
+          "projection": "DIGITAL_LASER",
+          "aspect": "1.43"
+        }
+      ],
+      "verified_at": null,
+      "source": "seed-unverified",
+      "lat": 34.1362,
+      "lon": -118.3534,
+      "market": "los-angeles"
+    },
+    "amc-empire-25": {
+      "chain": "amc",
+      "name": "AMC Empire 25",
+      "tz": "America/New_York",
+      "screens": [
+        {
+          "brand": "IMAX",
+          "projection": "DIGITAL_LASER",
+          "aspect": "1.90"
+        }
+      ],
+      "verified_at": null,
+      "source": "seed-unverified",
+      "lat": 40.7566,
+      "lon": -73.9895,
+      "market": "new-york-city"
+    },
+    "filmforum": {
+      "chain": "independent",
+      "name": "Film Forum",
+      "tz": "America/New_York",
+      "screens": [
+        {
+          "projection": "FILM_35MM"
+        },
+        {
+          "projection": "DIGITAL"
+        }
+      ],
+      "notes": "Rep house. Publishes schema.org ScreeningEvent but with empty startDate; format appears in the event title ('THE THIRD MAN in 35mm').",
+      "verified_at": null,
+      "source": "seed-unverified",
+      "lat": 40.7291,
+      "lon": -74.0048
+    },
+    "coolidge-corner": {
+      "chain": "independent",
+      "name": "Coolidge Corner Theatre",
+      "tz": "America/New_York",
+      "ticketing_platform": "agile",
+      "screens": [
+        {
+          "projection": "FILM_70MM"
+        },
+        {
+          "projection": "FILM_35MM"
+        },
+        {
+          "projection": "DIGITAL"
+        }
+      ],
+      "verified_at": null,
+      "source": "seed-unverified",
+      "lat": 42.3421,
+      "lon": -71.1211
+    },
+    "metrograph": {
+      "chain": "independent",
+      "name": "Metrograph",
+      "tz": "America/New_York",
+      "ticketing_platform": "elevent",
+      "screens": [
+        {
+          "projection": "FILM_35MM"
+        },
+        {
+          "projection": "DIGITAL"
+        }
+      ],
+      "verified_at": null,
+      "source": "seed-unverified",
+      "lat": 40.7148,
+      "lon": -73.9899
+    }
+  }
+}
