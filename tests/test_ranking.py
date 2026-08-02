@@ -340,7 +340,9 @@ class TestFinePhase:
             coarse_rank([screening("s", at=local(20))], spec), spec, lambda o: room
         )
         assert only.seats is None
-        assert only.components["party_fit"] == 0.6
+        # Read the grid, found no four seats: a finding, not missing data.
+        assert only.seat_data == "no_seating"
+        assert only.components["party_fit"] == 0.0
 
 
 # --------------------------------------------------------------------------

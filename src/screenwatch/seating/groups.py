@@ -14,6 +14,7 @@ pretending to compute them would be false precision.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -22,6 +23,55 @@ from .quality import QualityModel
 
 MAX_GROUPS_PER_ROW = 6      # keep enumeration bounded in large houses
 MAX_SPLIT_CANDIDATES = 40
+
+# What an ordinary member of a party may be seated in.
+#
+# Wheelchair spaces and their paired companion seats are deliberately absent.
+# They are allocated inventory, not general stock: assigning one to a party
+# that did not ask for it takes the only seat someone else can use, and most
+# ticketing flows reject the booking at checkout anyway. A party that *does*
+# need them says so, and `SeatRequest` routes it down a separate path.
+GENERAL_KINDS = frozenset({SeatKind.STANDARD, SeatKind.RECLINER, SeatKind.LOVESEAT})
+RECLINING_KINDS = frozenset({SeatKind.RECLINER, SeatKind.LOVESEAT})
+
+
+@dataclass(frozen=True)
+class SeatRequest:
+    """What a party needs, expressed in seating's own vocabulary.
+
+    Deliberately *not* `ranking.spec.SeatingPrefs`: seating sits below ranking
+    and must not import it. `ranking.fine.seat_request` translates one into the
+    other, and that single function is where any new preference gets wired in -
+    which is the whole reason this type exists rather than a pile of keyword
+    arguments that a caller can forget to pass.
+
+    `wheelchair_spaces` and `companion_seats` are drawn *from* the party, not
+    added to it: a party of two with one wheelchair user needs one wheelchair
+    space and one companion seat, which is two seats in total.
+    """
+
+    party_size: int
+    together: bool = True
+    allow_split: bool = True
+    kinds: frozenset[SeatKind] = GENERAL_KINDS
+    wheelchair_spaces: int = 0
+    companion_seats: int = 0
+
+    @property
+    def accessible_seats(self) -> int:
+        return self.wheelchair_spaces + self.companion_seats
+
+    @property
+    def general_seats(self) -> int:
+        """Party members with no accessible requirement. Never negative."""
+        return max(self.party_size - self.accessible_seats, 0)
+
+    @property
+    def needs_accessible_seating(self) -> bool:
+        return self.accessible_seats > 0
+
+    def admits(self, seat: Seat) -> bool:
+        return seat.is_open and seat.kind in self.kinds
 
 
 class Cohesion(Enum):
@@ -100,23 +150,30 @@ class SeatGroup:
         return f"{self.size} as {shape} at {self.labels}"
 
 
-def _runs(row: list[Seat], size: int) -> list[tuple[Seat, ...]]:
-    """Every window of `size` genuinely adjacent open seats in one row.
+def _runs(
+    row: list[Seat], size: int, admits: Callable[[Seat], bool] | None = None
+) -> list[tuple[Seat, ...]]:
+    """Every window of `size` genuinely adjacent usable seats in one row.
 
-    Two distinctions that both matter, and that an earlier version conflated:
+    Three distinctions, and an earlier version conflated the first two:
 
     * An **occupied** seat between two free ones breaks adjacency. You are
       not sitting together if a stranger is between you. So blocks are cut at
       any seat that is not open.
-    * A **missing** seat - an aisle, a wheelchair bay, a pillar - does not
-      appear in the row at all, so it does not cut the block. Seats either
-      side of an aisle really are next to each other, just with a walkway
-      between; `_has_aisle_break` labels that case rather than rejecting it.
+    * A **missing** seat - an aisle, a pillar - does not appear in the row at
+      all, so it does not cut the block. Seats either side of an aisle really
+      are next to each other, just with a walkway between; `_has_aisle_break`
+      labels that case rather than rejecting it.
+    * An **ineligible** seat - open, but not the kind this party may take -
+      cuts the block like an occupied one. A wheelchair bay between two seats
+      is a real physical gap, and calling the seats around it contiguous would
+      overstate the offer.
     """
+    admits = admits or (lambda seat: seat.is_open)
     blocks: list[list[Seat]] = []
     current: list[Seat] = []
     for seat in row:                      # rows() already sorts by col_index
-        if seat.is_open:
+        if admits(seat):
             current.append(seat)
         elif current:
             blocks.append(current)
@@ -167,13 +224,13 @@ def _mean_quality(seats: tuple[Seat, ...], model: QualityModel, rows: int) -> fl
 
 def find_groups(
     auditorium: Auditorium,
-    party_size: int,
+    party_size: int | SeatRequest,
     model: QualityModel | None = None,
     *,
     allow_split: bool = True,
     limit: int = 8,
 ) -> list[SeatGroup]:
-    """Best available seatings for `party_size`, best first.
+    """Best available seatings for the party, best first.
 
     Returns contiguous options when they exist. When they do not - the
     interesting case - it falls back to two-part splits, which is what real
@@ -184,7 +241,16 @@ def find_groups(
     An incomplete group (fewer seats than requested) is returned only if
     nothing else exists, so the caller can distinguish "sit apart" from
     "cannot fit at all".
+
+    A bare `party_size` is still accepted and means the default request: any
+    general seat, seated together if possible.
     """
+    request = (
+        party_size if isinstance(party_size, SeatRequest)
+        else SeatRequest(party_size, allow_split=allow_split)
+    )
+    party_size = request.party_size
+    allow_split = request.allow_split
     model = model or QualityModel()
     rows = auditorium.rows()
     row_count = auditorium.row_count
@@ -192,10 +258,33 @@ def find_groups(
     if party_size <= 0:
         return []
 
+    if request.needs_accessible_seating:
+        # Accessible allocation is its own problem, not a filter over the
+        # general one: the seats are specific, paired, and scarce.
+        return _accessible_groups(auditorium, request, model, limit=limit)
+
+    eligible = [s for s in auditorium.open_seats() if request.admits(s)]
+
+    if not request.together:
+        # The party said they do not mind sitting apart, so the best answer is
+        # simply the best seats in the room. Cohesion is still reported
+        # honestly; `ranking.fine` is what stops it counting against them.
+        best = sorted(eligible, key=lambda s: -model.score(s, row_count=row_count))
+        chosen = tuple(sorted(best[:party_size], key=lambda s: (s.row_index, s.col_index)))
+        if not chosen:
+            return []
+        parts = tuple((s,) for s in chosen)
+        cohesion = (
+            Cohesion.SOLO if len(chosen) == 1 else _classify_split(parts)
+        )
+        return [
+            SeatGroup(chosen, cohesion, _mean_quality(chosen, model, row_count),
+                      party_size, parts)
+        ]
+
     if party_size == 1:
         singles = sorted(
-            auditorium.open_seats(),
-            key=lambda s: -model.score(s, row_count=row_count),
+            eligible, key=lambda s: -model.score(s, row_count=row_count),
         )[:limit]
         return [
             SeatGroup((s,), Cohesion.SOLO, model.score(s, row_count=row_count), 1)
@@ -213,7 +302,7 @@ def find_groups(
                 party_size,
                 (run,),
             )
-            for run in _runs(row, party_size)
+            for run in _runs(row, party_size, request.admits)
         ]
         scored.sort(key=lambda g: -(g.quality * g.cohesion_score))
         contiguous.extend(scored[:MAX_GROUPS_PER_ROW])
@@ -236,8 +325,10 @@ def find_groups(
 
     candidates: list[SeatGroup] = []
     for big, small in partitions:
-        big_runs = [r for row in rows for r in _runs(row, big)][:MAX_SPLIT_CANDIDATES]
-        small_runs = [r for row in rows for r in _runs(row, small)][:MAX_SPLIT_CANDIDATES]
+        big_runs = [r for row in rows
+                    for r in _runs(row, big, request.admits)][:MAX_SPLIT_CANDIDATES]
+        small_runs = [r for row in rows
+                      for r in _runs(row, small, request.admits)][:MAX_SPLIT_CANDIDATES]
         for a, b in itertools.product(big_runs, small_runs):
             if {s.id for s in a} & {s.id for s in b}:
                 continue
@@ -265,7 +356,7 @@ def find_groups(
     # different offer from three singles, and reporting the latter when the
     # former is true both misdescribes the room and understates the option.
     for size in range(party_size - 1, 0, -1):
-        blocks = [r for row in rows for r in _runs(row, size)]
+        blocks = [r for row in rows for r in _runs(row, size, request.admits)]
         if not blocks:
             continue
         best = max(
@@ -283,6 +374,97 @@ def find_groups(
                       party_size, (best,))
         ]
     return []
+
+
+def _accessible_groups(
+    auditorium: Auditorium,
+    request: SeatRequest,
+    model: QualityModel,
+    *,
+    limit: int = 8,
+) -> list[SeatGroup]:
+    """Seat a party that needs wheelchair spaces or companion seats.
+
+    Not a filter over the general search, because the constraint is not "which
+    seats are acceptable" but "which specific seats exist". A house has a
+    handful of wheelchair spaces, each with a companion seat beside it, and
+    either they are free or the party cannot be seated. Returning the best
+    standard seats in that case would be a lie of the most consequential kind.
+
+    So: take the accessible seats first, then place the rest of the party as
+    close to them as the room allows. Proximity is the whole point - a
+    companion seated fifteen rows away is not a companion.
+    """
+    row_count = auditorium.row_count
+
+    def pick(kind: SeatKind, count: int) -> list[Seat]:
+        pool = [s for s in auditorium.open_seats() if s.kind is kind]
+        pool.sort(key=lambda s: -model.score(s, row_count=row_count))
+        return pool[:count]
+
+    spaces = pick(SeatKind.WHEELCHAIR, request.wheelchair_spaces)
+    if len(spaces) < request.wheelchair_spaces:
+        return []                       # the room cannot seat this party
+
+    # Companions go beside the spaces when possible; a companion seat in
+    # another row is worse than useless, so same-row candidates come first.
+    space_rows = {s.row_index for s in spaces}
+    companions = [s for s in auditorium.open_seats() if s.kind is SeatKind.COMPANION]
+    companions.sort(
+        key=lambda s: (s.row_index not in space_rows,
+                       -model.score(s, row_count=row_count))
+    )
+    companions = companions[: request.companion_seats]
+    if len(companions) < request.companion_seats:
+        return []
+
+    accessible = tuple(spaces + companions)
+    parts: list[tuple[Seat, ...]] = [accessible] if accessible else []
+
+    remaining = request.general_seats
+    if remaining:
+        anchor_row = min(space_rows) if space_rows else 0
+        taken = {s.id for s in accessible}
+
+        def near(run: tuple[Seat, ...]) -> tuple[int, float]:
+            return (abs(run[0].row_index - anchor_row),
+                    -_mean_quality(run, model, row_count))
+
+        runs = [
+            run
+            for row in auditorium.rows()
+            for run in _runs(row, remaining, request.admits)
+            if not ({s.id for s in run} & taken)
+        ]
+        if runs:
+            parts.append(min(runs, key=near))
+        else:
+            # No block that size: fall back to the nearest individual seats,
+            # which is a worse arrangement and will score as one.
+            singles = sorted(
+                (s for s in auditorium.open_seats()
+                 if request.admits(s) and s.id not in taken),
+                key=lambda s: (abs(s.row_index - anchor_row),
+                               -model.score(s, row_count=row_count)),
+            )[:remaining]
+            if not singles:
+                return []
+            parts.extend((s,) for s in singles)
+
+    seats = tuple(sorted(
+        (s for part in parts for s in part), key=lambda s: (s.row_index, s.col_index)
+    ))
+    if not seats:
+        return []
+    tupled = tuple(parts)
+    cohesion = (
+        Cohesion.CONTIGUOUS if len(tupled) == 1 and not _has_aisle_break(seats)
+        else _classify_split(tupled)
+    )
+    return [
+        SeatGroup(seats, cohesion, _mean_quality(seats, model, row_count),
+                  request.party_size, tupled)
+    ][:limit]
 
 
 def accessible_capacity(auditorium: Auditorium) -> tuple[int, int]:

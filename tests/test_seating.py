@@ -216,3 +216,95 @@ class TestAccessibility:
 
 def test_normalize_geometry_on_empty_input():
     assert normalize_geometry([]) == ()
+
+
+class TestSeatPreferencesAreHonoured:
+    """`SeatingPrefs` used to be collected and then ignored.
+
+    `find_groups` was called with the party size and `allow_split` only, so a
+    party asking for accessible seating got ordinary seats, a party asking for
+    recliners got whatever was free, and a party that said it did not mind
+    splitting up was still scored as though it did.
+    """
+
+    def room(self, layout):
+        from screenwatch.seating.render import build_auditorium
+
+        return build_auditorium("v", "1", layout)
+
+    # -- accessible seats are not general stock ------------------------
+    def test_wheelchair_seats_are_not_handed_to_a_party_that_did_not_ask(self):
+        from screenwatch.seating.groups import SeatRequest, find_groups
+
+        # The only run of three includes the wheelchair bay and its companion.
+        room = self.room(["××wc.××"])
+        groups = find_groups(room, SeatRequest(party_size=3))
+        for group in groups:
+            kinds = {s.kind for s in group.seats}
+            assert SeatKind.WHEELCHAIR not in kinds
+            assert SeatKind.COMPANION not in kinds
+
+    def test_a_wheelchair_bay_breaks_adjacency_rather_than_being_stepped_over(self):
+        from screenwatch.seating.groups import SeatRequest, find_groups
+
+        # Two free standard seats, a wheelchair bay between them. That is not
+        # a pair of neighbouring seats.
+        room = self.room([".w.", "..."])
+        groups = find_groups(room, SeatRequest(party_size=2))
+        assert groups
+        assert all(g.seats[0].row_index == 1 for g in groups)
+
+    def test_a_party_needing_a_space_gets_the_space_and_a_companion_beside_it(self):
+        from screenwatch.seating.groups import Cohesion, SeatRequest, find_groups
+
+        room = self.room(["××××××", "wc...."])
+        [group] = find_groups(
+            room, SeatRequest(party_size=2, wheelchair_spaces=1, companion_seats=1)
+        )
+        assert {s.kind for s in group.seats} == {
+            SeatKind.WHEELCHAIR, SeatKind.COMPANION
+        }
+        assert group.complete
+        assert group.cohesion is Cohesion.CONTIGUOUS
+
+    def test_the_rest_of_the_party_is_seated_near_the_space_not_across_the_room(self):
+        from screenwatch.seating.groups import SeatRequest, find_groups
+
+        room = self.room(["......", "......", "......", "wc...."])
+        [group] = find_groups(
+            room,
+            SeatRequest(party_size=4, wheelchair_spaces=1, companion_seats=1),
+        )
+        assert group.size == 4
+        # The two general seats sit in, or right beside, the accessible row.
+        general = [s for s in group.seats if s.kind is SeatKind.STANDARD]
+        assert all(abs(s.row_index - 3) <= 1 for s in general)
+
+    def test_no_free_space_means_no_group_rather_than_ordinary_seats(self):
+        from screenwatch.seating.groups import SeatRequest, find_groups
+
+        room = self.room(["......", "......"])          # no accessible seating
+        assert find_groups(
+            room, SeatRequest(party_size=2, wheelchair_spaces=1, companion_seats=1)
+        ) == []
+
+    # -- recliners ------------------------------------------------------
+    def test_requiring_recliners_excludes_standard_seats(self):
+        from screenwatch.seating.groups import RECLINING_KINDS, SeatRequest, find_groups
+
+        room = self.room(["..rr..", "......"])
+        groups = find_groups(room, SeatRequest(party_size=2, kinds=RECLINING_KINDS))
+        assert groups
+        assert all(s.kind in RECLINING_KINDS for g in groups for s in g.seats)
+
+    # -- together=False --------------------------------------------------
+    def test_a_party_happy_to_split_takes_the_best_seats_in_the_room(self):
+        from screenwatch.seating.groups import SeatRequest, find_groups
+
+        # Two together at the very front, or two excellent singles mid-house.
+        room = self.room(["..××××", "×.××.×", "××××××"])
+        [apart] = find_groups(room, SeatRequest(party_size=2, together=False))
+        assert apart.size == 2
+        together = find_groups(room, SeatRequest(party_size=2, together=True))
+        assert together[0].seats[0].row_index == 0        # forced to the front row
+        assert apart.quality >= together[0].quality

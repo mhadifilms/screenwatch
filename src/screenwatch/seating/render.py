@@ -178,7 +178,8 @@ def build_auditorium(
             "......",
         ])
 
-    `.` free, `×`/`x` sold, `o` held, ` ` structural gap, `#` blocked.
+    `.` free, `×`/`x` sold, `o` held, ` ` structural gap, `#` blocked,
+    `w` wheelchair space, `c` companion seat, `r` recliner - all free.
     """
     from .model import Seat, mark_aisles, normalize_geometry
 
@@ -191,6 +192,7 @@ def build_auditorium(
         "#": (SeatStatus.UNAVAILABLE, SeatKind.BLOCKED),
         "w": (SeatStatus.AVAILABLE, SeatKind.WHEELCHAIR),
         "c": (SeatStatus.AVAILABLE, SeatKind.COMPANION),
+        "r": (SeatStatus.AVAILABLE, SeatKind.RECLINER),
     }
     labels = row_labels or "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 

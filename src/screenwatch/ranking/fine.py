@@ -17,7 +17,14 @@ from collections.abc import Callable
 
 from ..seating.estimate import estimate
 from ..seating.estimate import seat_components as estimated_components
-from ..seating.groups import SeatGroup, find_groups
+from ..models import Attribute
+from ..seating.groups import (
+    GENERAL_KINDS,
+    RECLINING_KINDS,
+    SeatGroup,
+    SeatRequest,
+    find_groups,
+)
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.quality import QualityModel
 from .candidate import Option
@@ -48,16 +55,61 @@ def party_fit(group: SeatGroup | None, party_size: int) -> float:
     return round(0.25 * (group.size / max(party_size, 1)), 4)
 
 
-def _seat_components(group: SeatGroup | None, spec: SearchSpec) -> dict[str, float]:
+# Scores for an option whose seats are unknown.
+#
+# Below what a *confirmed but imperfect* grid earns, and that ordering is the
+# point. Set generously, ignorance beat knowledge: an option known to seat the
+# party 2+2 in row three scored worse than one nobody had looked at, so the
+# ranker preferred the unexamined showing and the whole two-phase design
+# inverted. Missing data now sits just under a mediocre real answer and well
+# above a bad one, which is what "we do not know" actually means.
+UNKNOWN_SEATS = {"group_cohesion": 0.45, "seat_quality": 0.45, "party_fit": 0.55}
+
+# Scores for a grid that was read and yielded nothing this party can take.
+#
+# A different fact from "unknown", and it has to score lower, or an option
+# proven unseatable ranks above one nobody has checked. That was the state
+# before: both went through the same neutral branch, so a room with no four
+# seats in it looked exactly like a room nobody had looked at.
+NO_SEATING = {"group_cohesion": 0.0, "seat_quality": 0.0, "party_fit": 0.0}
+
+
+def _seat_components(
+    group: SeatGroup | None, spec: SearchSpec, *, checked: bool = False
+) -> dict[str, float]:
     if group is None:
-        # No seat grid. Neutral-ish values so these options stay comparable
-        # with ones that do have seats, rather than sinking on missing data.
-        return {"group_cohesion": 0.7, "seat_quality": 0.6, "party_fit": 0.6}
+        return dict(NO_SEATING if checked else UNKNOWN_SEATS)
     return {
-        "group_cohesion": group.cohesion_score,
+        # A party that said it does not mind sitting apart is not penalised
+        # for sitting apart. Cohesion is still recorded on the group itself,
+        # so the rationale can describe the arrangement honestly.
+        "group_cohesion": 1.0 if not spec.seating.together else group.cohesion_score,
         "seat_quality": group.quality,
         "party_fit": party_fit(group, spec.party_size),
     }
+
+
+def seat_request(spec: SearchSpec) -> SeatRequest:
+    """Translate ranking's preferences into seating's vocabulary.
+
+    The one place the two layers meet, so a preference that is not handled
+    here is not handled at all.
+
+    Only `RECLINERS` of the `require` attributes is a seat-level constraint;
+    the rest (3D, Atmos, open caption) describe the *screening* and are
+    already applied in phase A by `Preference`. Requiring them again here
+    would filter seats by a property seats do not have.
+    """
+    prefs = spec.seating
+    kinds = RECLINING_KINDS if Attribute.RECLINERS in prefs.require else GENERAL_KINDS
+    return SeatRequest(
+        party_size=spec.party_size,
+        together=prefs.together,
+        allow_split=prefs.allow_split,
+        kinds=kinds,
+        wheelchair_spaces=prefs.wheelchair_spaces,
+        companion_seats=prefs.companion_seats,
+    )
 
 
 def quality_model_for(spec: SearchSpec, venue_id: str) -> QualityModel:
@@ -95,21 +147,20 @@ def apply_seats(option: Option, auditorium: Auditorium, spec: SearchSpec) -> Opt
         return option
 
     group: SeatGroup | None = None
+    checked = False
     if auditorium.has_grid:
-        groups = find_groups(
-            auditorium,
-            spec.party_size,
-            model,
-            allow_split=spec.seating.allow_split,
-        )
+        groups = find_groups(auditorium, seat_request(spec), model)
         group = groups[0] if groups else None
-        option.seat_data = "grid"
+        # A grid was read. If it produced nothing, that is a finding about the
+        # room, not an absence of information.
+        checked = True
+        option.seat_data = "grid" if group else "no_seating"
     else:
         option.seat_data = "count_only" if auditorium.available else "unavailable"
 
     option.auditorium = auditorium
     option.seats = group
-    option.components.update(_seat_components(group, spec))
+    option.components.update(_seat_components(group, spec, checked=checked))
     option.score = weighted(option.components, spec.weights, ALL_COMPONENTS)
     return option
 
@@ -165,5 +216,3 @@ def fine_rank(
     return ranked
 
 
-def seats_needed(spec: SearchSpec) -> int:
-    return spec.party_size + spec.seating.companion_seats
