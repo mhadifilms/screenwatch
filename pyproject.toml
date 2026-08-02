@@ -11,7 +11,17 @@ dependencies = [
 
 [project.optional-dependencies]
 api = ["fastapi>=0.110", "uvicorn>=0.27"]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "fastapi>=0.110", "uvicorn>=0.27"]
+# Chromium, for the two places a Cloudflare challenge has to be cleared:
+# Music Box's Sucuri interstitial and Cinemark's seat map. Optional because
+# every other source answers a plain client, and `BrowserTransport` raises
+# `BrowserUnavailable` rather than failing a search when it is absent.
+browser = ["playwright>=1.40"]
+dev = [
+    "pytest>=8", "pytest-asyncio>=0.23",
+    "fastapi>=0.110", "uvicorn>=0.27",
+    "ruff>=0.6",          # the ruleset is pinned in [tool.ruff.lint] below
+    "playwright>=1.40",
+]
 
 [project.scripts]
 screenwatch-mcp = "screenwatch.mcp.server:main"

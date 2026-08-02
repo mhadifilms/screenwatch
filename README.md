@@ -199,8 +199,7 @@ ruff check src tests                  # ruleset pinned in pyproject.toml
 MCP server (stdio):
 
 ```bash
-claude mcp add screenwatch -- /Users/livestream/screenwatch/.venv/bin/python \
-    -m screenwatch.mcp.server
+claude mcp add screenwatch -- "$PWD/.venv/bin/python" -m screenwatch.mcp.server
 ```
 
 | Tool | Purpose |
