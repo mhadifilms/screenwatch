@@ -590,3 +590,96 @@ class TestSeatFetchIsNeverFatal:
             FakeProvider([screening("amc:1")], room)
         ).search(self.spec(), today=date(2026, 8, 2))
         assert result.options[0].seat_data == "grid"
+
+
+class TestScopeIsReported:
+    """A cap that nobody hears about is indistinguishable from a full search.
+
+    Providers cap venues and days for good reasons, but a search that read
+    three of eleven nearby theatres and found nothing used to report exactly
+    what a search that read all eleven and found nothing reported.
+    """
+
+    def test_clipping_venues_is_recorded(self):
+        from screenwatch.providers.scope import ScopeReporting
+        from screenwatch.service.venues import Venue
+
+        class Capped(ScopeReporting):
+            chain = "amc"
+            max_venues = 2
+
+        provider = Capped()
+        provider._reset_scope()
+        venues = [Venue(venue_id=f"v{i}", name=f"Cinema {i}", chain="amc")
+                  for i in range(5)]
+        assert len(provider._clip_venues(venues)) == 2
+        assert provider.clipped
+        assert "read 2 of 5 matching venues" in provider.clipped[0]
+        assert "Cinema 2" in provider.clipped[0]
+
+    def test_clipping_days_names_the_last_day_actually_checked(self):
+        from screenwatch.providers.scope import ScopeReporting
+
+        class Capped(ScopeReporting):
+            chain = "cinemark"
+            max_days = 2
+
+        provider = Capped()
+        provider._reset_scope()
+        days = [date(2026, 8, d) for d in range(2, 9)]
+        assert provider._clip_days(days) == days[:2]
+        assert "nothing later than 2026-08-03 was checked" in provider.clipped[0]
+
+    def test_scope_notes_do_not_survive_into_the_next_search(self):
+        from screenwatch.providers.scope import ScopeReporting
+        from screenwatch.service.venues import Venue
+
+        class Capped(ScopeReporting):
+            chain = "amc"
+            max_venues = 1
+
+        provider = Capped()
+        provider._reset_scope()
+        provider._clip_venues([Venue(venue_id=f"v{i}", name=str(i), chain="amc")
+                               for i in range(3)])
+        assert provider.clipped
+        provider._reset_scope()
+        assert provider.clipped == ()
+
+    def test_an_uncapped_provider_reports_nothing(self):
+        from screenwatch.providers.scope import ScopeReporting
+        from screenwatch.service.venues import Venue
+
+        class Uncapped(ScopeReporting):
+            chain = "independent"
+            max_venues = None
+
+        provider = Uncapped()
+        provider._reset_scope()
+        venues = [Venue(venue_id=f"v{i}", name=str(i), chain="independent")
+                  for i in range(9)]
+        assert len(provider._clip_venues(venues)) == 9
+        assert provider.clipped == ()
+
+    def test_the_search_result_carries_it_up(self):
+        class Clipping(FakeProvider):
+            clipped = ("amc: read 2 of 5 matching venues",)
+
+        store = Store.memory()
+        service = SearchService([Clipping([screening("amc:1")])], store=store,
+                                directory=VenueDirectory(), transport=object())
+        result = service.search(
+            SearchSpec(work=WorkRef(query=WORK.title)), today=date(2026, 8, 2)
+        )
+        assert result.clipped == ("amc: read 2 of 5 matching venues",)
+        assert not result.complete
+
+    def test_a_full_search_is_marked_complete(self):
+        store = Store.memory()
+        service = SearchService([FakeProvider([screening("amc:1")])], store=store,
+                                directory=VenueDirectory(), transport=object())
+        result = service.search(
+            SearchSpec(work=WorkRef(query=WORK.title)), today=date(2026, 8, 2)
+        )
+        assert result.clipped == ()
+        assert result.complete

@@ -81,6 +81,9 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
             "considered": result.considered,
             "seatmaps_fetched": result.seatmaps_fetched,
             "provider_errors": list(result.provider_errors),
+            # What the providers' caps left unread, so a model reading this
+            # can say "nothing in what I checked" rather than "nothing".
+            "clipped": list(result.clipped),
             "unresolved_titles": list(result.unresolved_titles),
             "options": [option_to_dict(o) for o in result.options[:20]],
         }

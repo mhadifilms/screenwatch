@@ -53,6 +53,15 @@ class SearchResult:
     seatmaps_fetched: int = 0
     unresolved_titles: tuple[str, ...] = ()
     provider_errors: tuple[str, ...] = ()
+    # What the providers' own caps left unread. Not an error - the caps are
+    # deliberate - but the difference between "nothing is on" and "nothing is
+    # on in the part we looked at", which the caller has to be able to see.
+    clipped: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        """Did the search cover everything the spec asked for?"""
+        return not self.clipped and not self.provider_errors
 
     @property
     def best(self) -> Option | None:
@@ -97,10 +106,17 @@ class SearchService:
         return self._transport
 
     # ------------------------------------------------------------------
-    def gather(self, spec: SearchSpec) -> tuple[list[Screening], list[str]]:
-        """Collect raw screenings from every provider the spec touches."""
+    def gather(
+        self, spec: SearchSpec
+    ) -> tuple[list[Screening], list[str], list[str]]:
+        """Collect raw screenings from every provider the spec touches.
+
+        Returns the screenings, the providers that failed, and what the
+        providers that succeeded did not get to.
+        """
         screenings: list[Screening] = []
         errors: list[str] = []
+        clipped: list[str] = []
 
         for provider in self.providers:
             if discover := getattr(provider, "discover", None):
@@ -118,8 +134,9 @@ class SearchService:
                 # must be visible, because a silently missing chain looks
                 # exactly like a chain with nothing on.
                 errors.append(f"{provider.chain}: {type(exc).__name__}: {exc}")
+            clipped.extend(getattr(provider, "clipped", ()))
 
-        return screenings, errors
+        return screenings, errors, clipped
 
     def filter_by_work(self, screenings: list[Screening], spec: SearchSpec) -> list[Screening]:
         """Keep only screenings of the requested film, and only bookable ones."""
@@ -141,7 +158,7 @@ class SearchService:
 
     def search(self, spec: SearchSpec, *, today: date | None = None) -> SearchResult:
         today = today or datetime.now(UTC).date()
-        screenings, errors = self.gather(spec)
+        screenings, errors, clipped = self.gather(spec)
         screenings = self.filter_by_work(screenings, spec)
 
         window = spec.window(today)
@@ -196,6 +213,7 @@ class SearchService:
                 sorted({s.work.title for s in screenings if s.work.work_id.startswith("local:")})
             ),
             provider_errors=tuple(errors),
+            clipped=tuple(clipped),
         )
 
     # ------------------------------------------------------------------

@@ -23,9 +23,10 @@ from ..seating.model import Auditorium
 from ..seating.sources.amc import AmcSeatSource
 from ..service.venues import Venue
 from ..transport import Transport
+from .scope import ScopeReporting
 
 
-class AmcProvider:
+class AmcProvider(ScopeReporting):
     chain = "amc"
 
     def __init__(self, work_resolver: WorkResolver | None = None,
@@ -43,13 +44,14 @@ class AmcProvider:
     def screenings(
         self, spec: SearchSpec, venues: list[Venue], transport: Transport
     ) -> list[Screening]:
+        self._reset_scope()
         out: list[Screening] = []
-        for venue in venues[: self.max_venues]:
+        for venue in self._clip_venues(venues):
             if not venue.market:
                 continue          # cannot build a showtimes URL without the market
             # Anchored on the venue's own date, not UTC's - see `local_today`.
             window = spec.window(venue.today())
-            for day in _days(window.start, window.end, self.max_days):
+            for day in self._clip_days(_days(window.start, window.end)):
                 out.extend(self._one_day(spec, venue, day, transport))
         return out
 
@@ -121,6 +123,8 @@ class AmcProvider:
         return self.seats.fetch(showtime_id, venue_id=option.screening.venue_id)
 
 
-def _days(start: date, end: date, limit: int) -> list[date]:
+def _days(start: date, end: date) -> list[date]:
+    """Every day in the window. Capping is `ScopeReporting._clip_days`' job,
+    so that the days dropped can be reported rather than silently absent."""
     span = (end - start).days + 1
-    return [start + timedelta(days=i) for i in range(min(span, limit))]
+    return [start + timedelta(days=i) for i in range(span)]

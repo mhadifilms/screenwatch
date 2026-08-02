@@ -39,9 +39,10 @@ from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.sources.regal import BOOKING_API, RegalSeatSource
 from ..service.venues import Venue
 from ..transport import Transport
+from .scope import ScopeReporting
 
 
-class RegalProvider:
+class RegalProvider(ScopeReporting):
     chain = "regal"
 
     def __init__(
@@ -49,7 +50,6 @@ class RegalProvider:
         work_resolver: WorkResolver | None = None,
         *,
         max_venues: int = 4,
-        max_days: int = 1,
         retries: int = 5,
         backoff_s: float = 1.5,
         session: requests.Session | None = None,
@@ -61,8 +61,11 @@ class RegalProvider:
         self.booking_api = booking_api
         self._browser = browser
         self.work_resolver = work_resolver or WorkResolver()
+        # No `max_days`: a Regal theatre page carries its whole schedule in
+        # one response, so there is no per-day cost to cap. The parameter used
+        # to exist and was never read, which advertised a limit that did not
+        # apply.
         self.max_venues = max_venues
-        self.max_days = max_days
         self.retries = retries
         self.backoff_s = backoff_s
         self._session = session or requests.Session(impersonate="chrome131")
@@ -111,8 +114,9 @@ class RegalProvider:
     ) -> list[Screening]:
         by_id = {t.venue_id: t for t in self.theatres()}
 
+        self._reset_scope()
         out: list[Screening] = []
-        for venue in venues[: self.max_venues]:
+        for venue in self._clip_venues(venues):
             theatre = by_id.get(venue.venue_id)
             if theatre is None:
                 continue

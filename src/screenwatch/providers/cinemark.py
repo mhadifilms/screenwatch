@@ -46,17 +46,18 @@ from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.sources.cinemark import CinemarkSeatSource
 from ..service.venues import Venue
 from ..transport import Transport
+from .scope import ScopeReporting
 
 
-class CinemarkProvider:
+class CinemarkProvider(ScopeReporting):
     chain = "cinemark"
 
     def __init__(
         self,
         work_resolver: WorkResolver | None = None,
         *,
-        max_venues: int = 3,
-        max_days: int = 1,
+        max_venues: int = 6,
+        max_days: int = 7,
         retries: int = 5,
         backoff_s: float = 1.5,
         session: requests.Session | None = None,
@@ -214,18 +215,19 @@ class CinemarkProvider:
     def screenings(
         self, spec: SearchSpec, venues: list[Venue], transport: Transport
     ) -> list[Screening]:
+        self._reset_scope()
         out: list[Screening] = []
-        for venue in venues[: self.max_venues]:
+        for venue in self._clip_venues(venues):
             if not venue.market:
                 continue
             # Cinemark venues carry no zone until their page is parsed, so this
             # falls back to UTC on the first pass and sharpens once the theatre
             # is known - see `local_today`.
             window = spec.window(venue.today())
-            days = [
+            days = self._clip_days([
                 window.start + timedelta(days=i)
-                for i in range(min((window.end - window.start).days + 1, self.max_days))
-            ]
+                for i in range((window.end - window.start).days + 1)
+            ])
             for day in days:
                 html = self._get(self.adapter.theatre_url(venue.market, day.isoformat()))
                 theatre = self.adapter.parse_theatre(html, venue.market)

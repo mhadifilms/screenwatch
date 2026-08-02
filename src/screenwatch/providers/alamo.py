@@ -34,9 +34,10 @@ from ..ranking.spec import GeoPoint, SearchSpec
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..service.venues import Venue, local_today
 from ..transport import Transport
+from .scope import ScopeReporting
 
 
-class AlamoProvider:
+class AlamoProvider(ScopeReporting):
     chain = "alamo"
 
     def __init__(

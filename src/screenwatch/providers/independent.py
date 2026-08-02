@@ -58,6 +58,7 @@ from ..ranking.spec import GeoPoint, SearchSpec
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..service.venues import Venue
 from ..transport import Transport
+from .scope import ScopeReporting
 
 _DATA = pathlib.Path(__file__).resolve().parents[1] / "data"
 
@@ -69,7 +70,7 @@ def load_venues(path: pathlib.Path | None = None) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8")).get("venues", [])
 
 
-class IndependentProvider:
+class IndependentProvider(ScopeReporting):
     chain = "independent"
 
     def __init__(
@@ -77,10 +78,13 @@ class IndependentProvider:
         work_resolver: WorkResolver | None = None,
         *,
         venues: list[dict] | None = None,
-        max_venues: int = 6,
+        max_venues: int | None = None,
     ) -> None:
         self.work_resolver = work_resolver or WorkResolver()
         self._config = venues if venues is not None else load_venues()
+        # Uncapped by default. The list is curated by hand rather than
+        # crawled, so every venue in it is one the user asked for; a default of
+        # six silently ignored the seventh.
         self.max_venues = max_venues
         self.incomplete: dict[str, str] = {}
 
@@ -106,8 +110,9 @@ class IndependentProvider:
     ) -> list[Screening]:
         by_id = {row["venue_id"]: row for row in self._config}
 
+        self._reset_scope()
         out: list[Screening] = []
-        for venue in venues[: self.max_venues]:
+        for venue in self._clip_venues(venues):
             row = by_id.get(venue.venue_id)
             if not row or not row.get("url"):
                 continue

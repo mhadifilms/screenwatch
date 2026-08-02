@@ -66,6 +66,8 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
             "considered": result.considered,
             "seatmaps_fetched": result.seatmaps_fetched,
             "provider_errors": list(result.provider_errors),
+            "clipped": list(result.clipped),
+            "complete": result.complete,
             "options": [option_to_dict(o) for o in result.options],
         }
 
