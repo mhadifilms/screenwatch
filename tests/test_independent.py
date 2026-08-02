@@ -160,3 +160,164 @@ def test_shipped_venue_config_is_well_formed():
     for row in venues:
         assert row["venue_id"] and row["url"].startswith("http")
         assert row.get("tz")
+
+
+AGILE_PAGE = """
+<div id="day-2026-08-02">
+  <h3 class="film-card__title">The Odyssey in 70mm</h3>
+  <div class="views-row-active-agiletix sales-state--DuringSales">
+    <a href="https://store.coolidge.org/websales/pages/ticketsearchcriteria.aspx?evtinfo=1026376~guid&amp;"
+       class="showtime-ticket__button"><span class="showtime-ticket">
+       <span class="showtime-ticket__time">11:00am</span>
+       <span class="showtime-ticket__venue">MH1</span></span></a>
+  </div>
+  <div class="views-row-active-agiletix sales-state--SoldOut">
+    <a href="https://store.coolidge.org/websales/pages/ticketsearchcriteria.aspx?evtinfo=1026377~guid&amp;"
+       class="showtime-ticket__button"><span class="showtime-ticket">
+       <span class="showtime-ticket__time">8:00pm</span>
+       <span class="showtime-ticket__venue">MH1</span></span></a>
+  </div>
+</div>
+"""
+
+
+class TestAgileLinks:
+    def test_detects_agile_ticketing(self):
+        from screenwatch.adapters.agile.links import has_agile_links
+
+        assert has_agile_links(AGILE_PAGE)
+        assert not has_agile_links(VISTA_PAGE)
+
+    def test_time_is_dug_out_of_the_nested_span(self):
+        """Agile nests the time inside the anchor rather than using its own
+        text, so an anchor-text parser finds nothing."""
+        from screenwatch.adapters.agile.links import extract
+
+        shows = extract(AGILE_PAGE, default_date=date(2026, 8, 2))
+        assert len(shows) == 2
+        assert shows[0].starts_at_local == datetime(2026, 8, 2, 11, 0)
+
+    def test_sales_state_gives_real_availability(self):
+        from screenwatch.adapters.agile.links import extract
+
+        shows = extract(AGILE_PAGE, default_date=date(2026, 8, 2))
+        assert shows[0].on_sale and not shows[0].sold_out
+        assert shows[1].sold_out
+
+    def test_unknown_states_are_not_guessed_as_on_sale(self):
+        from screenwatch.adapters.agile.links import extract
+
+        page = AGILE_PAGE.replace("sales-state--DuringSales", "sales-state--Whatever")
+        show = extract(page, default_date=date(2026, 8, 2))[0]
+        assert not show.on_sale and not show.sold_out
+
+    def test_screen_name_is_captured(self):
+        """A rep house's 70mm room is not its digital one."""
+        from screenwatch.adapters.agile.links import extract
+
+        assert extract(AGILE_PAGE, default_date=date(2026, 8, 2))[0].screen == "MH1"
+
+    def test_format_in_the_title_is_classified(self):
+        from screenwatch.adapters.agile.links import extract
+        from screenwatch.models import Projection
+        from screenwatch.presentation import classify_text
+
+        show = extract(AGILE_PAGE, default_date=date(2026, 8, 2))[0]
+        assert classify_text(show.title)[0].projection is Projection.FILM_70MM
+
+
+class TestAgileProvider:
+    def provider(self):
+        return IndependentProvider(venues=[{
+            "venue_id": "coolidge-corner", "name": "Coolidge Corner Theatre",
+            "url": "https://coolidge.org/", "lat": 42.34, "lon": -71.12,
+            "tz": "America/New_York",
+        }])
+
+    def spec(self):
+        return SearchSpec(work=WorkRef(query="*"),
+                          date_window=DateWindow(date(2026, 8, 1), date(2026, 8, 9)))
+
+    def test_agile_venues_produce_screenings(self):
+        p = self.provider()
+        shows = p.screenings(self.spec(), p.discover(self.spec()),
+                             FakeTransport(AGILE_PAGE))
+        assert len(shows) == 2
+
+    def test_sold_out_survives_into_the_screening(self):
+        from screenwatch.models import Availability
+
+        p = self.provider()
+        shows = p.screenings(self.spec(), p.discover(self.spec()),
+                             FakeTransport(AGILE_PAGE))
+        assert {s.availability for s in shows} == {
+            Availability.SELLABLE, Availability.SOLD_OUT
+        }
+
+    def test_film_print_format_reaches_the_screening(self):
+        from screenwatch.models import Projection
+
+        p = self.provider()
+        show = p.screenings(self.spec(), p.discover(self.spec()),
+                            FakeTransport(AGILE_PAGE))[0]
+        assert show.presentation.projection is Projection.FILM_70MM
+
+
+class TestDateContainerVsPicker:
+    """Every listing page carries a date *picker* as well as its listings, and
+    in isolation a picker entry looks exactly like a day heading.
+
+    Taking the nearest preceding date without distinguishing them dated the
+    Coolidge's entire schedule to September — the last entry in its calendar
+    widget — instead of today.
+    """
+
+    PICKER_THEN_SHOWS = """
+    <table><tr>
+      <td id="showtimes_calendar-2026-09-05" class="future">5</td>
+    </tr></table>
+    <h3 class="film-card__title">The Odyssey in 70mm</h3>
+    <div class="views-row-active-agiletix sales-state--DuringSales">
+      <a href="https://store.coolidge.org/websales/pages/ticketsearchcriteria.aspx?evtinfo=1~g&amp;">
+        <span class="showtime-ticket__time">11:00am</span></a>
+    </div>
+    """
+
+    GROUPED = """
+    <a class="day-selector-day" id="day-selector-day-2026-09-05">5</a>
+    <div class="calendar-list-day" id="calendar-list-day-2026-08-02">
+      <h4><a class="title">Good Morning</a></h4>
+      <a href="https://t.metrograph.com/Ticketing/visSelectTickets.aspx?cinemacode=9999&txtSessionId=1">11:00am</a>
+    </div>
+    """
+
+    def test_a_table_cell_picker_is_not_treated_as_a_day_heading(self):
+        from screenwatch.adapters.agile.links import extract
+
+        show = extract(self.PICKER_THEN_SHOWS, default_date=date(2026, 8, 1))[0]
+        assert show.starts_at_local.date() == date(2026, 8, 1)
+
+    def test_an_anchor_picker_is_not_treated_as_a_day_heading(self):
+        from screenwatch.adapters.vista.links import extract
+
+        show = extract(self.GROUPED, default_date=date(2026, 8, 1))[0]
+        assert show.starts_at_local.date() == date(2026, 8, 2), (
+            "the wrapping div should win over the preceding anchor picker"
+        )
+
+    def test_a_real_block_container_still_sets_the_date(self):
+        from screenwatch.adapters.vista.links import nearest_date_before
+
+        html = '<div id="calendar-list-day-2026-08-02"><a>x</a>'
+        assert nearest_date_before(html, len(html), date(2026, 1, 1)) == date(2026, 8, 2)
+
+    def test_no_container_falls_back_to_the_default(self):
+        from screenwatch.adapters.vista.links import nearest_date_before
+
+        assert nearest_date_before("<html></html>", 5, date(2026, 8, 1)) == date(2026, 8, 1)
+
+    def test_a_malformed_date_falls_back_rather_than_raising(self):
+        from screenwatch.adapters.vista.links import nearest_date_before
+
+        html = '<div id="day-2026-13-45">'
+        assert nearest_date_before(html, len(html), date(2026, 8, 1)) == date(2026, 8, 1)

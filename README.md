@@ -230,18 +230,29 @@ True)` restores blocking, and exists for the one genuinely crawler-shaped part
 of the system — the scheduler, which polls on a timer with no human in the
 loop.
 
-## Independents: two strategies
+## Independents: three strategies, no per-venue parsers
 
 1. **schema.org `ScreeningEvent`** where it is real.
-2. **Vista ticket links** where it is not. Vista runs an enormous share of art
-   houses, and venues embed `visSelectTickets.aspx?cinemacode=&txtSessionId=`
-   anchors right beside each showtime. The link, its anchor text (the time),
-   and the nearest preceding title reconstruct the listing with no per-venue
-   parser. Metrograph yields 183 showtimes across 20 dates this way.
+2. **Vista ticket links** — `visSelectTickets.aspx?cinemacode=&txtSessionId=`.
+   Metrograph: 183 showtimes across 20 dates.
+3. **Agile WebSales links** — `ticketsearchcriteria.aspx?evtinfo=`. These also
+   carry a real sales state and the screen name. The Coolidge: 24 showtimes
+   including **"The Odyssey in 70mm" on screen MH1** — the rep-house film-print
+   case the whole presentation model exists for.
+
+Vista and Agile between them run a large majority of US art houses, so two
+extractors cover the long tail without a line of venue-specific code.
 
 Deliberately structural, not CSS-based: class names differ per venue and change
-on redesign, but "the anchor text of a Vista link is the showtime" holds because
-it is how listings are *shaped*.
+on redesign, but "the anchor text of a ticket link is the showtime, and the
+nearest heading above it is the film" holds because it is how listings are
+*shaped*.
+
+One trap worth naming. Every listing page also renders a date **picker**, and
+in isolation a picker entry is indistinguishable from a day heading — taking
+the nearest preceding date dated the Coolidge's whole schedule to September.
+Day groupings are block containers; navigation is anchors and table cells, and
+`DATE_CONTAINER` encodes exactly that.
 
 ## Watches
 

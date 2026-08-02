@@ -35,10 +35,34 @@ VISTA_LINK = re.compile(
     re.I,
 )
 
-# `calendar-list-day-2026-08-02`, `day-2026-08-02`, `data-date="2026-08-02"`.
-_DATE_ANCHOR = re.compile(
-    r'(?:id|data-date|data-vars-ga-label)="[^"]*?(\d{4}-\d{2}-\d{2})[^"]*"'
+# A date that groups showtimes, e.g. `<div id="calendar-list-day-2026-08-02">`.
+#
+# Restricted to block containers on purpose. Every listing page also carries a
+# date *picker*, and its entries look identical in isolation - Metrograph's is
+# `<a id="day-selector-day-2026-08-02">`, the Coolidge's is
+# `<td id="showtimes_calendar-2026-09-05">`. Taking the nearest preceding date
+# without this filter picked a picker entry and dated the Coolidge's entire
+# schedule to September. Navigation is anchors and table cells; day groupings
+# are block elements.
+DATE_CONTAINER = re.compile(
+    r'<(?:div|section|article|li|ul|main)\b[^>]*'
+    r'(?:id|data-date|data-day|data-vars-ga-label)="[^"]*?'
+    r'(\d{4}-\d{2}-\d{2})[^"]*"'
 )
+_DATE_ANCHOR = DATE_CONTAINER
+
+
+def nearest_date_before(html: str, pos: int, default: date_cls) -> date_cls:
+    """The day container this position sits under, or `default`."""
+    best = None
+    for m in DATE_CONTAINER.finditer(html, 0, pos):
+        best = m
+    if best is None:
+        return default
+    try:
+        return date_cls.fromisoformat(best.group(1))
+    except ValueError:
+        return default
 _TITLE = re.compile(
     r'<(?:h[1-6]|a)[^>]*class="[^"]*title[^"]*"[^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})',
     re.I,
@@ -95,13 +119,9 @@ def extract(html: str, *, default_date: date_cls) -> list[VistaShowtime]:
     for match in VISTA_LINK.finditer(html):
         label = html_lib.unescape(match.group("label")).strip()
 
-        # A date container before the link wins over the caller's default;
+        # A day container around the link wins over the caller's default;
         # multi-day listings group by date this way.
-        raw_date = _nearest_before(_DATE_ANCHOR, html, match.start())
-        try:
-            on = date_cls.fromisoformat(raw_date) if raw_date else default_date
-        except ValueError:
-            on = default_date
+        on = nearest_date_before(html, match.start(), default_date)
 
         when = parse_clock(label, on)
         if when is None:

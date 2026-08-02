@@ -14,7 +14,8 @@
     "A decorative venue is not a broken config. It is a venue that needs a",
     "per-venue HTML fallback parser, and it stays listed so that work is",
     "visible instead of the venue silently vanishing.",
-    "markup: 'vista-links' means showtimes come from embedded Vista ticket anchors rather than schema.org."
+    "markup: 'vista-links' means showtimes come from embedded Vista ticket anchors rather than schema.org.",
+    "markup: 'agile-links' means showtimes come from Agile WebSales anchors, which additionally carry a sales state and screen name."
   ],
   "schema_version": 1,
   "venues": [
@@ -81,8 +82,8 @@
       "lat": 42.3421,
       "lon": -71.1211,
       "tz": "America/New_York",
-      "markup": "unknown",
-      "notes": "Agile Ticketing."
+      "markup": "agile-links",
+      "notes": "Agile WebSales at store.coolidge.org. 24 showtimes incl. 'The Odyssey in 70mm' on screen MH1; sales-state gives real availability."
     }
   ]
 }

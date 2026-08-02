@@ -19,11 +19,17 @@ rather than an empty result, because "this venue needs an HTML fallback" and
 So there are two strategies, tried in order:
 
   1. schema.org `ScreeningEvent` markup;
-  2. **Vista ticket links** - the `visSelectTickets.aspx?cinemacode=&txtSessionId=`
-     anchors that Vista-backed venues embed beside each showtime. Vista runs an
-     enormous share of art houses, and the link plus its anchor text plus the
-     nearest preceding title is enough to reconstruct the listing without any
-     per-venue parser. Metrograph yields 183 showtimes across 20 dates this way.
+  2. **Vista ticket links** - `visSelectTickets.aspx?cinemacode=&txtSessionId=`
+     anchors that Vista-backed venues embed beside each showtime. Metrograph
+     yields 183 showtimes across 20 dates this way, with no per-venue parser.
+  3. **Agile WebSales links** - `ticketsearchcriteria.aspx?evtinfo=` anchors,
+     the other big art-house engine. These additionally carry a real sales
+     state and the screen name. The Coolidge yields 24 showtimes including
+     "The Odyssey in 70mm" on screen MH1 - the rep-house film-print case the
+     whole presentation model exists for.
+
+Between them, Vista and Agile cover a large majority of US art houses without
+a line of venue-specific code.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from zoneinfo import ZoneInfo
 
 from ..adapters.base import ParseError
 from ..adapters.generic.jsonld import IncompleteStructuredData, JsonLdScreenings
+from ..adapters.agile.links import extract as extract_agile, has_agile_links
 from ..adapters.vista.links import extract as extract_vista, has_vista_links
 from ..identity.resolve import WorkResolver
 from ..models import Availability
@@ -121,6 +128,9 @@ class IndependentProvider:
             if not observations and has_vista_links(html):
                 out.extend(self._from_vista(spec, venue, html, tz, window, today))
                 continue
+            if not observations and has_agile_links(html):
+                out.extend(self._from_agile(spec, venue, html, tz, window, today))
+                continue
             for obs in observations:
                 local = obs.key.starts_at_utc.astimezone(tz).replace(tzinfo=None)
                 if not window.contains(local.date()):
@@ -175,6 +185,45 @@ class IndependentProvider:
                     deeplink=show.url,
                     distance_km=venue.distance_km(spec.location.origin),
                     sources=("vista:links",),
+                )
+            )
+        return out
+
+    def _from_agile(self, spec, venue, html, tz, window, today) -> list[Screening]:
+        """Reconstruct listings from Agile WebSales links.
+
+        Richer than Vista: a real sales state and the screen name come along
+        for free, so sold-out showings are known rather than assumed.
+        """
+        out: list[Screening] = []
+        for show in extract_agile(html, default_date=today):
+            if not window.contains(show.starts_at_local.date()):
+                continue
+            resolution = self.work_resolver.resolve(
+                venue.venue_id, show.event_id, show.title
+            )
+            if not resolution.analysis.is_bookable:
+                continue
+            out.append(
+                Screening(
+                    screening_id=f"agile:{show.host}:{show.event_id}",
+                    work=resolution.work,
+                    venue_id=venue.venue_id,
+                    venue_name=venue.name,
+                    chain=self.chain,
+                    starts_at_utc=show.starts_at_local.replace(tzinfo=tz)
+                                                       .astimezone(timezone.utc),
+                    starts_at_local=show.starts_at_local,
+                    presentation=assume_digital(resolution.analysis.presentation),
+                    availability=(
+                        Availability.SOLD_OUT if show.sold_out
+                        else Availability.SELLABLE if show.on_sale
+                        else Availability.UNKNOWN
+                    ),
+                    deeplink=show.url,
+                    distance_km=venue.distance_km(spec.location.origin),
+                    screen_id=show.screen or "",
+                    sources=("agile:links",),
                 )
             )
         return out
