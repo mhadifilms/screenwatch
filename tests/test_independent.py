@@ -400,3 +400,132 @@ class TestTextualDayHeadings:
 
     def test_nonsense_dates_fall_back(self):
         assert self.parse("<h3>Sun Feb 31</h3>") == date(2026, 8, 1)
+
+
+LISTING_PAGE = """
+<h2>Now Playing</h2>
+<div class="playing-this-week-block__film">
+  <div class="playing-this-week-block_film-title"><h4><a href="/film/a-life-illuminated/">A Life Illuminated</a></h4></div>
+  <div class="playing-this-week-block__showtimes">
+    <p class="playing-this-week-block__date">Sunday, August 2, 2026</p>
+    <p><a href="/film/a-life-illuminated//#showtimes">12:50 PM</a></p>
+  </div>
+</div>
+"""
+
+HIDDEN_DATE_PAGE = """
+<h3>Theatre &amp; Box Office</h3>
+<h4>Hercules</h4>
+<a class="btn" href="/order/add-tickets/15690/nojs">
+  <h4><span class="visually-hidden">Sunday, Aug 2</span>11:00am</h4> BUY TICKETS</a>
+"""
+
+
+class TestOwnSiteListings:
+    """Venues on no shared platform still share one shape: a link whose text
+    is a time. Requiring the *link* is what keeps it safe — page copy is full
+    of times ("doors at 7:00 PM") and matching bare text would drag them in.
+    """
+
+    def extract(self, html, on=date(2026, 8, 2), base=""):
+        from screenwatch.adapters.generic.listing import extract
+
+        return extract(html, default_date=on, base_url=base)
+
+    def test_finds_a_clickable_showtime(self):
+        shows = self.extract(LISTING_PAGE)
+        assert len(shows) == 1
+        assert shows[0].starts_at_local == datetime(2026, 8, 2, 12, 50)
+
+    def test_title_is_the_nearest_heading_not_a_far_off_banner(self):
+        """Pattern priority once beat proximity, and Roxie came back with the
+        same film name on all 34 of its showtimes."""
+        assert self.extract(LISTING_PAGE)[0].title == "A Life Illuminated"
+
+    def test_section_furniture_is_not_mistaken_for_a_film(self):
+        page = '<h2>Now Playing</h2><a href="/x">7:00 PM</a>'
+        assert self.extract(page) == []
+
+    def test_relative_urls_are_resolved(self):
+        show = self.extract(LISTING_PAGE, base="https://roxie.com")[0]
+        assert show.url.startswith("https://roxie.com/")
+
+    def test_bare_text_times_are_ignored(self):
+        """Only clickable times count."""
+        assert self.extract("<h4>Hercules</h4><p>Doors at 7:00 PM</p>") == []
+
+    def test_a_hidden_accessibility_date_beats_any_container_guess(self):
+        """Music Box puts the day in a visually-hidden span for screen
+        readers, which makes it the most reliable signal on the page."""
+        show = self.extract(HIDDEN_DATE_PAGE, on=date(2026, 1, 1))[0]
+        assert show.starts_at_local.date() == date(2026, 8, 2)
+
+    def test_extra_link_text_does_not_defeat_the_time(self):
+        """The anchor reads "11:00am BUY TICKETS"; strict whole-string
+        matching rejected it and dropped all twelve Music Box showtimes."""
+        show = self.extract(HIDDEN_DATE_PAGE)[0]
+        assert (show.starts_at_local.hour, show.starts_at_local.minute) == (11, 0)
+
+    def test_the_same_showing_linked_twice_is_deduped(self):
+        doubled = LISTING_PAGE + LISTING_PAGE.split("<h2>Now Playing</h2>")[1]
+        assert len(self.extract(doubled)) == 1
+
+
+class TestWrittenDates:
+    def parse(self, text, default=date(2026, 8, 1)):
+        from screenwatch.adapters.listing_common import parse_written_date
+
+        return parse_written_date(text, default)
+
+    def test_short_and_long_month_names(self):
+        assert self.parse("Sunday, Aug 2") == date(2026, 8, 2)
+        assert self.parse("Sunday, August 2, 2026") == date(2026, 8, 2)
+
+    def test_an_explicit_year_is_honoured(self):
+        assert self.parse("Fri, Jan 3, 2027") == date(2027, 1, 3)
+
+    def test_a_yearless_january_read_in_december_rolls_forward(self):
+        assert self.parse("Mon Jan 5", default=date(2026, 12, 28)) == date(2027, 1, 5)
+
+    def test_nonsense_returns_none(self):
+        assert self.parse("Sunday, Feb 31") is None
+        assert self.parse("not a date") is None
+
+
+class TestBrowserFetchFlag:
+    def test_browser_venues_use_the_browser(self):
+        """Music Box serves 1.3KB of Sucuri JavaScript to a plain client."""
+        calls = []
+
+        class FakeBrowser:
+            @staticmethod
+            def text(url):
+                calls.append(url)
+                return HIDDEN_DATE_PAGE
+
+        p = IndependentProvider(venues=[{
+            "venue_id": "music-box", "name": "Music Box", "url": "https://mb.test/",
+            "tz": "America/Chicago", "fetch": "browser",
+        }])
+        import screenwatch.providers.independent as mod
+
+        original = mod.shared_browser
+        mod.shared_browser = lambda **kw: FakeBrowser()
+        try:
+            spec = SearchSpec(work=WorkRef(query="*"),
+                              date_window=DateWindow(date(2026, 8, 1), date(2026, 8, 9)))
+            shows = p.screenings(spec, p.discover(spec), FakeTransport("<html></html>"))
+        finally:
+            mod.shared_browser = original
+
+        assert calls == ["https://mb.test/"]
+        assert len(shows) == 1
+
+    def test_plain_venues_do_not_start_a_browser(self):
+        p = IndependentProvider(venues=[{
+            "venue_id": "roxie", "name": "Roxie", "url": "https://roxie.test/",
+            "tz": "America/Los_Angeles",
+        }])
+        spec = SearchSpec(work=WorkRef(query="*"),
+                          date_window=DateWindow(date(2026, 8, 1), date(2026, 8, 9)))
+        assert len(p.screenings(spec, p.discover(spec), FakeTransport(LISTING_PAGE))) == 1

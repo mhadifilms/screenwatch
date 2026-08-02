@@ -27,9 +27,12 @@ So there are two strategies, tried in order:
      state and the screen name. The Coolidge yields 24 showtimes including
      "The Odyssey in 70mm" on screen MH1 - the rep-house film-print case the
      whole presentation model exists for.
+  4. **Own-site listings** - venues on no shared platform at all. What they
+     still share is a link whose text is a time. Roxie: 34. Music Box: 12.
 
-Between them, Vista and Agile cover a large majority of US art houses without
-a line of venue-specific code.
+Some venues sit behind a JS interstitial (Music Box uses Sucuri, which serves
+1.3KB of obfuscated JavaScript to a plain client). Those are marked
+`fetch: browser` in the config and read through the browser transport.
 """
 
 from __future__ import annotations
@@ -41,7 +44,9 @@ from zoneinfo import ZoneInfo
 
 from ..adapters.base import ParseError
 from ..adapters.generic.jsonld import IncompleteStructuredData, JsonLdScreenings
+from ..adapters.generic.listing import extract as extract_listing
 from ..adapters.agile.links import extract as extract_agile, has_agile_links
+from ..browser import BrowserUnavailable, shared_browser
 from ..adapters.vista.links import extract as extract_vista, has_vista_links
 from ..identity.resolve import WorkResolver
 from ..models import Availability
@@ -107,7 +112,7 @@ class IndependentProvider:
             if not row or not row.get("url"):
                 continue
             try:
-                html = transport.get(row["url"]).text
+                html = self._fetch(row, transport)
             except Exception:                                   # noqa: BLE001
                 continue
 
@@ -131,6 +136,12 @@ class IndependentProvider:
             if not observations and has_agile_links(html):
                 out.extend(self._from_agile(spec, venue, html, tz, window, today))
                 continue
+            if not observations:
+                found = self._from_listing(spec, venue, html, tz, window, today,
+                                           row["url"])
+                if found:
+                    out.extend(found)
+                    continue
             for obs in observations:
                 local = obs.key.starts_at_utc.astimezone(tz).replace(tzinfo=None)
                 if not window.contains(local.date()):
@@ -185,6 +196,51 @@ class IndependentProvider:
                     deeplink=show.url,
                     distance_km=venue.distance_km(spec.location.origin),
                     sources=("vista:links",),
+                )
+            )
+        return out
+
+    def _fetch(self, row: dict, transport: Transport) -> str:
+        """Read a venue page, through a browser when the config says so.
+
+        Sucuri and friends serve a JavaScript interstitial to plain clients -
+        Music Box returns 1.3KB of obfuscated script instead of its listings.
+        """
+        if row.get("fetch") == "browser":
+            try:
+                return shared_browser().text(row["url"])
+            except BrowserUnavailable:
+                return transport.get(row["url"]).text
+        return transport.get(row["url"]).text
+
+    def _from_listing(self, spec, venue, html, tz, window, today, base_url) -> list[Screening]:
+        """Reconstruct listings from a venue's own clickable showtimes."""
+        out: list[Screening] = []
+        for show in extract_listing(html, default_date=today, base_url=base_url):
+            if not window.contains(show.starts_at_local.date()):
+                continue
+            resolution = self.work_resolver.resolve(
+                venue.venue_id, show.title, show.title
+            )
+            if not resolution.analysis.is_bookable:
+                continue
+            out.append(
+                Screening(
+                    screening_id=f"listing:{venue.venue_id}:"
+                                 f"{int(show.starts_at_local.timestamp())}:"
+                                 f"{resolution.analysis.match_key}",
+                    work=resolution.work,
+                    venue_id=venue.venue_id,
+                    venue_name=venue.name,
+                    chain=self.chain,
+                    starts_at_utc=show.starts_at_local.replace(tzinfo=tz)
+                                                       .astimezone(timezone.utc),
+                    starts_at_local=show.starts_at_local,
+                    presentation=assume_digital(resolution.analysis.presentation),
+                    availability=Availability.UNKNOWN,
+                    deeplink=show.url,
+                    distance_km=venue.distance_km(spec.location.origin),
+                    sources=("listing:own-site",),
                 )
             )
         return out

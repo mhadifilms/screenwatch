@@ -176,7 +176,7 @@ to key off the showtime `status` flipping back, not off seat-level diffs.
 | **Alamo Drafthouse** | ✅ 19 markets, 34 cinemas | ✗ not exposed | One open request per market; self-discovers venues and coordinates |
 | **Regal** | ✅ 402 theatres nationally | ✗ not in payload | `__NEXT_DATA__` blob; Cloudflare challenge is intermittent, cleared by retry |
 | **Cinemark** | ✅ 307 theatres nationally | ✗ **robots.txt disallows** | ASP.NET page; `data-json-model` joined to rendered showtime divs |
-| **Independents** | ✅ schema.org, Vista **or** Agile links | ✗ | 227 showtimes across IFC / Metrograph / Coolidge. Film Forum's markup is decorative and is reported as such |
+| **Independents** | ✅ schema.org, Vista, Agile **or** own-site links | ✗ | 269 showtimes across IFC / Metrograph / Roxie / Coolidge / Music Box. Film Forum's markup is decorative and is reported as such |
 | **C360 / Apple Cinemas** | ✅ 14 venues | ⚠ **counts + room shape** | Warm the session on the landing page, then an open JSON API |
 | Elevent, Agile | ✗ | ✗ | Not started |
 
@@ -189,7 +189,7 @@ API's own vocabulary instead of waiting to meet a surprise in production.
 
 ```bash
 uv venv && uv pip install -e '.[dev,api]'
-python -m pytest                      # 468 tests, offline
+python -m pytest                      # 482 tests, offline
 ```
 
 MCP server (stdio):
@@ -242,7 +242,18 @@ loop.
    including **"The Odyssey in 70mm" on screen MH1** — the rep-house film-print
    case the whole presentation model exists for. IFC Center: 140 more.
 
-**227 showtimes across three art houses, no venue-specific code.**
+4. **Own-site listings** — venues on no shared platform at all. What they
+   still share is a link whose text is a time. Roxie: 34. Music Box: 12.
+
+**269 showtimes across five art houses, no venue-specific code.** Requiring
+the time to be a *link* is what keeps the generic case safe: page copy is full
+of times ("doors at 7:00 PM") and matching bare text would drag all of it in.
+
+Music Box sits behind a Sucuri interstitial that serves 1.3KB of obfuscated
+JavaScript to a plain client, so it is marked `fetch: browser` in the config
+and read through Chromium. It also puts the day in a `visually-hidden` span
+beside each time — accessibility markup again, and the most reliable date
+signal on the page for the same reason AMC's aria chains are.
 
 Getting there meant generalising twice. Two Agile venues ship two different
 shapes: the Coolidge wraps each link in a `sales-state--` div with the time in

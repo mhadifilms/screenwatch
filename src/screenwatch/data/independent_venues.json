@@ -15,7 +15,8 @@
     "per-venue HTML fallback parser, and it stays listed so that work is",
     "visible instead of the venue silently vanishing.",
     "markup: 'vista-links' means showtimes come from embedded Vista ticket anchors rather than schema.org.",
-    "markup: 'agile-links' means showtimes come from Agile WebSales anchors, which additionally carry a sales state and screen name."
+    "markup: 'agile-links' means showtimes come from Agile WebSales anchors, which additionally carry a sales state and screen name.",
+    "fetch: 'browser' reads the page through Chromium, for venues behind a JS interstitial."
   ],
   "schema_version": 1,
   "venues": [
@@ -46,8 +47,8 @@
       "lat": 37.7648,
       "lon": -122.4222,
       "tz": "America/Los_Angeles",
-      "markup": "none",
-      "notes": "WordPress; ticketing on roxie.com itself, no recognised platform signature. Needs recon."
+      "markup": "own-site-listing",
+      "notes": "WordPress, own-site ticketing. 34 showtimes from clickable time links."
     },
     {
       "venue_id": "music-box-chicago",
@@ -56,8 +57,9 @@
       "lat": 41.9494,
       "lon": -87.6595,
       "tz": "America/Chicago",
-      "markup": "none",
-      "notes": "Homepage returns 1.3KB - a JS gate or redirect. Needs a browser fetch."
+      "markup": "own-site-listing",
+      "notes": "Sucuri JS interstitial - a plain client gets 1.3KB of obfuscated script, so this one is read through the browser. 12 showtimes; the day is in a visually-hidden span beside each time.",
+      "fetch": "browser"
     },
     {
       "venue_id": "castro-sf",
@@ -67,7 +69,7 @@
       "lon": -122.4349,
       "tz": "America/Los_Angeles",
       "markup": "none",
-      "notes": "Uses TicketWeb. No extractor yet."
+      "notes": "Now programmed largely as a concert venue (APE/Ticketmaster/TicketWeb); no film showtime markup found."
     },
     {
       "venue_id": "metrograph",
