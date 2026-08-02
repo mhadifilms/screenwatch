@@ -11,7 +11,7 @@ into `Screening`s however it likes, and everything downstream is uniform.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Protocol
 
 from ..identity.normalize import ProductKind
@@ -25,7 +25,7 @@ from ..ranking.spec import SearchSpec
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..transport import Transport
 from .store import Store
-from .venues import VenueDirectory, Venue
+from .venues import Venue, VenueDirectory
 
 
 class Provider(Protocol):
@@ -140,7 +140,7 @@ class SearchService:
         return out
 
     def search(self, spec: SearchSpec, *, today: date | None = None) -> SearchResult:
-        today = today or datetime.now(timezone.utc).date()
+        today = today or datetime.now(UTC).date()
         screenings, errors = self.gather(spec)
         screenings = self.filter_by_work(screenings, spec)
 
@@ -162,7 +162,7 @@ class SearchService:
                 auditorium = provider.fetch_seats(option, self.transport)
             except SeatDataUnavailable:
                 raise
-            except Exception as exc:                            # noqa: BLE001
+            except Exception as exc:
                 # A seat fetch is an enrichment, never a precondition. Any
                 # provider-specific failure - a Cloudflare challenge, a changed
                 # schema, a timeout - degrades this one option to

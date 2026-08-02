@@ -52,7 +52,7 @@ class Cohesion(Enum):
         return self in (Cohesion.CONTIGUOUS, Cohesion.ACROSS_AISLE, Cohesion.SOLO)
 
 
-_COHESION_SCORES: dict["Cohesion", float] = {
+_COHESION_SCORES: dict[Cohesion, float] = {
     Cohesion.CONTIGUOUS: 1.00,
     Cohesion.SOLO: 1.00,
     Cohesion.ACROSS_AISLE: 0.85,

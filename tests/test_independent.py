@@ -529,3 +529,201 @@ class TestBrowserFetchFlag:
         spec = SearchSpec(work=WorkRef(query="*"),
                           date_window=DateWindow(date(2026, 8, 1), date(2026, 8, 9)))
         assert len(p.screenings(spec, p.discover(spec), FakeTransport(LISTING_PAGE))) == 1
+
+
+class TestAgileStateDoesNotBleed:
+    """A showtime with no wrapper of its own must not inherit its
+    neighbour's sales state.
+
+    A fixed-character lookback let an *available* show sitting after a
+    sold-out one report as sold out — suppressing a real seat, which is the
+    worst thing this module can do.
+    """
+
+    MIXED = """
+    <h3 class="film-card__title">The Odyssey</h3>
+    <div class="views-row-active-agiletix sales-state--SoldOut">
+      <a href="https://store.coolidge.org/websales/pages/ticketsearchcriteria.aspx?evtinfo=1~g&amp;">
+        <span class="showtime-ticket__time">1:00pm</span></a>
+    </div>
+    <div class="views-row-active-agiletix">
+      <a href="https://store.coolidge.org/websales/pages/ticketsearchcriteria.aspx?evtinfo=2~g&amp;">
+        <span class="showtime-ticket__time">4:00pm</span></a>
+    </div>
+    """
+
+    def shows(self):
+        from screenwatch.adapters.agile.links import extract
+
+        return extract(self.MIXED, default_date=date(2026, 8, 2))
+
+    def test_the_wrapped_show_keeps_its_state(self):
+        assert self.shows()[0].sold_out
+
+    def test_the_unwrapped_show_does_not_inherit_it(self):
+        later = self.shows()[1]
+        assert not later.sold_out, "an available showing was suppressed as sold out"
+        assert later.sales_state == "unknown"
+
+    def test_the_nearest_wrapper_wins_not_the_farthest(self):
+        """`search` is leftmost-first; with two wrappers in range the farther
+        one used to decide."""
+        from screenwatch.adapters.agile.links import extract
+
+        html = self.MIXED.replace(
+            '<div class="views-row-active-agiletix">',
+            '<div class="views-row-active-agiletix sales-state--DuringSales">',
+        )
+        assert extract(html, default_date=date(2026, 8, 2))[1].on_sale
+
+    def test_the_real_coolidge_page_still_parses(self):
+        assert len(self.__class__ and TestAgileMarkupVariants().extract(AGILE_PAGE,
+                    on=date(2026, 8, 2))) == 2
+
+
+class TestAgileClosedStates:
+    """States that only became visible once the bleed was fixed."""
+
+    def show(self, state):
+        from screenwatch.adapters.agile.links import extract
+
+        html = f'''
+        <h3 class="film-card__title">Sholay</h3>
+        <div class="views-row-active-agiletix sales-state--{state}">
+          <a href="https://s.test/websales/pages/ticketsearchcriteria.aspx?evtinfo=1~g&amp;">
+            <span class="showtime-ticket__time">1:00pm</span></a>
+        </div>'''
+        return extract(html, default_date=date(2026, 8, 2))[0]
+
+    def test_after_event_is_closed_not_sold_out(self):
+        """The room may be half empty; it is simply no longer for sale."""
+        s = self.show("AfterEvent")
+        assert s.closed and not s.sold_out and not s.on_sale
+
+    def test_sales_ended_before_the_event_is_also_closed(self):
+        assert self.show("AfterSalesBeforeEvent").closed
+
+    def test_during_sales_is_open(self):
+        s = self.show("DuringSales")
+        assert s.on_sale and not s.closed
+
+    def test_sold_out_stays_sold_out(self):
+        s = self.show("SoldOut")
+        assert s.sold_out and not s.closed
+
+    def test_an_unknown_state_is_none_of_the_three(self):
+        s = self.show("SomethingNew")
+        assert not (s.on_sale or s.sold_out or s.closed)
+
+    def test_closed_showings_are_not_offered(self):
+        html = f'''
+        <h3 class="film-card__title">Sholay</h3>
+        <div class="views-row-active-agiletix sales-state--AfterEvent">
+          <a href="https://s.test/websales/pages/ticketsearchcriteria.aspx?evtinfo=1~g&amp;">
+            <span class="showtime-ticket__time">1:00pm</span></a>
+        </div>'''
+        p = IndependentProvider(venues=[{
+            "venue_id": "coolidge", "name": "Coolidge", "url": "https://c.test/",
+            "tz": "America/New_York"}])
+        spec = SearchSpec(work=WorkRef(query="*"),
+                          date_window=DateWindow(date(2026, 8, 1), date(2026, 8, 9)))
+        assert p.screenings(spec, p.discover(spec), FakeTransport(html)) == []
+
+
+class TestListingRejectsProse:
+    """A link is necessary but not sufficient.
+
+    `<a href="/visit">Box office open 7:00 PM daily</a>` satisfied the
+    link rule and was emitted as a screening of whatever film sat above it,
+    with /visit as the booking URL.
+    """
+
+    def extract(self, html):
+        from screenwatch.adapters.generic.listing import extract
+
+        return extract(html, default_date=date(2026, 8, 2))
+
+    @pytest.mark.parametrize("label", ["12:50 PM", "11:00am BUY TICKETS",
+                                       "7:35pm Get Tickets", "1:00pm — SOLD OUT"])
+    def test_real_showtime_labels_are_accepted(self, label):
+        from screenwatch.adapters.generic.listing import is_showtime_label
+
+        assert is_showtime_label(label)
+
+    @pytest.mark.parametrize("label", [
+        "Box office open 7:00 PM daily",
+        "Doors at 7:00 PM",
+        "Join us 7:00 PM for a Q&A with the director",
+        "Our cafe closes at 9:00 PM",
+    ])
+    def test_prose_containing_a_time_is_rejected(self, label):
+        from screenwatch.adapters.generic.listing import is_showtime_label
+
+        assert not is_showtime_label(label)
+
+    def test_the_reported_false_positive_no_longer_fires(self):
+        html = ('<h3>Jimmy</h3><p>synopsis</p>'
+                '<a href="/visit">Box office open 7:00 PM daily</a>')
+        assert self.extract(html) == []
+
+    def test_a_genuine_showtime_beside_prose_still_lands(self):
+        html = ('<h3>Jimmy</h3>'
+                '<a href="/visit">Box office open 7:00 PM daily</a>'
+                '<a href="/buy/1">2:50 PM</a>')
+        shows = self.extract(html)
+        assert len(shows) == 1 and shows[0].url == "/buy/1"
+
+
+class TestWindowIsAnchoredOnVenueLocalDate:
+    """A relative window is measured from the venue's day, not UTC's.
+
+    5pm in San Francisco is already tomorrow in UTC, so a UTC anchor dated
+    tonight's undated showings a day forward and a "tonight" search returned
+    nothing at exactly the hour someone would run it.
+    """
+
+    def test_local_today_uses_the_venues_zone(self):
+        from screenwatch.service.venues import local_today
+
+        pacific = local_today("America/Los_Angeles")
+        auckland = local_today("Pacific/Auckland")
+        # Never more than a day apart, and at some hours genuinely different.
+        assert abs((auckland - pacific).days) <= 1
+
+    def test_unknown_zone_falls_back_to_utc_rather_than_raising(self):
+        from datetime import datetime, timezone
+
+        from screenwatch.service.venues import local_today
+
+        assert local_today("Mars/Olympus") == datetime.now(timezone.utc).date()
+        assert local_today(None) == datetime.now(timezone.utc).date()
+
+    def test_venue_today_matches_its_zone(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from screenwatch.service.venues import Venue
+
+        venue = Venue(venue_id="v", name="V", chain="independent",
+                      tz="America/Los_Angeles")
+        assert venue.today() == datetime.now(ZoneInfo("America/Los_Angeles")).date()
+
+    def test_provider_dates_undated_showtimes_in_the_venues_day(self, monkeypatch):
+        """The end-to-end consequence: an undated listing lands on local today."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from screenwatch.providers.independent import IndependentProvider
+        from screenwatch.ranking.spec import SearchSpec, WorkRef
+
+        html = '<h3>Sholay</h3><a href="/buy/1">7:30 PM</a>'
+        rows = [{"venue_id": "roxie", "name": "Roxie", "url": "https://x/",
+                 "tz": "America/Los_Angeles", "lat": 37.7, "lon": -122.4}]
+        provider = IndependentProvider(venues=rows)
+        monkeypatch.setattr(provider, "_fetch", lambda row, transport: html)
+
+        spec = SearchSpec(work=WorkRef(query="Sholay"))
+        found = provider.screenings(spec, provider.discover(spec), transport=None)
+
+        local_today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+        assert found and all(s.starts_at_local.date() == local_today for s in found)

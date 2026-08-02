@@ -13,7 +13,7 @@ estimate is deliberately pessimistic.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, timedelta
 from zoneinfo import ZoneInfo
 
 from curl_cffi import requests
@@ -36,7 +36,7 @@ from ..presentation import assume_digital
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
 from ..seating.model import Auditorium, SeatDataUnavailable
-from ..service.venues import Venue
+from ..service.venues import Venue, local_today
 from ..transport import Transport
 
 API_HEADERS = {
@@ -149,13 +149,6 @@ class C360Provider:
     def screenings(
         self, spec: SearchSpec, venues: list[Venue], transport: Transport
     ) -> list[Screening]:
-        today = datetime.now(timezone.utc).date()
-        window = spec.window(today)
-        days = [
-            window.start + timedelta(days=i)
-            for i in range(min((window.end - window.start).days + 1, self.max_days))
-        ]
-
         by_id = {loc.venue_id: loc for loc in self.locations()}
         out: list[Screening] = []
 
@@ -164,6 +157,13 @@ class C360Provider:
             if loc is None:
                 continue
             tz = ZoneInfo(loc.tz)
+            # The location's own zone is better than the venue record's here,
+            # and the window has to be anchored on its date - see `local_today`.
+            window = spec.window(local_today(loc.tz))
+            days = [
+                window.start + timedelta(days=i)
+                for i in range(min((window.end - window.start).days + 1, self.max_days))
+            ]
             for day in days:
                 payload = self._json(
                     ADVANCE_SHOWS.format(location=loc.location_id, date=day.isoformat())
@@ -200,7 +200,7 @@ class C360Provider:
             venue_id=venue.venue_id,
             venue_name=loc.name,
             chain=self.chain,
-            starts_at_utc=show.starts_at_local.replace(tzinfo=tz).astimezone(timezone.utc),
+            starts_at_utc=show.starts_at_local.replace(tzinfo=tz).astimezone(UTC),
             starts_at_local=show.starts_at_local,
             presentation=assume_digital(self.adapter.classify(show)),
             availability=availability,

@@ -43,22 +43,22 @@ class ProductKind(Enum):
 # (pattern, attribute it implies, product kind it implies)
 # Order matters only for readability; all are applied.
 _VARIANTS: list[tuple[re.Pattern[str], Attribute | None, ProductKind | None]] = [
-    (re.compile(r"\bprivate\s+(?:theatre|theater)\s+rental\b", re.I), None, ProductKind.RENTAL),
-    (re.compile(r"\bprivate\s+(?:screening|watch\s*party)\b", re.I), None, ProductKind.RENTAL),
-    (re.compile(r"\bsensory[\s-]friendly(?:\s+screening)?\b", re.I), Attribute.SENSORY_FRIENDLY, None),
-    (re.compile(r"\bopen[\s-]caption(?:ed|s)?\b", re.I), Attribute.OPEN_CAPTION, None),
-    (re.compile(r"\bclosed[\s-]caption(?:ed|s)?\b", re.I), Attribute.CLOSED_CAPTION, None),
-    (re.compile(r"\baudio[\s-]descri(?:bed|ption)\b", re.I), Attribute.AUDIO_DESCRIPTION, None),
-    (re.compile(r"\bdouble\s+(?:feature|bill)\b", re.I), Attribute.DOUBLE_FEATURE, None),
-    (re.compile(r"\bwith\s+q\s*&\s*a\b|\bq\s*&\s*a\b", re.I), Attribute.Q_AND_A, None),
-    (re.compile(r"\bintroduc(?:ed|tion)\s+by\b", re.I), Attribute.INTRODUCTION, None),
-    (re.compile(r"\b(?:\d+k\s+)?restoration\b|\brestored\b", re.I), Attribute.RESTORATION, None),
-    (re.compile(r"\bsubtitled\b|\bsubtitles?\b", re.I), Attribute.SUBTITLED, None),
-    (re.compile(r"\bdubbed\b", re.I), Attribute.DUBBED, None),
-    (re.compile(r"\bthe\s+met:\s*live\s+in\s+hd\b", re.I), None, ProductKind.EVENT),
-    (re.compile(r"\bmarathon\b|\btriple\s+feature\b|\ball[\s-]nighter\b", re.I), None, ProductKind.EVENT),
-    (re.compile(r"\bfan\s+event\b|\bearly\s+access\b|\badvance\s+screening\b", re.I), None, None),
-    (re.compile(r"\bencore\b|\bre[\s-]?release\b|\banniversary\b", re.I), None, None),
+    (re.compile(r"\bprivate\s+(?:theatre|theater)\s+rental\b", re.IGNORECASE), None, ProductKind.RENTAL),
+    (re.compile(r"\bprivate\s+(?:screening|watch\s*party)\b", re.IGNORECASE), None, ProductKind.RENTAL),
+    (re.compile(r"\bsensory[\s-]friendly(?:\s+screening)?\b", re.IGNORECASE), Attribute.SENSORY_FRIENDLY, None),
+    (re.compile(r"\bopen[\s-]caption(?:ed|s)?\b", re.IGNORECASE), Attribute.OPEN_CAPTION, None),
+    (re.compile(r"\bclosed[\s-]caption(?:ed|s)?\b", re.IGNORECASE), Attribute.CLOSED_CAPTION, None),
+    (re.compile(r"\baudio[\s-]descri(?:bed|ption)\b", re.IGNORECASE), Attribute.AUDIO_DESCRIPTION, None),
+    (re.compile(r"\bdouble\s+(?:feature|bill)\b", re.IGNORECASE), Attribute.DOUBLE_FEATURE, None),
+    (re.compile(r"\bwith\s+q\s*&\s*a\b|\bq\s*&\s*a\b", re.IGNORECASE), Attribute.Q_AND_A, None),
+    (re.compile(r"\bintroduc(?:ed|tion)\s+by\b", re.IGNORECASE), Attribute.INTRODUCTION, None),
+    (re.compile(r"\b(?:\d+k\s+)?restoration\b|\brestored\b", re.IGNORECASE), Attribute.RESTORATION, None),
+    (re.compile(r"\bsubtitled\b|\bsubtitles?\b", re.IGNORECASE), Attribute.SUBTITLED, None),
+    (re.compile(r"\bdubbed\b", re.IGNORECASE), Attribute.DUBBED, None),
+    (re.compile(r"\bthe\s+met:\s*live\s+in\s+hd\b", re.IGNORECASE), None, ProductKind.EVENT),
+    (re.compile(r"\bmarathon\b|\btriple\s+feature\b|\ball[\s-]nighter\b", re.IGNORECASE), None, ProductKind.EVENT),
+    (re.compile(r"\bfan\s+event\b|\bearly\s+access\b|\badvance\s+screening\b", re.IGNORECASE), None, None),
+    (re.compile(r"\bencore\b|\bre[\s-]?release\b|\banniversary\b", re.IGNORECASE), None, None),
 ]
 
 # Noise that survives suffix stripping: trailing separators, empty parens,
@@ -66,12 +66,12 @@ _VARIANTS: list[tuple[re.Pattern[str], Attribute | None, ProductKind | None]] = 
 _FORMAT_WORDS = re.compile(
     r"\b(?:in\s+)?(?:imax\s*)?(?:15/70|70\s*mm|35\s*mm|16\s*mm|nitrate|dcp|4k|2k|3-?d|imax|"
     r"dolby\s+cinema|atmos|screenx|4dx|laser)\b",
-    re.I,
+    re.IGNORECASE,
 )
 _EDGE_JUNK = re.compile(r"^[\s\-–—:,·|()\[\]]+|[\s\-–—:,·|()\[\]]+$")
 _EMPTY_BRACKETS = re.compile(r"\(\s*\)|\[\s*\]")
 _WS = re.compile(r"\s+")
-_ARTICLE = re.compile(r"^(?:the|a|an)\s+", re.I)
+_ARTICLE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 _APOSTROPHE = re.compile(r"['‘’ʼ`]")
 

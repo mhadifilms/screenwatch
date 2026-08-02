@@ -13,7 +13,7 @@ import json
 import pathlib
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..identity.work import TitleLink, Work
 
@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS user_prefs (
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Store:
@@ -136,7 +136,7 @@ class Store:
         self._conn.commit()
 
     @classmethod
-    def memory(cls) -> "Store":
+    def memory(cls) -> Store:
         return cls(":memory:")
 
     def close(self) -> None:

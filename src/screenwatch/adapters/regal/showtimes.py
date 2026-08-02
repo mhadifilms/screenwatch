@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ...models import Attribute, Brand, Presentation, Projection
 from ...presentation import register_chain
@@ -36,7 +36,7 @@ DIRECTORY = "https://graph.regmovies.com/theatres"
 THEATRE = BASE + "/theatres/{path_name}"
 
 _NEXT_DATA = re.compile(
-    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S
+    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL
 )
 _CHALLENGE = "Just a moment"
 
@@ -141,7 +141,7 @@ def extract_next_data(html: str) -> dict:
 def _dt(value: str, *, utc: bool) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if utc:
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     return parsed.replace(tzinfo=None)
 
 

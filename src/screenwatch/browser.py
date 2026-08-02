@@ -100,7 +100,7 @@ class BrowserTransport:
                 return self._page
             try:
                 from playwright.sync_api import sync_playwright
-            except ImportError as exc:                          # noqa: BLE001
+            except ImportError as exc:
                 raise BrowserUnavailable(
                     "playwright is not installed; `pip install playwright && "
                     "playwright install chromium`"
@@ -121,7 +121,7 @@ class BrowserTransport:
                     self._context.pages[0] if self._context.pages
                     else self._context.new_page()
                 )
-            except Exception as exc:                            # noqa: BLE001
+            except Exception as exc:
                 raise BrowserUnavailable(f"could not start Chromium: {exc}") from exc
         return self._page
 
@@ -185,7 +185,7 @@ class BrowserTransport:
                 pass
         self._context = self._page = self._playwright = None
 
-    def __enter__(self) -> "BrowserTransport":
+    def __enter__(self) -> BrowserTransport:
         return self
 
     def __exit__(self, *_exc) -> None:

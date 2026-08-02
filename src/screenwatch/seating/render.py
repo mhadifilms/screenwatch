@@ -180,7 +180,7 @@ def build_auditorium(
 
     `.` free, `×`/`x` sold, `o` held, ` ` structural gap, `#` blocked.
     """
-    from .model import Seat, normalize_geometry, mark_aisles
+    from .model import Seat, mark_aisles, normalize_geometry
 
     codes = {
         ".": (SeatStatus.AVAILABLE, SeatKind.STANDARD),

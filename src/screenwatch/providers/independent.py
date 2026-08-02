@@ -39,15 +39,17 @@ from __future__ import annotations
 
 import json
 import pathlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from ..adapters.agile.links import extract as extract_agile
+from ..adapters.agile.links import has_agile_links
 from ..adapters.base import ParseError
 from ..adapters.generic.jsonld import IncompleteStructuredData, JsonLdScreenings
 from ..adapters.generic.listing import extract as extract_listing
-from ..adapters.agile.links import extract as extract_agile, has_agile_links
+from ..adapters.vista.links import extract as extract_vista
+from ..adapters.vista.links import has_vista_links
 from ..browser import BrowserUnavailable, shared_browser
-from ..adapters.vista.links import extract as extract_vista, has_vista_links
 from ..identity.resolve import WorkResolver
 from ..models import Availability
 from ..presentation import assume_digital
@@ -102,8 +104,6 @@ class IndependentProvider:
     def screenings(
         self, spec: SearchSpec, venues: list[Venue], transport: Transport
     ) -> list[Screening]:
-        today = datetime.now(timezone.utc).date()
-        window = spec.window(today)
         by_id = {row["venue_id"]: row for row in self._config}
 
         out: list[Screening] = []
@@ -116,7 +116,17 @@ class IndependentProvider:
             except Exception:                                   # noqa: BLE001
                 continue
 
-            tz = ZoneInfo(venue.tz) if venue.tz else timezone.utc
+            # "Today" is the venue's today, not UTC's.
+            #
+            # A page that omits the date - most own-site listings - has its
+            # showtimes stamped with `today`, and the search window is measured
+            # from the same day. Taking that from UTC put a San Francisco venue
+            # a day ahead for the seven hours after 5pm local, so the evening's
+            # showings were dated tomorrow and a "tonight" search returned
+            # nothing at exactly the time someone would run it.
+            tz = ZoneInfo(venue.tz) if venue.tz else UTC
+            today = datetime.now(tz).date()
+            window = spec.window(today)
             adapter = JsonLdScreenings(venue.venue_id, url=row["url"])
             observations = []
             try:
@@ -189,7 +199,7 @@ class IndependentProvider:
                     venue_name=venue.name,
                     chain=self.chain,
                     starts_at_utc=show.starts_at_local.replace(tzinfo=tz)
-                                                       .astimezone(timezone.utc),
+                                                       .astimezone(UTC),
                     starts_at_local=show.starts_at_local,
                     presentation=assume_digital(resolution.analysis.presentation),
                     availability=Availability.UNKNOWN,
@@ -234,7 +244,7 @@ class IndependentProvider:
                     venue_name=venue.name,
                     chain=self.chain,
                     starts_at_utc=show.starts_at_local.replace(tzinfo=tz)
-                                                       .astimezone(timezone.utc),
+                                                       .astimezone(UTC),
                     starts_at_local=show.starts_at_local,
                     presentation=assume_digital(resolution.analysis.presentation),
                     availability=Availability.UNKNOWN,
@@ -255,6 +265,8 @@ class IndependentProvider:
         for show in extract_agile(html, default_date=today):
             if not window.contains(show.starts_at_local.date()):
                 continue
+            if show.closed:
+                continue          # sales ended or already screened
             resolution = self.work_resolver.resolve(
                 venue.venue_id, show.event_id, show.title
             )
@@ -268,7 +280,7 @@ class IndependentProvider:
                     venue_name=venue.name,
                     chain=self.chain,
                     starts_at_utc=show.starts_at_local.replace(tzinfo=tz)
-                                                       .astimezone(timezone.utc),
+                                                       .astimezone(UTC),
                     starts_at_local=show.starts_at_local,
                     presentation=assume_digital(resolution.analysis.presentation),
                     availability=(

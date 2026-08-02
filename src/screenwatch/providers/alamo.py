@@ -12,8 +12,6 @@ screening returned.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from curl_cffi import requests
 
 from ..adapters.alamo.schedule import (
@@ -34,7 +32,7 @@ from ..presentation import (
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
 from ..seating.model import Auditorium, SeatDataUnavailable
-from ..service.venues import Venue
+from ..service.venues import Venue, local_today
 from ..transport import Transport
 
 
@@ -124,10 +122,8 @@ class AlamoProvider:
         if not wanted:
             return []
 
-        today = datetime.now(timezone.utc).date()
-        window = spec.window(today)
-
         out: list[Screening] = []
+        windows: dict[str, object] = {}
         for market in {v.market for v in venues if v.market}:
             try:
                 cinemas, sessions = self._market(market)
@@ -139,7 +135,12 @@ class AlamoProvider:
                 cinema = by_id.get(session.cinema_id)
                 if cinema is None or cinema.venue_id not in wanted:
                     continue
-                if not window.contains(session.starts_at_local.date()):
+                # Each cinema's window is anchored on its own date - a market
+                # can straddle zones, and UTC is nobody's - see `local_today`.
+                # Cached per zone: a market call returns ~1100 sessions.
+                if cinema.tz not in windows:
+                    windows[cinema.tz] = spec.window(local_today(cinema.tz))
+                if not windows[cinema.tz].contains(session.starts_at_local.date()):
                     continue
 
                 resolution = self.work_resolver.resolve(

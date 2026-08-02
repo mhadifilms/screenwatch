@@ -14,14 +14,16 @@ from __future__ import annotations
 
 import html as html_lib
 import re
-from datetime import date as date_cls, datetime, time as time_cls
+from datetime import date as date_cls
+from datetime import datetime
+from datetime import time as time_cls
 
 # ---------------------------------------------------------------- times ---
 
-_TIME = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\s*$", re.I)
+_TIME = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\s*$", re.IGNORECASE)
 # The same shape, findable inside longer text. Word-bounded so "1:30pm" in
 # "Doors 1:30pm" matches but a version string or price does not.
-_TIME_IN_TEXT = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\b", re.I)
+_TIME_IN_TEXT = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\b", re.IGNORECASE)
 
 
 def _build(match, on: date_cls) -> datetime:
@@ -77,10 +79,10 @@ _WRITTEN_DAY = re.compile(
     r"(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*[,\s]+"
     r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+"
     r"(\d{1,2})(?:\s*,\s*(\d{4}))?",
-    re.I,
+    re.IGNORECASE,
 )
 _WRITTEN_DAY_HEADING = re.compile(
-    r"<h[1-6][^>]*>\s*(" + _WRITTEN_DAY.pattern + ")", re.I
+    r"<h[1-6][^>]*>\s*(" + _WRITTEN_DAY.pattern + ")", re.IGNORECASE
 )
 
 
@@ -132,9 +134,9 @@ def nearest_date_before(html: str, pos: int, default: date_cls) -> date_cls:
 
 TITLE_CLASSED = re.compile(
     r'<(?:h[1-6]|a)[^>]*class="[^"]*title[^"]*"[^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})',
-    re.I,
+    re.IGNORECASE,
 )
-ANY_HEADING = re.compile(r"<h[1-6][^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})", re.I)
+ANY_HEADING = re.compile(r"<h[1-6][^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})", re.IGNORECASE)
 
 
 def nearest_match_before(pattern: re.Pattern[str], html: str, pos: int) -> str | None:

@@ -15,7 +15,7 @@ from mcp.server import MCPServer
 
 from ..identity.normalize import analyze
 from ..seating.render import to_svg, to_unicode_grid
-from ..service.search import SearchService, SearchResult
+from ..service.search import SearchResult, SearchService
 from ..service.serde import option_to_dict, spec_from_dict, spec_from_json, spec_to_dict
 from ..service.watch import WatchService
 from .schemas import SearchSpecInput

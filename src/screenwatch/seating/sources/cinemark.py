@@ -41,7 +41,7 @@ SEAT_MAP = (
 )
 
 _CHALLENGE = "Just a moment"
-_SEAT = re.compile(r"<button([^>]*\bclass=\"[^\"]*seatBlock[^\"]*\"[^>]*)>", re.I)
+_SEAT = re.compile(r"<button([^>]*\bclass=\"[^\"]*seatBlock[^\"]*\"[^>]*)>", re.IGNORECASE)
 _ATTR = re.compile(r'([a-zA-Z\-]+)="([^"]*)"')
 
 _KIND = {

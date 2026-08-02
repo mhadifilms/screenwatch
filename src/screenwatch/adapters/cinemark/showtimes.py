@@ -43,14 +43,14 @@ _JSON_MODEL = re.compile(r'data-json-model="([^"]{20,})"')
 _SHOWTIME = re.compile(
     r'<div class="showtime"[^>]*data-print-type-name="([^"]*)"[^>]*>\s*'
     r'<a[^>]*href="(/TicketSeatMap/\?[^"]+)"',
-    re.S,
+    re.DOTALL,
 )
 # Coordinates only appear inside the static-map image URL - a Bing
 # virtualearth tile, not a Google maps link, which the first attempt assumed.
 _MAPS_COORDS = re.compile(
     r"(?:virtualearth|maps)[^\"']{0,200}?/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)"
 )
-_RUNTIME = re.compile(r"(?:(\d+)\s*hr)?\s*(?:(\d+)\s*min)?", re.I)
+_RUNTIME = re.compile(r"(?:(\d+)\s*hr)?\s*(?:(\d+)\s*min)?", re.IGNORECASE)
 
 # Longest first so "RealD 3D" wins over "3D" and "Cinemark XD" over "XD".
 _PHRASES: list[tuple[str, Presentation]] = [

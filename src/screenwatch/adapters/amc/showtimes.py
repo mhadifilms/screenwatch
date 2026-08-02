@@ -24,12 +24,12 @@ contain digits and hyphens, so any split heuristic would be wrong.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ... import presentation as pres
+from ...identity.normalize import from_slug as title_from_slug
 from ...models import Availability, FactKey, Observation, Presentation
 from ...rsc import extract_flight
-from ...identity.normalize import from_slug as title_from_slug
 from ...transport import Transport
 from ..base import ParseError
 
@@ -45,10 +45,10 @@ _STATUS = {
 
 # RSC: a showtime object immediately followed by its aria chain.
 _RSC_SHOWTIME = re.compile(
-    r'"showtime":(\{"showtimeId":\d+.*?\}),"aria-describedby":"([^"]+)"', re.S
+    r'"showtime":(\{"showtimeId":\d+.*?\}),"aria-describedby":"([^"]+)"', re.DOTALL
 )
 _SHOWTIME_JSON = re.compile(
-    r'"showtimeId":(\d+).*?"status":"([^"]+)".*?"showDateTimeUtc":"([^"]+)"', re.S
+    r'"showtimeId":(\d+).*?"status":"([^"]+)".*?"showDateTimeUtc":"([^"]+)"', re.DOTALL
 )
 
 # A showtime renders one of three ways, and the id hides somewhere different
@@ -68,12 +68,12 @@ _DOM_TIME = re.compile(
     r'\s*(?:<span class="sr-only">([^<]*)</span>)?\s*'
     r"</(?:a|button)>"
     r'(?:\s*<div id="(\d+)-details")?',
-    re.S,
+    re.DOTALL,
 )
 
 
 def _parse_utc(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
 
 
 def _classify(token: str, venue_id: str, *, strict: bool) -> Presentation:
@@ -131,7 +131,7 @@ class AmcShowtimesRsc:
 
     def parse(self, raw: str, *, observed_at: datetime | None = None,
               strict: bool = True) -> list[Observation]:
-        observed_at = observed_at or datetime.now(timezone.utc)
+        observed_at = observed_at or datetime.now(UTC)
         payload = extract_flight(raw)
 
         out: list[Observation] = []
@@ -178,7 +178,7 @@ class AmcShowtimesDom:
     def parse(self, raw: str, *, venue_id: str | None = None,
               observed_at: datetime | None = None,
               strict: bool = True) -> list[Observation]:
-        observed_at = observed_at or datetime.now(timezone.utc)
+        observed_at = observed_at or datetime.now(UTC)
         venue_id = venue_id or self._infer_venue_id(raw)
 
         groups = [(m.start(), m.group(1)) for m in _DOM_GROUP.finditer(raw)]

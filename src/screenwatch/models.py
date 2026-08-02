@@ -109,7 +109,7 @@ class Presentation:
         ]
         return " / ".join(bits + salient) or "unspecified"
 
-    def with_(self, **kw) -> "Presentation":
+    def with_(self, **kw) -> Presentation:
         return Presentation(
             projection=kw.get("projection", self.projection),
             brand=kw.get("brand", self.brand),

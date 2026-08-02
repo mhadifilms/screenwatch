@@ -6,10 +6,14 @@ shape: **a link whose text is a time**. Roxie wraps "12:50 PM" in an anchor to
 its film page; Music Box wraps "11:00am" in an anchor to
 `/order/add-tickets/{id}`.
 
-Requiring the time to be a *link* is what keeps this safe. Page copy is full
-of times - opening hours, "doors at 7:00 PM", a synopsis mentioning a clock -
-and matching bare text would drag all of it in. A time someone made clickable
-is a time you can act on.
+Two conditions keep this safe, and the first alone is not enough. The time
+must be **a link**, because page copy is full of times and matching bare text
+would drag all of it in. But links carry prose too: `<a href="/visit">Box
+office open 7:00 PM daily</a>` satisfied the link rule and was emitted as a
+screening of whatever film happened to sit above it, with `/visit` as the
+booking URL. So the link's text must also be *essentially just the time* -
+`ACCEPTABLE_EXTRAS` allows the call-to-action words that really do appear
+beside one ("11:00am BUY TICKETS") and nothing else.
 
 Dates come from whichever signal the venue offers. Music Box puts the day in
 a `visually-hidden` span inside the anchor, for screen readers; that is the
@@ -21,7 +25,8 @@ from __future__ import annotations
 import html as html_lib
 import re
 from dataclasses import dataclass
-from datetime import date as date_cls, datetime
+from datetime import date as date_cls
+from datetime import datetime
 from urllib.parse import urljoin
 
 from ..listing_common import (
@@ -35,21 +40,41 @@ from ..listing_common import (
 # Anchors, with their inner markup kept so an accessibility date span inside
 # can be read before it is stripped.
 _ANCHOR = re.compile(r'<a\b[^>]*href="(?P<href>[^"#][^"]*)"[^>]*>(?P<inner>.{0,300}?)</a>',
-                     re.I | re.S)
+                     re.IGNORECASE | re.DOTALL)
 # Matched with its closing tag so the whole element can be removed. Capturing
 # only the opening tag left the date text behind, and " Sunday, Aug 2 11:00am"
 # does not parse as a time - Music Box's twelve showtimes all silently failed.
 _HIDDEN_DATE = re.compile(
     r'<(?P<tag>[a-z]+)[^>]*class="[^"]*(?:visually-hidden|sr-only|screen-reader)'
     r'[^"]*"[^>]*>(?P<text>[^<]{4,40})</(?P=tag)>',
-    re.I,
+    re.IGNORECASE,
 )
 # Section furniture that a bare-heading fallback would otherwise pick up.
 _NOT_A_FILM = re.compile(
     r"^(now playing|coming soon|showtimes?|this week|box.?office|theatre|theater|"
     r"tickets?|calendar|schedule|events?|menu|home)\b",
-    re.I,
+    re.IGNORECASE,
 )
+
+# What may legitimately sit beside a time inside a showtime link. Anything
+# else means the anchor is prose, not a showtime.
+#
+# Checked against the *residue* after the time is removed, so the test is
+# "what is left over", not "does this look like a sentence". A whitelist beats
+# a stopword list here: the failure mode to prevent is unknown prose slipping
+# through, and only a closed set gives that.
+ACCEPTABLE_EXTRAS = re.compile(
+    r"^(?:buy|get|book|reserve|purchase|select|tickets?|seats?|showtime|now|"
+    r"available|sold\s*out|matinee|am|pm|\W)*$",
+    re.IGNORECASE,
+)
+_TIME_TOKEN = re.compile(r"\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\b", re.IGNORECASE)
+
+
+def is_showtime_label(label: str) -> bool:
+    """Is this link's text a showtime rather than a sentence containing one?"""
+    residue = _TIME_TOKEN.sub(" ", label or "", count=1)
+    return bool(ACCEPTABLE_EXTRAS.match(residue.strip()))
 
 
 @dataclass(frozen=True)
@@ -84,6 +109,8 @@ def extract(html: str, *, default_date: date_cls, base_url: str = "") -> list[Li
         when = find_clock(label, on)
         if when is None:
             continue
+        if not is_showtime_label(label):
+            continue          # prose that happens to contain a time
 
         title = nearest_title_before(html, match.start())
         if not title or _NOT_A_FILM.match(title):

@@ -25,7 +25,8 @@ from __future__ import annotations
 import html as html_lib
 import re
 from dataclasses import dataclass
-from datetime import date as date_cls, datetime
+from datetime import date as date_cls
+from datetime import datetime
 
 from ..vista.links import nearest_date_before, parse_clock
 
@@ -38,30 +39,42 @@ AGILE_LINK = re.compile(
     r'<a\s+[^>]*href="(?P<url>https?://(?P<host>[^/"]+)/websales/pages/'
     r'ticketsearchcriteria\.aspx\?evtinfo=(?P<event>[^"&~]+)[^"]*)"[^>]*>'
     r'(?P<rest>.*?)</a>',
-    re.I | re.S,
+    re.IGNORECASE | re.DOTALL,
 )
 # How far back to look for the wrapper that carries the sales state.
+#
+# Bounded by the *previous anchor* as well as by this character count, because
+# a fixed window alone let state bleed forwards: a showtime with no wrapper of
+# its own inherited the state of whatever preceded it, so an available show
+# sitting after a sold-out one was reported sold out and never surfaced.
+# Suppressing a real seat is the worst failure this module can have.
 _WRAPPER_LOOKBACK = 400
-_STATE = re.compile(r"sales-state--(\w+)", re.I)
-_TIME_SPAN = re.compile(r'showtime-ticket__time[^>]*>\s*([^<]{1,24})', re.I)
-_VENUE_SPAN = re.compile(r'showtime-ticket__venue[^>]*>\s*([^<]{1,24})', re.I)
+_STATE = re.compile(r"sales-state--(\w+)", re.IGNORECASE)
+_TIME_SPAN = re.compile(r'showtime-ticket__time[^>]*>\s*([^<]{1,24})', re.IGNORECASE)
+_VENUE_SPAN = re.compile(r'showtime-ticket__venue[^>]*>\s*([^<]{1,24})', re.IGNORECASE)
 _TITLE = re.compile(
-    r'film-card__title[^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})', re.I
+    r'film-card__title[^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})', re.IGNORECASE
 )
 _ANY_TITLE = re.compile(
     r'<(?:h[1-6]|a)[^>]*class="[^"]*title[^"]*"[^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})',
-    re.I,
+    re.IGNORECASE,
 )
 # Last resort: a bare heading. IFC Center marks films with a plain
 # `<h3><a href="/films/jimmy/">Jimmy</a></h3>` and no title class at all, so
 # requiring one found 140 valid links and threw every one away.
-_ANY_HEADING = re.compile(r"<h[1-6][^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})", re.I)
+_ANY_HEADING = re.compile(r"<h[1-6][^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})", re.IGNORECASE)
 
 
-# Agile's own vocabulary. Anything unrecognised is treated as unknown rather
-# than guessed at, so a new state cannot silently read as "on sale".
-ON_SALE = {"duringsales", "onsale"}
-SOLD_OUT = {"soldout", "sold_out"}
+# Agile's own vocabulary. Anything unrecognised stays unknown rather than
+# being guessed at, so a new state cannot silently read as "on sale".
+#
+# `AfterEvent` and `AfterSalesBeforeEvent` only became visible once the
+# state-bleed bug was fixed - the inherited state had been masking them. Both
+# mean the showing cannot be bought, which is distinct from sold out: the
+# seats may well be empty, they are just no longer for sale.
+ON_SALE = {"duringsales", "onsale", "beforesales"}
+SOLD_OUT = {"soldout"}
+CLOSED = {"afterevent", "aftersalesbeforeevent", "salesclosed", "cancelled"}
 
 
 @dataclass(frozen=True)
@@ -75,12 +88,25 @@ class AgileShowtime:
     sales_state: str
 
     @property
+    def _state(self) -> str:
+        return self.sales_state.lower().replace("-", "").replace("_", "")
+
+    @property
     def sold_out(self) -> bool:
-        return self.sales_state.lower().replace("-", "") in SOLD_OUT
+        return self._state in SOLD_OUT
 
     @property
     def on_sale(self) -> bool:
-        return self.sales_state.lower().replace("-", "") in ON_SALE
+        return self._state in ON_SALE
+
+    @property
+    def closed(self) -> bool:
+        """Sales have ended, or the screening already happened.
+
+        Not the same as sold out - the room may be half empty - but equally
+        not something to offer, so the provider drops these entirely.
+        """
+        return self._state in CLOSED
 
 
 def has_agile_links(html: str) -> bool:
@@ -96,7 +122,13 @@ def _nearest_before(pattern: re.Pattern[str], html: str, pos: int) -> str | None
 
 def extract(html: str, *, default_date: date_cls) -> list[AgileShowtime]:
     out: list[AgileShowtime] = []
+    previous_end = 0
     for match in AGILE_LINK.finditer(html):
+        # Bookkeeping first, so an anchor that is skipped below still closes
+        # the window for the next one - a wrapper before a skipped link
+        # belongs to that link, not to whatever follows it.
+        window_start = max(previous_end, match.start() - _WRAPPER_LOOKBACK, 0)
+        previous_end = match.end()
         inner = match.group("rest")
 
         # Nested span first (Coolidge), then the anchor's own text (IFC).
@@ -116,9 +148,14 @@ def extract(html: str, *, default_date: date_cls) -> list[AgileShowtime]:
         if not title:
             continue
 
-        # The sales state lives on a wrapper that may or may not exist.
-        window = html[max(0, match.start() - _WRAPPER_LOOKBACK):match.start()]
-        state = _STATE.search(window)
+        # The sales state lives on a wrapper that may or may not exist, so it
+        # is read from the span between the previous showtime link and this
+        # one - never further back. Taking the *last* match in that span
+        # matters too: `search` is leftmost-first, so with two wrappers in
+        # range the farther one used to win.
+        state = None
+        for candidate in _STATE.finditer(html, window_start, match.start()):
+            state = candidate
         venue = _VENUE_SPAN.search(inner)
         out.append(
             AgileShowtime(

@@ -24,7 +24,7 @@ MOVIES = f"{BASE}/sitemaps/sitemap-movies.xml"
 THEATRES = f"{BASE}/sitemaps/sitemap-theatres.xml"
 
 _LOC = re.compile(r"<loc>([^<]+)</loc>")
-_ENTRY = re.compile(r"<url>\s*<loc>([^<]+)</loc>(?:\s*<lastmod>([^<]+)</lastmod>)?", re.S)
+_ENTRY = re.compile(r"<url>\s*<loc>([^<]+)</loc>(?:\s*<lastmod>([^<]+)</lastmod>)?", re.DOTALL)
 _MOVIE_SLUG = re.compile(r"/movies/([a-z0-9\-]+?)(?:-(\d+))?$")
 
 

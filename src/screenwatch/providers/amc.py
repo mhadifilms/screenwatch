@@ -8,7 +8,7 @@ source's.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ..adapters.amc.showtimes import AmcShowtimesDom, AmcShowtimesRsc
@@ -43,15 +43,13 @@ class AmcProvider:
     def screenings(
         self, spec: SearchSpec, venues: list[Venue], transport: Transport
     ) -> list[Screening]:
-        today = datetime.now(timezone.utc).date()
-        window = spec.window(today)
-        days = _days(window.start, window.end, self.max_days)
-
         out: list[Screening] = []
         for venue in venues[: self.max_venues]:
             if not venue.market:
                 continue          # cannot build a showtimes URL without the market
-            for day in days:
+            # Anchored on the venue's own date, not UTC's - see `local_today`.
+            window = spec.window(venue.today())
+            for day in _days(window.start, window.end, self.max_days):
                 out.extend(self._one_day(spec, venue, day, transport))
         return out
 
@@ -78,9 +76,9 @@ class AmcProvider:
         if not observations:
             return []
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         facts = self.fuser.resolve(observations, now=now)
-        tz = ZoneInfo(venue.tz) if venue.tz else timezone.utc
+        tz = ZoneInfo(venue.tz) if venue.tz else UTC
 
         screenings = []
         for fact in facts:

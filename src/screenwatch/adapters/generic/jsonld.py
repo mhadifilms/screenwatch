@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
-from typing import Iterator
+from collections.abc import Iterator
+from datetime import UTC, datetime
 
 from ...models import Availability, FactKey, Observation, Presentation
 from ...presentation import classify_text
@@ -37,7 +37,7 @@ from ..base import ParseError
 
 _LD_BLOCK = re.compile(
     r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
-    re.S | re.I,
+    re.DOTALL | re.IGNORECASE,
 )
 _SCREENING_TYPES = {"ScreeningEvent", "Event", "TheaterEvent"}
 _SLUG = re.compile(r"[^a-z0-9]+")
@@ -107,7 +107,7 @@ def _parse_dt(value: str) -> datetime | None:
                 continue
         else:
             return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def _availability(node: dict) -> Availability:
@@ -147,7 +147,7 @@ class JsonLdScreenings:
 
     def parse(self, raw: str, *, observed_at: datetime | None = None,
               strict: bool = True) -> list[Observation]:
-        observed_at = observed_at or datetime.now(timezone.utc)
+        observed_at = observed_at or datetime.now(UTC)
 
         blocks = _LD_BLOCK.findall(raw)
         if not blocks:

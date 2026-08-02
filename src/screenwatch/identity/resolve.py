@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import json
 import pathlib
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Iterable, Protocol
+from datetime import UTC, datetime
+from typing import Protocol
 
 from .normalize import TitleAnalysis, analyze, match_key
 from .work import Method, TitleLink, Work
@@ -205,7 +206,7 @@ class WorkResolver:
                 confidence=confidence,
                 attrs=analysis.attrs,
                 kind=analysis.kind,
-                linked_at=datetime.now(timezone.utc),
+                linked_at=datetime.now(UTC),
             ),
             work=work,
             analysis=analysis,
@@ -226,7 +227,7 @@ class WorkResolver:
                 confidence=1.0,
                 attrs=analysis.attrs,
                 kind=analysis.kind,
-                linked_at=datetime.now(timezone.utc),
+                linked_at=datetime.now(UTC),
             ),
             work=Work(work_id=work_id, title=analysis.clean),
             analysis=analysis,

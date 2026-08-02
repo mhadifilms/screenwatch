@@ -14,7 +14,6 @@ for any path, and that homepage carries all 402 theatres with coordinates.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
 
 from curl_cffi import requests
 
@@ -111,14 +110,13 @@ class RegalProvider:
         self, spec: SearchSpec, venues: list[Venue], transport: Transport
     ) -> list[Screening]:
         by_id = {t.venue_id: t for t in self.theatres()}
-        today = datetime.now(timezone.utc).date()
-        window = spec.window(today)
 
         out: list[Screening] = []
         for venue in venues[: self.max_venues]:
             theatre = by_id.get(venue.venue_id)
             if theatre is None:
                 continue
+            window = spec.window(venue.today())   # the venue's date, not UTC's
             html = self._get(self.adapter.theatre_url(theatre.path_name))
             for perf in self.adapter.parse_showtimes(html):
                 if not window.contains(perf.starts_at_local.date()):

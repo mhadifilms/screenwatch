@@ -185,39 +185,39 @@ def classify_token(chain: str, raw_token: str, venue_id: str | None = None) -> P
 # Order matters: the most specific pattern must win. "IMAX 70mm" is not
 # "70mm", and "35mm nitrate" is not "35mm".
 _PROJECTION_PATTERNS: list[tuple[re.Pattern[str], Projection]] = [
-    (re.compile(r"\b(?:imax\s*(?:70\s*mm|film)|15\s*/\s*70)\b", re.I), Projection.FILM_70MM_15PERF),
-    (re.compile(r"\bnitrate\b", re.I), Projection.FILM_35MM_NITRATE),
-    (re.compile(r"\b70\s*mm\b", re.I), Projection.FILM_70MM),
-    (re.compile(r"\b35\s*mm\b", re.I), Projection.FILM_35MM),
-    (re.compile(r"\b16\s*mm\b", re.I), Projection.FILM_16MM),
-    (re.compile(r"\blaser\b", re.I), Projection.DIGITAL_LASER),
-    (re.compile(r"\b(?:dcp|digital)\b", re.I), Projection.DIGITAL),
+    (re.compile(r"\b(?:imax\s*(?:70\s*mm|film)|15\s*/\s*70)\b", re.IGNORECASE), Projection.FILM_70MM_15PERF),
+    (re.compile(r"\bnitrate\b", re.IGNORECASE), Projection.FILM_35MM_NITRATE),
+    (re.compile(r"\b70\s*mm\b", re.IGNORECASE), Projection.FILM_70MM),
+    (re.compile(r"\b35\s*mm\b", re.IGNORECASE), Projection.FILM_35MM),
+    (re.compile(r"\b16\s*mm\b", re.IGNORECASE), Projection.FILM_16MM),
+    (re.compile(r"\blaser\b", re.IGNORECASE), Projection.DIGITAL_LASER),
+    (re.compile(r"\b(?:dcp|digital)\b", re.IGNORECASE), Projection.DIGITAL),
 ]
 
 _BRAND_PATTERNS: list[tuple[re.Pattern[str], Brand]] = [
-    (re.compile(r"\bdolby\s+cinema\b", re.I), Brand.DOLBY_CINEMA),
-    (re.compile(r"\bimax\b", re.I), Brand.IMAX),
-    (re.compile(r"\bscreen\s*x\b", re.I), Brand.SCREENX),
-    (re.compile(r"\b4dx\b", re.I), Brand.FOURDX),
-    (re.compile(r"\bd-?box\b", re.I), Brand.DBOX),
-    (re.compile(r"\b(?:rpx|big\s*d|ultrascreen|grand\s+screen|prime\s+at\s+amc)\b", re.I), Brand.PLF),
+    (re.compile(r"\bdolby\s+cinema\b", re.IGNORECASE), Brand.DOLBY_CINEMA),
+    (re.compile(r"\bimax\b", re.IGNORECASE), Brand.IMAX),
+    (re.compile(r"\bscreen\s*x\b", re.IGNORECASE), Brand.SCREENX),
+    (re.compile(r"\b4dx\b", re.IGNORECASE), Brand.FOURDX),
+    (re.compile(r"\bd-?box\b", re.IGNORECASE), Brand.DBOX),
+    (re.compile(r"\b(?:rpx|big\s*d|ultrascreen|grand\s+screen|prime\s+at\s+amc)\b", re.IGNORECASE), Brand.PLF),
 ]
 
 _ATTR_PATTERNS: list[tuple[re.Pattern[str], Attribute]] = [
-    (re.compile(r"\b3-?d\b", re.I), Attribute.THREE_D),
-    (re.compile(r"\batmos\b", re.I), Attribute.ATMOS),
-    (re.compile(r"\bhfr\b|high\s+frame\s+rate", re.I), Attribute.HFR),
-    (re.compile(r"\bOC\b|\bopen[- ]caption", re.I), Attribute.OPEN_CAPTION),
-    (re.compile(r"\bCC\b|\bclosed[- ]caption", re.I), Attribute.CLOSED_CAPTION),
-    (re.compile(r"\baudio\s+descri", re.I), Attribute.AUDIO_DESCRIPTION),
-    (re.compile(r"\bsubtitle", re.I), Attribute.SUBTITLED),
-    (re.compile(r"\bdubbed\b", re.I), Attribute.DUBBED),
-    (re.compile(r"sensory[- ]friendly", re.I), Attribute.SENSORY_FRIENDLY),
-    (re.compile(r"\brestor(?:ed|ation)\b", re.I), Attribute.RESTORATION),
-    (re.compile(r"\barchival\b|\barchive\s+print\b", re.I), Attribute.ARCHIVAL_PRINT),
-    (re.compile(r"\bq\s*&\s*a\b|\bq\s*and\s*a\b", re.I), Attribute.Q_AND_A),
-    (re.compile(r"\bintroduc(?:ed|tion)\b", re.I), Attribute.INTRODUCTION),
-    (re.compile(r"\bdouble\s+(?:feature|bill)\b", re.I), Attribute.DOUBLE_FEATURE),
+    (re.compile(r"\b3-?d\b", re.IGNORECASE), Attribute.THREE_D),
+    (re.compile(r"\batmos\b", re.IGNORECASE), Attribute.ATMOS),
+    (re.compile(r"\bhfr\b|high\s+frame\s+rate", re.IGNORECASE), Attribute.HFR),
+    (re.compile(r"\bOC\b|\bopen[- ]caption", re.IGNORECASE), Attribute.OPEN_CAPTION),
+    (re.compile(r"\bCC\b|\bclosed[- ]caption", re.IGNORECASE), Attribute.CLOSED_CAPTION),
+    (re.compile(r"\baudio\s+descri", re.IGNORECASE), Attribute.AUDIO_DESCRIPTION),
+    (re.compile(r"\bsubtitle", re.IGNORECASE), Attribute.SUBTITLED),
+    (re.compile(r"\bdubbed\b", re.IGNORECASE), Attribute.DUBBED),
+    (re.compile(r"sensory[- ]friendly", re.IGNORECASE), Attribute.SENSORY_FRIENDLY),
+    (re.compile(r"\brestor(?:ed|ation)\b", re.IGNORECASE), Attribute.RESTORATION),
+    (re.compile(r"\barchival\b|\barchive\s+print\b", re.IGNORECASE), Attribute.ARCHIVAL_PRINT),
+    (re.compile(r"\bq\s*&\s*a\b|\bq\s*and\s*a\b", re.IGNORECASE), Attribute.Q_AND_A),
+    (re.compile(r"\bintroduc(?:ed|tion)\b", re.IGNORECASE), Attribute.INTRODUCTION),
+    (re.compile(r"\bdouble\s+(?:feature|bill)\b", re.IGNORECASE), Attribute.DOUBLE_FEATURE),
 ]
 
 # "shot on 35mm" / "filmed in 70mm" describe the negative, not the print in
@@ -227,7 +227,7 @@ _ORIGINATION = re.compile(
     r"\b(?:shot|filmed|photographed|originated|captured)\s+(?:on|in)\s*$"
     r"|\b(?:camera\s+)?negative\b\s*$"
     r"|\boriginal\s*$",
-    re.I,
+    re.IGNORECASE,
 )
 
 

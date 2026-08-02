@@ -31,9 +31,9 @@ from curl_cffi import requests
 from ..model import (
     Auditorium,
     Seat,
+    SeatDataUnavailable,
     SeatKind,
     SeatStatus,
-    SeatDataUnavailable,
     mark_aisles,
     normalize_geometry,
 )
@@ -100,7 +100,7 @@ class AmcSeatSource:
                 headers={"content-type": "application/json"},
                 timeout=timeout,
             )
-        except Exception as exc:                                  # noqa: BLE001
+        except Exception as exc:
             raise SeatDataUnavailable(f"AMC seat fetch failed: {exc}") from exc
 
         if response.status_code != 200:

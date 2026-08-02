@@ -27,7 +27,7 @@ import signal
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from .serde import spec_from_json
 from .store import DEFAULT_USER, Store
@@ -106,7 +106,7 @@ class Scheduler:
         self.user_id = user_id
         self.tick_s = tick_s
         self.on_hits = on_hits
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._sleep = sleeper or time.sleep
         self._stop = threading.Event()
         self.polls = 0

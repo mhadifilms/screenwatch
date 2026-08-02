@@ -19,20 +19,19 @@ coordinates are still admitted by `LocationSpec` when the user names them.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from curl_cffi import requests
 
-from zoneinfo import ZoneInfo
-
 from ..adapters.cinemark.showtimes import (
     SITEMAP,
+    STATE_CENTROID,
+    STATE_SLACK_KM,
     CinemarkChallenged,
     CinemarkShowtime,
     CinemarkShowtimes,
     CinemarkTheatre,
-    STATE_CENTROID,
-    STATE_SLACK_KM,
     classify_print_type,
     state_of,
     timezone_for,
@@ -159,7 +158,7 @@ class CinemarkProvider:
         for slug in unknown:
             try:
                 html = self._get(self.adapter.theatre_url(slug, spec.window(
-                    datetime.now(timezone.utc).date()).start.isoformat()))
+                    datetime.now(UTC).date()).start.isoformat()))
                 theatre = self.adapter.parse_theatre(html, slug)
             except Exception:                                  # noqa: BLE001
                 continue
@@ -215,17 +214,18 @@ class CinemarkProvider:
     def screenings(
         self, spec: SearchSpec, venues: list[Venue], transport: Transport
     ) -> list[Screening]:
-        today = datetime.now(timezone.utc).date()
-        window = spec.window(today)
-        days = [
-            window.start + timedelta(days=i)
-            for i in range(min((window.end - window.start).days + 1, self.max_days))
-        ]
-
         out: list[Screening] = []
         for venue in venues[: self.max_venues]:
             if not venue.market:
                 continue
+            # Cinemark venues carry no zone until their page is parsed, so this
+            # falls back to UTC on the first pass and sharpens once the theatre
+            # is known - see `local_today`.
+            window = spec.window(venue.today())
+            days = [
+                window.start + timedelta(days=i)
+                for i in range(min((window.end - window.start).days + 1, self.max_days))
+            ]
             for day in days:
                 html = self._get(self.adapter.theatre_url(venue.market, day.isoformat()))
                 theatre = self.adapter.parse_theatre(html, venue.market)
@@ -260,7 +260,7 @@ class CinemarkProvider:
                     venue_id=theatre.venue_id,
                     venue_name=theatre.name,
                     chain=self.chain,
-                    starts_at_utc=show.starts_at_local.replace(tzinfo=tz).astimezone(timezone.utc),
+                    starts_at_utc=show.starts_at_local.replace(tzinfo=tz).astimezone(UTC),
                     starts_at_local=show.starts_at_local,
                     presentation=self._presentation(show),
                     availability=Availability.UNKNOWN,

@@ -19,7 +19,7 @@ Alamo until that is reconned.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ...models import Attribute, Brand, Presentation, Projection
@@ -111,7 +111,7 @@ class AlamoScheduleParseError(ValueError):
 def _dt(value: str, *, utc: bool) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if utc:
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     return parsed.replace(tzinfo=None)
 
 

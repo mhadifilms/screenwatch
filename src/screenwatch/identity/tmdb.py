@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Iterable
+from collections.abc import Iterable
 
 from curl_cffi import requests
 
@@ -55,7 +55,7 @@ class TmdbCatalog:
         self._last_call = 0.0
 
     @classmethod
-    def from_env(cls, **kw) -> "TmdbCatalog | None":
+    def from_env(cls, **kw) -> TmdbCatalog | None:
         """Build from the environment, or None if no credentials are set.
 
         Returning None rather than raising is deliberate: a missing key is a

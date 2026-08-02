@@ -10,6 +10,8 @@ drop them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..presentation import _VENUES  # single source of venue truth
 from ..ranking.spec import GeoPoint, LocationSpec
@@ -29,6 +31,28 @@ class Venue:
         if origin is None or self.point is None:
             return None
         return round(origin.km_to(self.point), 2)
+
+    def today(self) -> date:
+        return local_today(self.tz)
+
+
+def local_today(tz: str | None) -> date:
+    """The current date *where the cinema is*.
+
+    Every relative search window ("the next 7 days") is measured from a day,
+    and that day has to be the venue's. Anchoring on UTC put every US venue a
+    day ahead for the last hours of its evening - 5pm in San Francisco is
+    already tomorrow in UTC - so a search run at exactly the time someone
+    would run one dated tonight's showings to a day outside the window and
+    returned nothing.
+
+    Falls back to UTC for a venue with no zone on file, which is the same
+    behaviour as before for those and no worse.
+    """
+    try:
+        return datetime.now(ZoneInfo(tz) if tz else UTC).date()
+    except (ZoneInfoNotFoundError, ValueError):
+        return datetime.now(UTC).date()
 
 
 def _to_venue(venue_id: str, info: dict) -> Venue:

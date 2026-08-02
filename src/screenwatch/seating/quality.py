@@ -33,7 +33,7 @@ class QualityModel:
     max_lateral: float = 1.0
 
     @classmethod
-    def for_venue(cls, venue_id: str | None, **overrides) -> "QualityModel":
+    def for_venue(cls, venue_id: str | None, **overrides) -> QualityModel:
         """Per-venue tuning from the hardware oracle, then caller overrides."""
         base: dict[str, float] = {}
         if venue_id and (info := venue_info(venue_id)):

@@ -26,13 +26,15 @@ from __future__ import annotations
 import html as html_lib
 import re
 from dataclasses import dataclass
-from datetime import date as date_cls, datetime, time as time_cls
+from datetime import date as date_cls
+from datetime import datetime
+from datetime import time as time_cls
 
 VISTA_LINK = re.compile(
     r'href="(?P<url>https?://(?P<host>[^/"]+)/Ticketing/visSelectTickets\.aspx'
     r'\?[^"]*cinemacode=(?P<cinema>\d+)[^"]*txtSessionId=(?P<session>\d+)[^"]*)"'
     r'[^>]*>(?P<label>[^<]{1,40})</a>',
-    re.I,
+    re.IGNORECASE,
 )
 
 # A date that groups showtimes, e.g. `<div id="calendar-list-day-2026-08-02">`.
@@ -57,7 +59,7 @@ DATE_CONTAINER = re.compile(
 _TEXT_DAY = re.compile(
     r"<h[1-6][^>]*>\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*[,\s]+"
     r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})",
-    re.I,
+    re.IGNORECASE,
 )
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun",
@@ -101,10 +103,10 @@ def nearest_date_before(html: str, pos: int, default: date_cls) -> date_cls:
 
 _TITLE = re.compile(
     r'<(?:h[1-6]|a)[^>]*class="[^"]*title[^"]*"[^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})',
-    re.I,
+    re.IGNORECASE,
 )
-_ANY_HEADING = re.compile(r"<h[1-6][^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})", re.I)
-_TIME = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\s*$", re.I)
+_ANY_HEADING = re.compile(r"<h[1-6][^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})", re.IGNORECASE)
+_TIME = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\s*$", re.IGNORECASE)
 
 
 class VistaParseError(ValueError):

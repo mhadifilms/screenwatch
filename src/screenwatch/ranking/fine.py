@@ -13,10 +13,11 @@ makes.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
+from ..seating.estimate import estimate
+from ..seating.estimate import seat_components as estimated_components
 from ..seating.groups import SeatGroup, find_groups
-from ..seating.estimate import estimate, seat_components as estimated_components
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.quality import QualityModel
 from .candidate import Option

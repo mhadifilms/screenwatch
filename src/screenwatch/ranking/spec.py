@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from enum import Enum
 
-from ..models import Attribute, Preference
 from ..identity.work import WorkRef
+from ..models import Attribute, Preference
 
 EARTH_RADIUS_KM = 6371.0
 
@@ -50,7 +50,7 @@ class GeoPoint:
     lat: float
     lon: float
 
-    def km_to(self, other: "GeoPoint") -> float:
+    def km_to(self, other: GeoPoint) -> float:
         """Haversine. Straight-line, not drive time - good enough to rank."""
         p1, p2 = math.radians(self.lat), math.radians(other.lat)
         dp = p2 - p1
@@ -95,11 +95,11 @@ class DateWindow:
             raise ValueError(f"date window ends before it starts: {self.start}..{self.end}")
 
     @classmethod
-    def tonight(cls, today: date) -> "DateWindow":
+    def tonight(cls, today: date) -> DateWindow:
         return cls(today, today)
 
     @classmethod
-    def next_days(cls, today: date, days: int) -> "DateWindow":
+    def next_days(cls, today: date, days: int) -> DateWindow:
         return cls(today, today + timedelta(days=days))
 
     def contains(self, day: date) -> bool:

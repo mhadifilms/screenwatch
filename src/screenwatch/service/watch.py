@@ -18,13 +18,13 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from ..ranking.candidate import Option
 from ..ranking.spec import SearchSpec
 from .search import SearchService
-from .store import DEFAULT_USER, Store
 from .serde import spec_from_json, spec_to_json
+from .store import DEFAULT_USER, Store
 
 
 @dataclass
@@ -118,7 +118,7 @@ class WatchService:
 
     def run_due(self, *, user_id: str = DEFAULT_USER, today: date | None = None) -> list[WatchHit]:
         """Poll every watch whose cadence has elapsed."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         out: list[WatchHit] = []
         for row in self.store.list_watches(user_id):
             last = row["last_run"]
