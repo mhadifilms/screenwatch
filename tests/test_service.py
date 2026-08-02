@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 
 import pytest
 
-from screenwatch.identity.work import Method, TitleLink, Work, WorkRef
 from screenwatch.identity.normalize import ProductKind
+from screenwatch.identity.work import Method, TitleLink, Work, WorkRef
 from screenwatch.models import (
     Attribute,
     Availability,
@@ -54,7 +54,7 @@ WORK = Work(work_id="tmdb:1", title="Dune: Part Three", year=2026)
 
 
 def screening(sid: str, hour: int = 20, *, venue="amc-metreon-16", day=2) -> Screening:
-    when = datetime(2026, 8, day, hour, tzinfo=timezone.utc)
+    when = datetime(2026, 8, day, hour, tzinfo=UTC)
     return Screening(
         screening_id=sid, work=WORK, venue_id=venue, venue_name=venue, chain="amc",
         starts_at_utc=when, starts_at_local=when.replace(tzinfo=None),
@@ -157,7 +157,7 @@ class TestStore:
     def test_upsert_screening_is_idempotent(self, store):
         for _ in range(3):
             store.upsert_screening("amc:1", work_id="tmdb:1", venue_id="v", chain="amc",
-                                   starts_at_utc=datetime.now(timezone.utc),
+                                   starts_at_utc=datetime.now(UTC),
                                    presentation="IMAX", availability="sellable",
                                    deeplink="https://x")
         rows = store._conn.execute("SELECT COUNT(*) c FROM screenings").fetchone()

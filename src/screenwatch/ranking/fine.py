@@ -15,9 +15,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from ..models import Attribute
 from ..seating.estimate import estimate
 from ..seating.estimate import seat_components as estimated_components
-from ..models import Attribute
 from ..seating.groups import (
     GENERAL_KINDS,
     RECLINING_KINDS,

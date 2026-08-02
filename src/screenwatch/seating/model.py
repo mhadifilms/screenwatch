@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from itertools import pairwise
 
 
 class SeatStatus(Enum):
@@ -212,7 +213,7 @@ def mark_aisles(seats: list[Seat], gap_threshold: int = 2) -> list[Seat]:
     for row_seats in by_row.values():
         ordered = sorted(row_seats, key=lambda s: s.col_index)
         aisle_cols: set[int] = set()
-        for left, right in zip(ordered, ordered[1:]):
+        for left, right in pairwise(ordered):
             if right.col_index - left.col_index >= gap_threshold:
                 aisle_cols.update({left.col_index, right.col_index})
         if ordered:

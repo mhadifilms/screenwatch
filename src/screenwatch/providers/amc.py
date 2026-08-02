@@ -63,7 +63,7 @@ class AmcProvider(ScopeReporting):
                 transport, venue_id=venue.venue_id, market=venue.market,
                 date=day.isoformat(),
             )
-        except Exception:
+        except Exception:                                   # noqa: BLE001
             return []
 
         observations: list[Observation] = []

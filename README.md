@@ -112,22 +112,25 @@ row*, so a short centred front row stays centred.
 
 ## Seat data: what is actually obtainable
 
-Per-seat occupancy turned out to be reachable on **exactly one** source.
-Everywhere else the seat map sits behind the booking flow, and getting it
-means creating a hold — a write against someone else's ticketing system,
-which this project does not do.
-
 | Source | Seat data | Phase B can |
 |---|---|---|
 | **AMC** | full grid, per-seat status | pick actual seats, score position and cohesion |
 | **Cinemark** | full grid, per-seat status | same |
-| **Regal** | full grid via the booking API | same *(implemented from bundle evidence; unverified — see below)* |
 | **C360** | exact sold count + auditorium shape | **estimate** whether the party can sit together |
+| Regal | none reachable | availability ranking *(parser written, no live response — see below)* |
 | Alamo | sold-out flag only — no count exists | availability ranking |
 | Independents | none | availability ranking |
 
-Every one of these is a **plain GET**. No login, no cart, and no hold — a hold
-is created by *selecting* a seat, which nothing here does.
+Nothing here logs in, adds to a cart, or creates a hold — a hold is created by
+*selecting* a seat, which no code path does. AMC and C360 answer a plain GET.
+Cinemark's seat page is now behind a Cloudflare challenge, so that one fetch
+goes through the browser transport to clear it; it is still a read of a page
+any visitor sees, and still nothing but a GET.
+
+Cinemark's seat URL has to be **the one the theatre page wrote**, not one
+rebuilt from the theater and showtime ids. Its link carries four parameters;
+the two-parameter form is answered with a redirect to the homepage, which
+parses to zero seats and is indistinguishable from a sellout.
 
 That would leave phase B useful for one chain and inert for the rest —
 worthless precisely at a near-sellout, which is when ranking matters. So
@@ -174,11 +177,11 @@ to key off the showtime `status` flipping back, not off seat-level diffs.
 |---|---|---|---|
 | **AMC** | ✅ two corroborating parsers | ✅ GraphQL | Queue-it traversal, sitemap tripwire |
 | **Alamo Drafthouse** | ✅ 19 markets, 34 cinemas | ✗ not exposed | One open request per market; self-discovers venues and coordinates |
-| **Regal** | ✅ 402 theatres nationally | ✗ not in payload | `__NEXT_DATA__` blob; Cloudflare challenge is intermittent, cleared by retry |
-| **Cinemark** | ✅ 307 theatres nationally | ✗ **robots.txt disallows** | ASP.NET page; `data-json-model` joined to rendered showtime divs |
-| **Independents** | ✅ schema.org, Vista, Agile **or** own-site links | ✗ | 269 showtimes across IFC / Metrograph / Roxie / Coolidge / Music Box. Film Forum's markup is decorative and is reported as such |
+| **Regal** | ✅ 402 theatres nationally | ✗ no reachable surface | `__NEXT_DATA__` blob; Cloudflare challenge is intermittent, cleared by retry |
+| **Cinemark** | ✅ 307 theatres nationally | ✅ full grid | ASP.NET page; `data-json-model` joined to rendered showtime divs. Seat page needs the browser to clear a challenge |
+| **Independents** | ✅ schema.org, Vista, Agile **or** own-site links | ✗ | 393 showtimes across IFC / Metrograph / Roxie / Coolidge / Music Box. Film Forum's markup is decorative and is reported as such |
 | **C360 / Apple Cinemas** | ✅ 14 venues | ⚠ **counts + room shape** | Warm the session on the landing page, then an open JSON API |
-| Elevent, Agile | ✗ | ✗ | Not started |
+| Elevent | ✗ | ✗ | Not started — Metrograph turned out to be Vista, which covers that tail instead |
 
 Alamo is the cheapest source by a wide margin — one unauthenticated request
 returns a whole market (NYC: 1152 sessions), and the payload carries its own
@@ -189,7 +192,8 @@ API's own vocabulary instead of waiting to meet a surprise in production.
 
 ```bash
 uv venv && uv pip install -e '.[dev,api]'
-python -m pytest                      # 482 tests, offline
+python -m pytest                      # 566 tests, offline
+ruff check src tests                  # ruleset pinned in pyproject.toml
 ```
 
 MCP server (stdio):
@@ -245,9 +249,16 @@ loop.
 4. **Own-site listings** — venues on no shared platform at all. What they
    still share is a link whose text is a time. Roxie: 34. Music Box: 12.
 
-**269 showtimes across five art houses, no venue-specific code.** Requiring
-the time to be a *link* is what keeps the generic case safe: page copy is full
-of times ("doors at 7:00 PM") and matching bare text would drag all of it in.
+**393 showtimes across five art houses, no venue-specific code.**
+
+Two rules keep the generic case safe, and the first alone does not. The time
+must be **a link**, because page copy is full of times and matching bare text
+would drag all of it in. But links carry prose too: `<a href="/visit">Box
+office open 7:00 PM daily</a>` passed the link rule and was emitted as a
+screening of whatever film sat above it, with `/visit` as the booking URL. So
+the link's text must also be *essentially just the time* — a closed whitelist
+allows the call-to-action words that really do appear beside one ("11:00am BUY
+TICKETS") and nothing else.
 
 Music Box sits behind a Sucuri interstitial that serves 1.3KB of obfuscated
 JavaScript to a plain client, so it is marked `fetch: browser` in the config
@@ -267,11 +278,41 @@ on redesign, but "the anchor text of a ticket link is the showtime, and the
 nearest heading above it is the film" holds because it is how listings are
 *shaped*.
 
-One trap worth naming. Every listing page also renders a date **picker**, and
-in isolation a picker entry is indistinguishable from a day heading — taking
-the nearest preceding date dated the Coolidge's whole schedule to September.
-Day groupings are block containers; navigation is anchors and table cells, and
-`DATE_CONTAINER` encodes exactly that.
+Dates are the awkward part, and three signals all mean the same thing: an ISO
+date on a block container, a *written* day on one (`<div id="day_Sun_Aug_2">`,
+Metrograph's only signal), and a heading naming the day. The closest one above
+the link wins, because "which day is this listed under" is a question about
+proximity rather than markup style; ISO breaks ties, being the only form that
+cannot be ambiguous about the year.
+
+Two traps, both of which produced silently wrong dates rather than errors.
+Every listing page also renders a date **picker**, and in isolation a picker
+entry is indistinguishable from a day heading — taking the nearest preceding
+date dated the Coolidge's whole schedule to September. Day groupings are block
+containers; navigation is anchors and table cells, and the patterns encode
+exactly that. And venues break the day number out for styling —
+`<h5>Sun Aug <span class="day-number">2</span></h5>` — so a contiguous-text
+pattern reads "Sun Aug" and discards it. Inner markup is stripped first.
+
+The mirror image of that bites the *title* lookup: those same day headings sit
+between a film and its showtime links, which is exactly where a proximity
+search looks. Headings that are page furniture or day labels are skipped, or
+Metrograph's 114 films collapse to seven dates wearing film names.
+
+All of this lives in `adapters/listing_common.py`, and it lives there because
+it did not used to. Vista kept private copies of the date, time and title
+helpers; the copies drifted, and deleting the body of the shared
+`nearest_date_before` passed the entire suite. Consolidating the three
+extractors onto one implementation is what surfaced both Metrograph faults.
+
+## Time zones
+
+Every relative search window is anchored on **the venue's** date, not UTC's.
+5pm in San Francisco is already tomorrow in UTC, so a UTC anchor started the
+window a day late for the last hours of a venue's evening and stamped undated
+showtimes a day forward — a "tonight" search returned nothing at exactly the
+hour someone would run it. Alamo anchors per cinema rather than per market,
+since a market can straddle zones.
 
 ## Watches
 
@@ -289,40 +330,44 @@ so a disconnected client or a failed webhook loses nothing.
 
 Stated plainly, because a plausible-looking gap is worse than a named one.
 
-* **C360 / Apple Cinemas.** The domain now serves a Cloudflare Turnstile
-  challenge on every path. Reaching it needs a real browser with a persistent
-  profile, which is a different mechanism than everything here uses.
-* **Cinemark, Elevent, Agile.** Not started; each needs its own recon.
-* **Alamo and Regal seat maps.** Both report reserved seating, so layouts
-  exist, but neither serves them outside the booking flow. Alamo's
-  `/schedule/session/{cinemaId}/{sessionId}` leaks a stack trace confirming
-  the route but carries no seats; Regal's ticketing is the part Cloudflare
-  guards hardest. Both fall back to availability-only ranking.
-* **Regal seat maps are unverified.** `GET {booking_api}/api/GetSeatPlan?
-  theatreCode=&sessionId=` was recovered from Regal's own bundle and the
-  parser is written against the Vista schema it returns, but no live response
-  has been parsed.
+* **Regal seat maps.** `GET {booking_api}/api/GetSeatPlan?theatreCode=&
+  sessionId=` was recovered from Regal's own bundle, and the parser is written
+  against the Vista schema that endpoint returns, but **no live response has
+  ever been parsed**.
 
-  Cloudflare denies `/api/*` on the regmovies hosts to every client tried —
-  `curl_cffi` and a real browser alike. It is **a path rule, not an IP ban**:
-  measured in one session, `experience.regmovies.com/about` returns 200 while
-  `/api/tickets` returns 403, and showtime scraping across 402 theatres works
-  throughout. So there is nothing to wait out. Getting a response most likely
-  needs whatever the real booking flow carries that a bare GET does not — an
-  order session token, most plausibly.
-* **Alamo has no read-only seat or count surface.** Probed five ways:
+  The obstacle moved while this was being built, which is worth recording
+  because the earlier diagnosis was wrong. It used to be a Cloudflare 403 on
+  `/api/*`, and was described here as a path rule. It is not one now: the same
+  URL returns **200 with the 784KB Next.js app shell**. Every path on
+  `webbooking.regmovies.com` does — it is client-side routing, so an unknown
+  route is indistinguishable from a known one from outside, and the endpoint
+  cannot be confirmed by probing. The parser rejects HTML rather than
+  pretending, and Regal falls back to availability-only ranking.
+
+  Bundle recon to find the real route needs a browser session on the booking
+  flow, and plain Playwright is Cloudflare-blocked on regmovies (curl_cffi's
+  TLS impersonation is what works for the showtime pages, and it cannot run
+  JavaScript). That is the open thread.
+* **Regal booking links go to the theatre page, not the showing.** There is no
+  per-performance page — `/showtimes/{performance_id}` 404s — so the deeplink
+  is the dated theatre page, which lists the showing among that day's others.
+  One click further from checkout than the other chains.
+* **Alamo has no seat or count surface.** It reports reserved seating, so
+  layouts exist, but nothing serves them outside the booking flow.
+* **Alamo's absence of a seat surface is measured, not assumed.** Probed five
+  ways:
   `/session/{id}/seats` (wants a cinema id), `/schedule/session/{cinemaId}/
   {sessionId}` (works, carries no seats), the `/tickets/{slug}/{id}` URL
   (redirects to the theatre page), and `/schedule/venue/{slug}` (same fields
   as the market feed). Availability is `ONSALE` / `SOLDOUT` and nothing finer,
   so there is not even a count to estimate from.
-* **Elevent / Agile** not built — Metrograph turned out to be Vista, not
-  Elevent, and the Vista link extractor covers it and a large slice of the
-  art-house tail instead.
-* **TMDB catalogue client.** `WorkResolver` takes an injected `Catalog`; only
-  `AliasCatalog` and `NullCatalog` ship. Identity works degraded without it —
-  products still group by cleaned title, at low confidence.
-* **Scheduler.** `run_due()` exists; nothing calls it on a timer yet.
+* **Elevent** not built — Metrograph turned out to be Vista, not Elevent, and
+  the Vista link extractor covers it and a large slice of the art-house tail
+  instead. Agile *is* built; it is what reads the Coolidge and IFC.
+* **TMDB catalogue needs a key.** `TmdbCatalog.from_env()` ships and is wired
+  into `default_resolver`, but without `TMDB_API_KEY` it degrades to
+  `AliasCatalog`: products still group by cleaned title, at lower confidence.
+  Resolutions persist to SQLite either way, so a restart does not re-ask.
 
 ## Entry points
 
@@ -335,6 +380,26 @@ screenwatch-mcp                                     # stdio MCP
 uvicorn screenwatch.api.app:default_app --factory   # localhost HTTP
 screenwatch-scheduler                               # always-on monitors
 ```
+
+## Scope caps are reported
+
+Providers cap how many venues and days they read. The caps are real — a
+seven-day sweep of 402 Regal theatres is thousands of page loads — but a
+silent cap is a lie: a search that read three of eleven nearby theatres and
+found nothing reports exactly what a search that read all eleven and found
+nothing reports.
+
+So `SearchResult` carries `clipped` and a `complete` flag, and both surface on
+the API and MCP responses:
+
+```
+complete=False
+  clipped: regal: read 4 of 12 matching venues; skipped Regal Battery Park,
+           Regal Secaucus Showplace, Regal Concourse, Regal Atlas Park and 4 more
+```
+
+The independent provider is uncapped by default: its venue list is curated by
+hand rather than crawled, so every entry is one someone asked for.
 
 ## Before you rely on this
 

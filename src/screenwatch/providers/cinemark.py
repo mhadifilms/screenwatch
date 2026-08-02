@@ -36,6 +36,7 @@ from ..adapters.cinemark.showtimes import (
     state_of,
     timezone_for,
 )
+from ..browser import BrowserUnavailable, shared_browser
 from ..identity.resolve import WorkResolver
 from ..models import Availability, Presentation
 from ..presentation import assume_digital
@@ -45,7 +46,6 @@ from ..robots import ROBOTS
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.sources.cinemark import CinemarkSeatSource
 from ..service.venues import Venue
-from ..browser import BrowserUnavailable, shared_browser
 from ..transport import Transport
 from .scope import ScopeReporting
 
@@ -312,7 +312,7 @@ class CinemarkProvider(ScopeReporting):
             html = self._get(url)
         except CinemarkChallenged as exc:
             html = self._through_browser(url, exc)
-        except Exception as exc:                                # noqa: BLE001
+        except Exception as exc:
             raise SeatDataUnavailable(
                 f"Cinemark seat map fetch failed: {type(exc).__name__}: {exc}"
             ) from exc

@@ -105,7 +105,9 @@ def reasons_for(option: Option, spec: SearchSpec) -> tuple[str, ...]:
     return tuple(out)
 
 
-def tradeoffs_for(option: Option, spec: SearchSpec, *, baseline: Option | None = None) -> tuple[str, ...]:
+def tradeoffs_for(
+    option: Option, spec: SearchSpec, *, baseline: Option | None = None
+) -> tuple[str, ...]:
     out: list[str] = []
     c = option.components
     s = option.screening

@@ -166,9 +166,10 @@ class Budget:
             return True
         if self.max_per_ticket_usd is not None and per_ticket > self.max_per_ticket_usd:
             return False
-        if self.max_total_usd is not None and per_ticket * party_size > self.max_total_usd:
-            return False
-        return True
+        return not (
+            self.max_total_usd is not None
+            and per_ticket * party_size > self.max_total_usd
+        )
 
 
 @dataclass(frozen=True)

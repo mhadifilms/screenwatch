@@ -10,7 +10,7 @@ feasibility is *estimated*, and the tests pin both of those honestly.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -242,13 +242,13 @@ class TestProvider:
     def test_a_showing_without_a_screen_id_is_unavailable(self, shows_payload,
                                                           screen_payload,
                                                           locations_payload):
-        from screenwatch.ranking.candidate import Screening
         from screenwatch.identity.work import Work
+        from screenwatch.ranking.candidate import Screening
 
         p, _ = provider(shows_payload, screen_payload, locations_payload)
         bare = Screening(
             screening_id="c360:x", work=Work("w", "X"), venue_id="v", venue_name="V",
-            chain="c360", starts_at_utc=datetime.now(timezone.utc),
+            chain="c360", starts_at_utc=datetime.now(UTC),
             starts_at_local=datetime.now(), presentation=C360_TOKENS["2d"],
             screen_id=None,
         )

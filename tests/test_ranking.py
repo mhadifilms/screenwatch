@@ -8,11 +8,11 @@ judgements as tests.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from screenwatch.identity.work import Work
+from screenwatch.identity.work import Work, WorkRef
 from screenwatch.models import (
     Attribute,
     Availability,
@@ -37,7 +37,6 @@ from screenwatch.ranking.spec import (
     TimeWindow,
     Weights,
 )
-from screenwatch.identity.work import WorkRef
 from screenwatch.seating.model import Auditorium, SeatDataUnavailable
 from screenwatch.seating.render import build_auditorium
 
@@ -70,7 +69,7 @@ def screening(
         venue_id=venue,
         venue_name=venue,
         chain=chain,
-        starts_at_utc=at.replace(tzinfo=timezone.utc) + timedelta(hours=7),
+        starts_at_utc=at.replace(tzinfo=UTC) + timedelta(hours=7),
         starts_at_local=at,
         presentation=presentation,
         availability=availability,

@@ -22,6 +22,7 @@ same origin at the same instant.
 
 from __future__ import annotations
 
+import contextlib
 import random
 import signal
 import threading
@@ -155,10 +156,9 @@ class Scheduler:
 
     def _install_signal_handlers(self) -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
+            # Not on the main thread: the caller drives stop() instead.
+            with contextlib.suppress(ValueError, OSError):
                 signal.signal(sig, self.stop)
-            except (ValueError, OSError):
-                pass          # not on the main thread; caller drives stop()
 
 
 def describe_hits(hits: list[WatchHit]) -> str:

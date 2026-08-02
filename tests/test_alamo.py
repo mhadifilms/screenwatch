@@ -9,7 +9,7 @@ declaration instead of waiting to meet an unknown token in production.
 from __future__ import annotations
 
 import json
-from datetime import date, timezone
+from datetime import UTC, date
 
 import pytest
 
@@ -72,7 +72,7 @@ class TestSchedule:
     def test_local_and_utc_times_both_survive(self, parsed):
         _, sessions = parsed
         s = sessions[0]
-        assert s.starts_at_utc.tzinfo is timezone.utc
+        assert s.starts_at_utc.tzinfo is UTC
         assert s.starts_at_local.tzinfo is None
 
     def test_table_covers_the_apis_own_taxonomy(self, payload):

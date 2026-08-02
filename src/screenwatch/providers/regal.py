@@ -43,7 +43,6 @@ from ..service.venues import Venue
 from ..transport import Transport
 from .scope import ScopeReporting
 
-
 # Statuses where trying again is reasonable. Anything else is a settled
 # answer, and sleeping five times before repeating it helps nobody.
 _RETRYABLE = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 524})

@@ -32,7 +32,8 @@ from __future__ import annotations
 import html as html_lib
 import re
 from dataclasses import dataclass
-from datetime import date as date_cls, datetime
+from datetime import date as date_cls
+from datetime import datetime
 
 from ..listing_common import (
     DATE_CONTAINER,

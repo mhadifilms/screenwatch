@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -16,8 +16,8 @@ from screenwatch.models import (
 )
 from screenwatch.resolver import Resolver
 
-NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
-START = datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+START = datetime(2026, 8, 3, 2, 0, tzinfo=UTC)
 
 IMAX_FILM = Presentation(Projection.FILM_70MM_15PERF, Brand.IMAX, "1.43")
 IMAX_LASER = Presentation(Projection.DIGITAL_LASER, Brand.IMAX, "1.43")

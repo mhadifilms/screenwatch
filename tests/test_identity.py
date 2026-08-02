@@ -35,7 +35,7 @@ class FakeCatalog:
     def search(self, title: str, year: int | None = None) -> list[Candidate]:
         self.calls.append((title, year))
         key = match_key(title)
-        return [c for c in self.candidates if key in c.keys()]
+        return [c for c in self.candidates if key in c.match_keys()]
 
 
 ODYSSEY = Candidate(title="The Odyssey", year=2026, tmdb_id=1, runtime_min=160)

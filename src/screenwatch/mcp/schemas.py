@@ -61,7 +61,10 @@ class PresentationInput(BaseModel):
     projection: Literal[
         "digital", "digital_xenon", "digital_laser", "film_16mm", "film_35mm",
         "film_35mm_nitrate", "film_70mm", "film_70mm_15perf",
-    ] | None = Field(None, description="film_70mm_15perf is IMAX film; film_70mm is standard 5-perf")
+    ] | None = Field(
+        None,
+        description="film_70mm_15perf is IMAX film; film_70mm is standard 5-perf",
+    )
     brand: Literal["none", "imax", "dolby_cinema", "plf", "screenx", "4dx", "dbox"] | None = None
     aspect: str | None = Field(None, description="Screen aspect, e.g. '1.43' for IMAX GT")
     requires: list[str] = Field(default_factory=list, description="e.g. ['open_caption']")

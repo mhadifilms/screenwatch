@@ -8,7 +8,7 @@ accessibility and ticketing policy into one array.
 
 from __future__ import annotations
 
-from datetime import date, timezone
+from datetime import UTC, date
 
 import pytest
 
@@ -89,7 +89,7 @@ class TestShowtimes:
 
     def test_utc_and_local_are_distinct(self, theatre_html):
         perf = RegalShowtimes().parse_showtimes(theatre_html)[0]
-        assert perf.starts_at_utc.tzinfo is timezone.utc
+        assert perf.starts_at_utc.tzinfo is UTC
         assert perf.starts_at_local.tzinfo is None
 
     def test_stop_sales_marks_sold_out(self, theatre_html):

@@ -36,9 +36,12 @@ class QualityModel:
     def for_venue(cls, venue_id: str | None, **overrides) -> QualityModel:
         """Per-venue tuning from the hardware oracle, then caller overrides."""
         base: dict[str, float] = {}
-        if venue_id and (info := venue_info(venue_id)):
-            if (depth := info.get("ideal_depth")) is not None:
-                base["ideal_depth"] = float(depth)
+        if (
+            venue_id
+            and (info := venue_info(venue_id))
+            and (depth := info.get("ideal_depth")) is not None
+        ):
+            base["ideal_depth"] = float(depth)
         base.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**base)
 

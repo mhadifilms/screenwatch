@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -30,7 +30,7 @@ def meta(source: str, slug: str) -> dict:
 
 @pytest.fixture(scope="session")
 def now() -> datetime:
-    return datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
+    return datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 
 
 @pytest.fixture(scope="session")
@@ -54,7 +54,7 @@ def pytest_collection_modifyitems(session, config, items):
         info = meta("amc", slug)
         if not (captured := info.get("captured_at")):
             continue
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(captured)).days
+        age = (datetime.now(UTC) - datetime.fromisoformat(captured)).days
         if age > STALE_AFTER_DAYS:
             config.issue_config_time_warning(
                 UserWarning(

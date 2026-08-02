@@ -66,7 +66,7 @@ class Feasibility:
     def describe(self) -> str:
         if not self.can_fit_at_all:
             return f"only {self.available} seats left — cannot fit {self.party_size}"
-        pct = int(round(self.together_probability * 100))
+        pct = round(self.together_probability * 100)
         if self.party_size == 1:
             return f"{self.available} seats left"
         if pct >= 90:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import importlib
 import random
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -26,7 +26,7 @@ from screenwatch.service.scheduler import (
 from screenwatch.service.serde import spec_to_json
 from screenwatch.service.store import Store
 
-NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 TODAY = NOW.date()
 
 

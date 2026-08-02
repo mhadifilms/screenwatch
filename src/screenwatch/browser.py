@@ -22,6 +22,7 @@ serves every source that does.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import threading
@@ -136,11 +137,12 @@ class BrowserTransport:
                 and not any(m in body for m in BLOCK_MARKERS):
             # The challenge resolves itself and navigates on; waiting for the
             # network to settle is enough, and cheaper than polling the DOM.
-            try:
+            # Timing out here is fine: the content is read either way, and
+            # `challenged` on the response is what decides whether it is
+            # usable.
+            with contextlib.suppress(Exception):
                 page.wait_for_load_state("networkidle",
                                          timeout=self.challenge_wait_ms)
-            except Exception:                                   # noqa: BLE001
-                pass
             body = page.content()
 
         return BrowserResponse(
@@ -178,11 +180,9 @@ class BrowserTransport:
     # ------------------------------------------------------------------
     def close(self) -> None:
         for closer in (self._context, self._playwright):
-            try:
+            with contextlib.suppress(Exception):
                 if closer is not None:
                     closer.close() if hasattr(closer, "close") else closer.stop()
-            except Exception:                                   # noqa: BLE001
-                pass
         self._context = self._page = self._playwright = None
 
     def __enter__(self) -> BrowserTransport:

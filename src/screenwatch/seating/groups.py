@@ -190,7 +190,7 @@ def _runs(
 
 def _has_aisle_break(run: tuple[Seat, ...]) -> bool:
     return any(
-        b.col_index - a.col_index > 1 for a, b in zip(run, run[1:])
+        b.col_index - a.col_index > 1 for a, b in itertools.pairwise(run)
     )
 
 

@@ -46,7 +46,13 @@ class Candidate:
     def key(self) -> str:
         return match_key(self.title)
 
-    def keys(self) -> set[str]:
+    def match_keys(self) -> set[str]:
+        """Every normalised title this candidate can be matched on.
+
+        Named `keys()` once, which made `key in candidate.keys()` read - to a
+        human and to a linter alike - as a dict membership test. It is not a
+        mapping.
+        """
         out = {self.key}
         if self.original_title:
             out.add(match_key(self.original_title))
@@ -297,7 +303,7 @@ class WorkResolver:
     def _candidates(self, analysis: TitleAnalysis, hint_year: int | None) -> list[Candidate]:
         try:
             return list(self.catalog.search(analysis.clean, hint_year))
-        except Exception:
+        except Exception:                                       # noqa: BLE001
             # A catalogue outage degrades identity; it must not fail a search.
             return []
 
@@ -313,7 +319,7 @@ class WorkResolver:
             return self._local_work(analysis), Method.UNRESOLVED, 0.3
 
         key = analysis.match_key
-        exact = [c for c in candidates if key in c.keys()]
+        exact = [c for c in candidates if key in c.match_keys()]
 
         if not exact:
             # Fuzzy containment is a hint, never a merge. Requires a year to

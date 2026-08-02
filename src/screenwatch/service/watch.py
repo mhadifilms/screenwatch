@@ -13,6 +13,7 @@ disconnected client loses nothing.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import urllib.error
 import urllib.request
@@ -151,7 +152,7 @@ class WatchService:
         request = urllib.request.Request(
             url, data=body, headers={"content-type": "application/json"}
         )
-        try:
+        # A webhook is a delivery attempt, not the record: the hit is already
+        # persisted, so a dead endpoint loses nothing.
+        with contextlib.suppress(urllib.error.URLError, OSError):
             urllib.request.urlopen(request, timeout=10).close()
-        except (urllib.error.URLError, OSError):
-            pass

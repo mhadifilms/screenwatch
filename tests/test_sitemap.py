@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from screenwatch.adapters.amc.sitemap import AmcSitemap, Tripwire
 
-NOW = datetime(2026, 8, 2, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 2, tzinfo=UTC)
 
 
 @pytest.fixture(scope="module")

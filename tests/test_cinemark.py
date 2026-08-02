@@ -7,7 +7,7 @@ lives. Those tests are as much about honouring that as about parsing.
 
 from __future__ import annotations
 
-from datetime import date, timezone
+from datetime import UTC, date
 
 import pytest
 
@@ -188,7 +188,7 @@ class TestTimezones:
         venue = Venue(theatre.venue_id, theatre.name, "cinemark", market=SLUG)
         show = provider._to_screenings(spec, venue, theatre, theatre_html)[0]
         assert show.starts_at_utc.hour != show.starts_at_local.hour
-        assert show.starts_at_utc.tzinfo is timezone.utc
+        assert show.starts_at_utc.tzinfo is UTC
 
 
 class TestProvider:
@@ -535,13 +535,13 @@ class TestSeatFetchNeverLeaksAChainError:
                                 robots=AllowAll(), browser=None)
 
     def option(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from screenwatch.identity.work import Work
         from screenwatch.models import Presentation
         from screenwatch.ranking.candidate import Option, Screening
 
-        when = datetime.now(timezone.utc)
+        when = datetime.now(UTC)
         return Option(screening=Screening(
             screening_id="cinemark:272827",
             work=Work(work_id="w", title="X", year=2026),

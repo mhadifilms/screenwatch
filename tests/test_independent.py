@@ -7,7 +7,7 @@ venue yielding nothing because only the JSON-LD path was tried.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -115,7 +115,7 @@ class TestProvider:
         p = self.provider()
         show = p.screenings(self.spec(), p.discover(self.spec()),
                             FakeTransport(VISTA_PAGE))[0]
-        assert show.starts_at_utc.tzinfo is timezone.utc
+        assert show.starts_at_utc.tzinfo is UTC
         assert show.starts_at_utc.hour != show.starts_at_local.hour
 
     def test_deeplink_is_the_vista_ticket_url(self):
@@ -616,7 +616,7 @@ class TestAgileClosedStates:
         assert not (s.on_sale or s.sold_out or s.closed)
 
     def test_closed_showings_are_not_offered(self):
-        html = f'''
+        html = '''
         <h3 class="film-card__title">Sholay</h3>
         <div class="views-row-active-agiletix sales-state--AfterEvent">
           <a href="https://s.test/websales/pages/ticketsearchcriteria.aspx?evtinfo=1~g&amp;">
@@ -691,12 +691,12 @@ class TestWindowIsAnchoredOnVenueLocalDate:
         assert abs((auckland - pacific).days) <= 1
 
     def test_unknown_zone_falls_back_to_utc_rather_than_raising(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from screenwatch.service.venues import local_today
 
-        assert local_today("Mars/Olympus") == datetime.now(timezone.utc).date()
-        assert local_today(None) == datetime.now(timezone.utc).date()
+        assert local_today("Mars/Olympus") == datetime.now(UTC).date()
+        assert local_today(None) == datetime.now(UTC).date()
 
     def test_venue_today_matches_its_zone(self):
         from datetime import datetime

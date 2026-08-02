@@ -9,7 +9,7 @@ to an HTML fallback.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -22,7 +22,7 @@ from screenwatch.adapters.generic.jsonld import (
 )
 from screenwatch.models import Attribute, Availability, Projection
 
-NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 
 
 def page(payload: dict | list) -> str:
@@ -92,7 +92,7 @@ class TestParsing:
 
     def test_normalizes_offsets_to_utc(self):
         [o] = JsonLdScreenings("v").parse(page(screening()), observed_at=NOW)
-        assert o.key.starts_at_utc == datetime(2026, 8, 2, 23, 30, tzinfo=timezone.utc)
+        assert o.key.starts_at_utc == datetime(2026, 8, 2, 23, 30, tzinfo=UTC)
 
     def test_reads_availability_from_offers(self):
         sold_out = screening(offers={"@type": "Offer",

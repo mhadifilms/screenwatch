@@ -29,3 +29,64 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+# Pinned explicitly. With no config the ruleset is whatever the installed
+# ruff happens to default to, which drifts between versions - and half the
+# `# noqa: BLE001` comments in this tree were load-bearing against a rule
+# that may or may not have been switched on.
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # import sorting
+    "UP",          # pyupgrade
+    "B",           # bugbear
+    "SIM",         # simplify
+    "C4",          # comprehensions
+    "RUF",         # ruff-specific
+    "BLE",         # blind except - deliberate in places, so it must be visible
+    "DTZ",         # naive datetimes: this codebase is entirely about time zones
+    "PTH",         # pathlib
+    "RET",         # returns
+]
+ignore = [
+    # A parse helper that returns a wall-clock time has no zone to attach yet;
+    # the venue's zone is applied one layer up, by the provider.
+    "DTZ007",
+    "RET504",      # named return values are often the clearer read
+    "SIM108",      # ternaries are not always simpler
+    "B008",        # FastAPI's Depends() in defaults is the documented idiom
+    # The seat renderer draws with `×`, `·`, `▮` and box-drawing characters,
+    # and the fixtures and tests carry the same glyphs. They are the output,
+    # not a typo for an ASCII lookalike.
+    "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Aligned pattern tables. Each row is `(regex, meaning)` and reads as a table;
+# wrapping to fit would make the column structure - which is the point - much
+# harder to scan.
+"src/screenwatch/identity/normalize.py" = ["E501"]
+"src/screenwatch/presentation.py" = ["E501"]
+
+# Tests import inside functions on purpose, to keep each case's dependencies
+# visible at the point of use.
+"tests/*" = [
+    "E402", "PLC0415", "SIM117",
+    # Fixture datetimes are deliberately naive: they stand for a venue's local
+    # wall clock, which is what the parsers produce and what the zone-handling
+    # tests need to be able to write down.
+    "DTZ001", "DTZ005",
+    "BLE001",      # tests assert that nothing at all escapes a boundary
+    "RUF012",      # fake providers use plain class-level lists as fixtures
+    "C408",
+    # `service, watches, store = ...` unpacks a factory's whole return even
+    # when a case only needs one of them; naming all three documents the shape.
+    "RUF059",
+    "E501",        # fixture strings and captured markup are long by nature
+    "E741", "B905", "RUF007", "SIM105",
+]
