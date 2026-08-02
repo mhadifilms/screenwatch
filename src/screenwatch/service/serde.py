@@ -63,6 +63,7 @@ def spec_to_dict(spec: SearchSpec) -> dict:
              "label": s.label}
             for s in (spec.presentations.ranked if spec.presentations else [])
         ],
+        "strict_presentations": spec.strict_presentations,
         "memberships": sorted(m.value for m in spec.memberships),
         "seating": {
             "together": spec.seating.together,
@@ -126,6 +127,7 @@ def spec_from_dict(data: dict) -> SearchSpec:
             for w in data.get("time_windows") or []
         ),
         presentations=Preference(presentations) if presentations else None,
+        strict_presentations=bool(data.get("strict_presentations", False)),
         memberships=frozenset(Membership(m) for m in data.get("memberships") or ()),
         seating=SeatingPrefs(
             together=seating.get("together", True),

@@ -17,7 +17,7 @@ import json
 import urllib.error
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 
 from ..ranking.candidate import Option
@@ -72,7 +72,16 @@ class WatchService:
 
         `seed=False` is for "tell me about everything you can find, now" -
         useful when the watch is created before any tickets exist at all.
+
+        A format preference on a watch is a filter, not a ranking: an alert
+        for a format the user did not ask for is a wrong answer rather than a
+        partial one, and a few of those teach them to ignore the rest. So the
+        spec is stored with `strict_presentations` on, and the seed uses the
+        same spec - otherwise the seen-set would be seeded with screenings the
+        watch will never report and the first genuine hit would be missed.
         """
+        if spec.presentations is not None and not spec.strict_presentations:
+            spec = replace(spec, strict_presentations=True)
         watch_id = f"w_{uuid.uuid4().hex[:12]}"
         self.store.create_watch(
             watch_id, label, spec_to_json(spec),

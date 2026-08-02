@@ -9,6 +9,7 @@ on sale when you created it).
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, datetime, time, timezone
 
 import pytest
@@ -683,3 +684,102 @@ class TestScopeIsReported:
         )
         assert result.clipped == ()
         assert result.complete
+
+
+class TestSerdeCoversEverySpecField:
+    """The round-trip is how a watch survives being stored.
+
+    A watch keeps its SearchSpec as JSON in SQLite, so a field the
+    serialiser does not know about is a field the watch silently loses on
+    its very first poll. Enumerating the dataclass rather than a hand-written
+    list means a new field fails here instead of in production.
+    """
+
+    def test_no_spec_field_is_dropped_by_the_serialiser(self):
+        from dataclasses import fields
+
+        from screenwatch.service.serde import spec_to_dict
+
+        spec = SearchSpec(work=WorkRef(query="x"))
+        serialised = spec_to_dict(spec)
+        missing = [
+            f.name for f in fields(SearchSpec)
+            if f.name not in serialised and f.name != "weights"
+        ]
+        assert missing == [], f"spec fields never serialised: {missing}"
+
+    def test_strict_presentations_survives_a_round_trip(self):
+        from screenwatch.models import Brand, Preference, PresentationSpec
+        from screenwatch.service.serde import spec_from_dict, spec_to_dict
+
+        spec = SearchSpec(
+            work=WorkRef(query="dune"),
+            presentations=Preference([PresentationSpec(brand=Brand.IMAX)]),
+            strict_presentations=True,
+        )
+        assert spec_from_dict(spec_to_dict(spec)).strict_presentations is True
+
+
+class TestWatchesFilterByFormat:
+    """"Tell me about new 70mm IMAX Dune tickets" is a request about 70mm
+    IMAX. A standard digital showing is not a partial answer to it."""
+
+    def spec(self, **kw):
+        from screenwatch.models import Brand, Preference, PresentationSpec
+
+        return SearchSpec(
+            work=WorkRef(query=WORK.title),
+            presentations=Preference([PresentationSpec(brand=Brand.IMAX)]),
+            **kw,
+        )
+
+    def digital(self, sid):
+        s = screening(sid)
+        return replace(s, presentation=Presentation(Projection.DIGITAL))
+
+    def test_a_search_still_ranks_rather_than_filters(self):
+        store = Store.memory()
+        service = SearchService([FakeProvider([self.digital("amc:1")])],
+                                store=store, directory=VenueDirectory(),
+                                transport=object())
+        result = service.search(self.spec(), today=date(2026, 8, 2))
+        # Kept: with everything else sold out, a lesser format beats not going.
+        assert len(result.options) == 1
+
+    def test_a_strict_spec_drops_the_wrong_format(self):
+        store = Store.memory()
+        service = SearchService([FakeProvider([self.digital("amc:1")])],
+                                store=store, directory=VenueDirectory(),
+                                transport=object())
+        result = service.search(
+            self.spec(strict_presentations=True), today=date(2026, 8, 2)
+        )
+        assert result.options == []
+
+    def test_creating_a_watch_makes_its_format_preference_strict(self):
+        store = Store.memory()
+        service = SearchService([FakeProvider([self.digital("amc:1")])],
+                                store=store, directory=VenueDirectory(),
+                                transport=object())
+        watches = WatchService(service, store)
+        watch_id = watches.create(self.spec(), "dune imax", today=date(2026, 8, 2))
+
+        stored = spec_from_json(store.get_watch(watch_id)["spec"])
+        assert stored.strict_presentations is True
+
+    def test_a_watch_does_not_fire_on_a_format_nobody_asked_for(self):
+        store = Store.memory()
+        provider = FakeProvider([])
+        service = SearchService([provider], store=store,
+                                directory=VenueDirectory(), transport=object())
+        watches = WatchService(service, store)
+        watch_id = watches.create(self.spec(), "dune imax", today=date(2026, 8, 2))
+
+        # A digital showing appears. It is new, but it is not what was asked for.
+        provider._screenings = [self.digital("amc:99")]
+        assert watches.run(watch_id, today=date(2026, 8, 2)) == []
+
+        # The IMAX one is a hit.
+        provider._screenings = [screening("amc:100")]
+        hits = watches.run(watch_id, today=date(2026, 8, 2))
+        assert [h.option.screening.screening_id for h in hits] == ["amc:100"]

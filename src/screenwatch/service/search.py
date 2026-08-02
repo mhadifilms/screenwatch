@@ -165,6 +165,10 @@ class SearchService:
         screenings = [
             s for s in screenings if window.contains(s.starts_at_local.date())
         ]
+        if spec.strict_presentations and spec.presentations is not None:
+            screenings = [
+                s for s in screenings if spec.presentations.wants(s.presentation)
+            ]
 
         options = coarse_rank(screenings, spec)
 

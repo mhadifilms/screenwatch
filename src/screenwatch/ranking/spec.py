@@ -205,6 +205,15 @@ class SearchSpec:
     date_window: DateWindow | None = None          # None = today .. +7
     time_windows: tuple[TimeWindow, ...] = ()      # empty = any time
     presentations: Preference | None = None        # None = no format preference
+    # Treat `presentations` as a filter rather than a ranking.
+    #
+    # A search wants ranking: with everything sold out, a format you did not
+    # ask for still beats not going, so an unmatched presentation is scored
+    # low and kept. A *watch* wants the opposite. "Tell me when new 70mm IMAX
+    # Dune tickets drop" is a request about 70mm IMAX, and firing an alert for
+    # a standard digital showing is not a partial answer, it is the wrong one -
+    # and it trains the user to ignore the alerts.
+    strict_presentations: bool = False
     memberships: frozenset[Membership] = field(default_factory=frozenset)
     seating: SeatingPrefs = field(default_factory=SeatingPrefs)
     budget: Budget = field(default_factory=Budget)

@@ -97,6 +97,14 @@ class SearchSpecInput(BaseModel):
         default_factory=list,
         description="Ranked best-first. Empty means no format preference.",
     )
+    strict_presentations: bool = Field(
+        False,
+        description="Treat `presentations` as a hard filter instead of a "
+                    "ranking. Off for searches - with everything sold out a "
+                    "lesser format still beats not going. Watches turn it on "
+                    "automatically, since an alert for the wrong format is a "
+                    "wrong answer rather than a partial one.",
+    )
     memberships: list[
         Literal["amc_alist", "regal_unlimited", "cinemark_movie_club", "alamo_season_pass"]
     ] = Field(default_factory=list, description="Subscriptions you hold — boosts covered venues")
