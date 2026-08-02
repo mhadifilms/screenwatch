@@ -78,6 +78,18 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
             raise HTTPException(404, "unknown option_id")
         return option
 
+    # Declared before the JSON route on purpose. Starlette matches in
+    # declaration order and `{option_id}` happily swallows a trailing ".svg",
+    # so with the JSON route first this one was unreachable: every request for
+    # an SVG got JSON back with an option_id nobody had, i.e. a 404.
+    @app.get("/v1/seatmap/{option_id}.svg")
+    def seatmap_svg(option_id: str) -> Response:
+        option = _option(option_id)
+        if option.auditorium is None:
+            raise HTTPException(404, f"no seat map ({option.seat_data})")
+        picked = {s.id for s in option.seats.seats} if option.seats else set()
+        return Response(to_svg(option.auditorium, picked), media_type="image/svg+xml")
+
     @app.get("/v1/seatmap/{option_id}")
     def seatmap(option_id: str) -> dict:
         option = _option(option_id)
@@ -86,14 +98,6 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
         picked = {s.id for s in option.seats.seats} if option.seats else set()
         return {"grid": to_unicode_grid(option.auditorium, picked),
                 "seat_data": option.seat_data}
-
-    @app.get("/v1/seatmap/{option_id}.svg")
-    def seatmap_svg(option_id: str) -> Response:
-        option = _option(option_id)
-        if option.auditorium is None:
-            raise HTTPException(404, f"no seat map ({option.seat_data})")
-        picked = {s.id for s in option.seats.seats} if option.seats else set()
-        return Response(to_svg(option.auditorium, picked), media_type="image/svg+xml")
 
     @app.post("/v1/watches")
     def create_watch(body: WatchCreate, uid: str = Depends(user)) -> dict:

@@ -223,7 +223,7 @@ class SearchService:
         No cart automation, no purchase, no stored payment - the user opens
         this and finishes it themselves.
         """
-        screening_id = option_id.split("#")[0]
+        screening_id = option_id.split(Option.SEAT_SEPARATOR)[0]
         row = self.store._conn.execute(
             "SELECT deeplink FROM screenings WHERE screening_id=?", (screening_id,)
         ).fetchone()

@@ -66,10 +66,19 @@ class Option:
     tradeoffs: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
 
+    # Separates the screening from its seat assignment inside an option id.
+    #
+    # `~` rather than `#`, which is what this used to be. Option ids travel in
+    # URL paths - `/v1/seatmap/{option_id}` - and a browser or client truncates
+    # at `#` before the request is even sent, so every seat map request arrived
+    # asking for an option whose id had been silently cut in half. `~` is
+    # unreserved in RFC 3986 and needs no escaping anywhere.
+    SEAT_SEPARATOR = "~"
+
     @property
     def option_id(self) -> str:
         seats = "-".join(s.id for s in self.seats.seats) if self.seats else "noseats"
-        return f"{self.screening.screening_id}#{seats}"
+        return f"{self.screening.screening_id}{self.SEAT_SEPARATOR}{seats}"
 
     @property
     def can_sit_together_probability(self) -> float | None:

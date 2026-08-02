@@ -384,8 +384,44 @@ class TestTransportsAgree:
         app = create_app(service, WatchService(service, store))
         routes = {r.path for r in app.routes}
         for path in ("/v1/search", "/v1/watches", "/v1/resolve",
-                     "/v1/seatmap/{option_id}", "/v1/booking-link/{option_id}"):
+                     "/v1/seatmap/{option_id}", "/v1/booking-link/{option_id}",
+                     "/v1/seatmap/{option_id}.svg"):
             assert path in routes
+
+    def test_the_svg_route_is_actually_reachable(self):
+        """Route registration is not route matching.
+
+        `{option_id}` swallows a trailing ".svg", so with the JSON route
+        declared first every SVG request was answered by the JSON handler
+        looking for an option whose id ended in ".svg" - a 404 that looked
+        like a missing option rather than a shadowed route.
+        """
+        from fastapi.testclient import TestClient
+
+        from screenwatch.api.app import create_app
+
+        store = Store.memory()
+        room = build_auditorium("amc-metreon-16", "1", ["××....", "......"])
+        service = SearchService([FakeProvider([screening("amc:1")], room)],
+                                store=store, directory=VenueDirectory(),
+                                transport=object())
+        client = TestClient(create_app(service, WatchService(service, store)))
+        searched = client.post(
+            "/v1/search",
+            json={"work": {"query": WORK.title}, "party_size": 2,
+                  "date_window": {"start": "2026-08-02", "end": "2026-08-03"}},
+        )
+        assert searched.status_code == 200
+        option_id = searched.json()["options"][0]["option_id"]
+
+        svg = client.get(f"/v1/seatmap/{option_id}.svg")
+        assert svg.status_code == 200
+        assert svg.headers["content-type"].startswith("image/svg+xml")
+        assert svg.text.startswith("<svg")
+
+        grid = client.get(f"/v1/seatmap/{option_id}")
+        assert grid.status_code == 200
+        assert "grid" in grid.json()
 
 
 class TestMcpTools:
