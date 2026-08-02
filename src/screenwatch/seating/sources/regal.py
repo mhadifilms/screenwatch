@@ -43,8 +43,10 @@ from ..model import (
 BOOKING_API = "https://webbooking.regmovies.com"
 SEAT_PLAN = "{base}/api/GetSeatPlan?theatreCode={theatre}&sessionId={session}"
 
-# Vista seat status codes.
+# Vista seat status codes, as documented and as observed.
 _AVAILABLE = {0, "0", "Available", "available"}
+_SOLD = {1, "1", "Sold", "sold", 2, "2", "Reserved", "reserved",
+         "Held", "held", "Unavailable", "unavailable"}
 _HOUSE = {3, "3", "House", "house"}
 _BROKEN = {4, "4", "Broken", "broken"}
 
@@ -120,8 +122,18 @@ class RegalSeatSource:
                         seat_status = SeatStatus.UNAVAILABLE
                     elif status in _AVAILABLE:
                         seat_status = SeatStatus.AVAILABLE
-                    else:
+                    elif status in _SOLD:
                         seat_status = SeatStatus.SOLD
+                    else:
+                        # Not defaulted to SOLD. An unrecognised code most
+                        # likely means Vista added one, and quietly calling it
+                        # sold would hide every seat behind it - the failure
+                        # this whole module exists to avoid. Raising loses the
+                        # showing instead, which is visible and recoverable.
+                        raise SeatDataUnavailable(
+                            f"unrecognised Regal seat status {status!r} in row "
+                            f"{row_label or row_index} - schema changed"
+                        )
 
                     seats.append(
                         Seat(

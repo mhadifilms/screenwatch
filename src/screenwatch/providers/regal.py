@@ -19,10 +19,12 @@ from curl_cffi import requests
 
 from ..adapters.regal.showtimes import (
     DIRECTORY,
+    RegalBlocked,
     RegalChallenged,
     RegalPerformance,
     RegalShowtimes,
     RegalTheatre,
+    RegalUnavailable,
 )
 from ..browser import BrowserUnavailable, shared_browser
 from ..identity.resolve import WorkResolver
@@ -40,6 +42,24 @@ from ..seating.sources.regal import BOOKING_API, RegalSeatSource
 from ..service.venues import Venue
 from ..transport import Transport
 from .scope import ScopeReporting
+
+
+# Statuses where trying again is reasonable. Anything else is a settled
+# answer, and sleeping five times before repeating it helps nobody.
+_RETRYABLE = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 524})
+
+# Cloudflare's interstitial, in the forms it has actually been served here.
+_CHALLENGE_MARKERS = (
+    "just a moment",
+    "cf-browser-verification",
+    "challenge-platform",
+    "_cf_chl_opt",
+)
+
+
+def _challenged(body: str) -> bool:
+    lowered = (body or "")[:4000].lower()
+    return any(marker in lowered for marker in _CHALLENGE_MARKERS)
 
 
 class RegalProvider(ScopeReporting):
@@ -78,16 +98,56 @@ class RegalProvider(ScopeReporting):
         Deliberately a plain bounded retry, not a challenge solver: if
         Cloudflare escalates from "managed challenge" to an interactive one,
         this gives up and says so rather than trying to defeat it.
+
+        The three ways this fails are kept apart, because they need different
+        responses and the caller cannot tell them apart from a bare
+        "challenged":
+
+        * a **challenge** clears on retry, so it is worth retrying;
+        * a **path rule** (403 on /api/*) never clears, so retrying is waste;
+        * a **network error** is about us, not them.
+
+        Retrying a 404 or a 500 is equally pointless, so only a challenge and
+        the transient 5xx-and-429 family are retried at all.
         """
-        last = ""
+        last_problem = "no attempt made"
         for attempt in range(self.retries):
-            response = self._session.get(url, timeout=30)
-            last = response.text
-            if response.status_code == 200 and "Just a moment" not in last:
-                return last
-            time.sleep(self.backoff_s * (attempt + 1))
+            try:
+                response = self._session.get(url, timeout=30)
+            except Exception as exc:                            # noqa: BLE001
+                # curl_cffi raises its own error types; catching the base is
+                # deliberate, since a DNS failure and a TLS failure both mean
+                # "try again" here.
+                last_problem = f"{type(exc).__name__}: {exc}"
+            else:
+                body = response.text
+                if response.status_code == 200 and not _challenged(body):
+                    return body
+                if _challenged(body):
+                    # Checked before the status code, because the challenge is
+                    # served *as* a 403 - reading the status first turned every
+                    # retryable challenge into a hard failure.
+                    last_problem = "Cloudflare challenge"
+                elif response.status_code == 403:
+                    # A 403 with no challenge markup is a firewall rule. It
+                    # will still be there in five seconds.
+                    raise RegalBlocked(
+                        f"Regal denies this path outright (HTTP 403, no "
+                        f"challenge markup): {url}"
+                    )
+                elif response.status_code not in _RETRYABLE:
+                    raise RegalUnavailable(f"HTTP {response.status_code} from {url}")
+                else:
+                    last_problem = f"HTTP {response.status_code}"
+
+            # No sleep after the final attempt - there is nothing left to wait
+            # for, and it added `backoff_s * retries` to every failure.
+            if attempt < self.retries - 1:
+                time.sleep(self.backoff_s * (attempt + 1))
+
         raise RegalChallenged(
-            f"Cloudflare challenge persisted across {self.retries} attempts: {url}"
+            f"persisted across {self.retries} attempts "
+            f"({last_problem}): {url}"
         )
 
     def theatres(self) -> list[RegalTheatre]:
@@ -144,7 +204,7 @@ class RegalProvider(ScopeReporting):
                             Availability.SOLD_OUT if perf.sold_out
                             else Availability.SELLABLE
                         ),
-                        deeplink=perf.deeplink(),
+                        deeplink=perf.deeplink(theatre.path_name),
                         distance_km=venue.distance_km(spec.location.origin),
                         screen_id=perf.auditorium,
                         sources=(self.adapter.source,),

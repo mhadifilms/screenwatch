@@ -45,6 +45,7 @@ from ..robots import ROBOTS
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.sources.cinemark import CinemarkSeatSource
 from ..service.venues import Venue
+from ..browser import BrowserUnavailable, shared_browser
 from ..transport import Transport
 from .scope import ScopeReporting
 
@@ -64,9 +65,11 @@ class CinemarkProvider(ScopeReporting):
         robots=ROBOTS,
         store=None,
         bootstrap_limit: int = 8,
+        browser=None,
     ) -> None:
         self.store = store
         self.bootstrap_limit = bootstrap_limit
+        self._browser = browser
         self.adapter = CinemarkShowtimes()
         self.seats = CinemarkSeatSource()
         self.work_resolver = work_resolver or WorkResolver()
@@ -285,6 +288,16 @@ class CinemarkProvider(ScopeReporting):
         A plain GET returns every seat with its availability. No login, no
         cart, and crucially no hold - a hold is created by *selecting* a seat,
         which this never does.
+
+        The URL comes from the showtime link the theatre page wrote, not from
+        the ids: the two-parameter form redirects to the homepage, which
+        parses to zero seats and is indistinguishable from a sellout.
+
+        Cloudflare now challenges this path for a plain client, so a
+        challenged fetch is retried through the browser, which is what the
+        browser transport is for. Everything that still fails is reported as
+        `SeatDataUnavailable` - a chain-specific exception escaping here would
+        take the whole search down with it.
         """
         screening = option.screening
         theater_id = self._theater_id_for(screening.venue_id)
@@ -293,10 +306,40 @@ class CinemarkProvider(ScopeReporting):
             raise SeatDataUnavailable(
                 f"unknown Cinemark theater id for {screening.venue_id}"
             )
-        html = self._get(self.seats.url(theater_id, showtime_id))
+        url = self.seats.url(theater_id, showtime_id,
+                             page_url=screening.deeplink or "")
+        try:
+            html = self._get(url)
+        except CinemarkChallenged as exc:
+            html = self._through_browser(url, exc)
+        except Exception as exc:                                # noqa: BLE001
+            raise SeatDataUnavailable(
+                f"Cinemark seat map fetch failed: {type(exc).__name__}: {exc}"
+            ) from exc
         return self.seats.parse(
             html, venue_id=screening.venue_id, screen_id=screening.screen_id or ""
         )
+
+    def _through_browser(self, url: str, cause: Exception) -> str:
+        """Second attempt at a challenged seat map, from a real browser."""
+        try:
+            browser = self._browser or shared_browser()
+            response = browser.visit(url)
+        except BrowserUnavailable as exc:
+            raise SeatDataUnavailable(
+                f"Cinemark challenged the seat map and no browser is "
+                f"available to clear it: {exc}"
+            ) from cause
+        except Exception as exc:                                # noqa: BLE001
+            raise SeatDataUnavailable(
+                f"Cinemark seat map via browser failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from cause
+        if response.challenged or response.blocked:
+            raise SeatDataUnavailable(
+                "Cinemark's Cloudflare challenge survived the browser too"
+            )
+        return response.text
 
     def _theater_id_for(self, venue_id: str) -> str | None:
         known = self._theatres.get(venue_id)

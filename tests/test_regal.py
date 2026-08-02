@@ -248,3 +248,205 @@ class TestBlockVsChallenge:
             "venue_id": "regal-x", "screening_id": "regal:1", "screen_id": ""})()})()
         with pytest.raises(SeatDataUnavailable, match="not a solvable challenge"):
             provider.fetch_seats(option, transport=None)
+
+
+class TestRegalSeatPlanParsing:
+    """Written from Vista's schema, since Cloudflare denies /api/* to every
+    client tried. The parser is what will meet the first real response, so
+    its own behaviour is worth pinning even while the fetch is blocked."""
+
+    def parse(self, payload, **kw):
+        from screenwatch.seating.sources.regal import RegalSeatSource
+
+        return RegalSeatSource.parse(payload, venue_id="regal-x", **kw)
+
+    def plan(self, seats, *, area_key="Areas", row_key="Rows", seat_key="Seats"):
+        return {"SeatLayoutData": {area_key: [{row_key: [
+            {"PhysicalName": "A", "RowIndex": 0, seat_key: seats}
+        ]}]}}
+
+    def seat(self, col, status, kind=0):
+        return {"Id": str(col + 1), "ColumnIndex": col, "Status": status,
+                "SeatType": kind}
+
+    def test_parses_a_row_of_available_seats(self):
+        from screenwatch.seating.model import SeatStatus
+
+        room = self.parse(self.plan([self.seat(i, 0) for i in range(4)]))
+        assert len(room.seats) == 4
+        assert all(s.status is SeatStatus.AVAILABLE for s in room.seats)
+        assert room.available == 4
+
+    def test_accepts_the_camelcase_spelling_too(self):
+        payload = {"seatLayoutData": {"areas": [{"rows": [
+            {"physicalName": "A", "rowIndex": 0,
+             "seats": [{"id": "1", "columnIndex": 0, "status": 0, "seatType": 0}]}
+        ]}]}}
+        assert len(self.parse(payload).seats) == 1
+
+    def test_sold_and_house_seats_are_distinguished(self):
+        from screenwatch.seating.model import SeatStatus
+
+        room = self.parse(self.plan([
+            self.seat(0, 0), self.seat(1, 1), self.seat(2, 3), self.seat(3, 4)
+        ]))
+        assert [s.status for s in sorted(room.seats, key=lambda s: s.col_index)] == [
+            SeatStatus.AVAILABLE, SeatStatus.SOLD,
+            SeatStatus.UNAVAILABLE, SeatStatus.UNAVAILABLE,
+        ]
+
+    def test_seat_kinds_are_mapped(self):
+        from screenwatch.seating.model import SeatKind
+
+        room = self.parse(self.plan([self.seat(0, 0, 1), self.seat(1, 0, 2)]))
+        kinds = {s.kind for s in room.seats}
+        assert kinds == {SeatKind.WHEELCHAIR, SeatKind.COMPANION}
+
+    def test_an_unknown_status_raises_rather_than_defaulting_to_sold(self):
+        """Defaulting hid every seat behind a schema change - silently
+        reporting a full house is the one failure this module must not have."""
+        from screenwatch.seating.model import SeatDataUnavailable
+
+        with pytest.raises(SeatDataUnavailable, match="unrecognised"):
+            self.parse(self.plan([self.seat(0, "Quantum")]))
+
+    def test_html_instead_of_json_is_named_as_such(self):
+        from screenwatch.seating.model import SeatDataUnavailable
+
+        with pytest.raises(SeatDataUnavailable, match="HTML"):
+            self.parse("<html>Just a moment...</html>")
+
+    def test_an_error_payload_is_surfaced(self):
+        from screenwatch.seating.model import SeatDataUnavailable
+
+        with pytest.raises(SeatDataUnavailable, match="seat plan error"):
+            self.parse({"errorCode": 5, "errorMessage": "no session"})
+
+    def test_no_areas_is_not_an_empty_room(self):
+        from screenwatch.seating.model import SeatDataUnavailable
+
+        with pytest.raises(SeatDataUnavailable, match="no seating areas"):
+            self.parse({"SeatLayoutData": {"Areas": []}})
+
+    def test_general_admission_is_reported_not_returned_as_zero_seats(self):
+        from screenwatch.seating.model import SeatDataUnavailable
+
+        with pytest.raises(SeatDataUnavailable, match="general admission"):
+            self.parse(self.plan([]))
+
+    def test_the_url_carries_the_apps_own_bypass_flag(self):
+        from screenwatch.seating.sources.regal import RegalSeatSource
+
+        url = RegalSeatSource().url("0123", "9876")
+        assert "theatreCode=0123" in url and "sessionId=9876" in url
+        assert url.endswith("&bypass=true")
+
+
+class TestFetchLoopDistinguishesFailures:
+    """A challenge, a firewall rule and a network error need different
+    responses, and the caller cannot tell them apart from a bare
+    "challenged"."""
+
+    class Session:
+        def __init__(self, *responses):
+            self.responses = list(responses)
+            self.calls = 0
+
+        def get(self, url, **kw):
+            self.calls += 1
+            item = self.responses[min(self.calls - 1, len(self.responses) - 1)]
+            if isinstance(item, Exception):
+                raise item
+            status, body = item
+            return type("R", (), {"status_code": status, "text": body})()
+
+    def provider(self, session, **kw):
+        return RegalProvider(session=session, backoff_s=0, **kw)
+
+    def test_a_bare_403_is_a_block_and_is_not_retried(self):
+        from screenwatch.adapters.regal.showtimes import RegalBlocked
+
+        session = self.Session((403, "<html>Forbidden</html>"))
+        with pytest.raises(RegalBlocked, match="denies this path"):
+            self.provider(session).theatres()
+        assert session.calls == 1, "a firewall rule will not clear on retry"
+
+    def test_a_403_carrying_a_challenge_is_retried(self, directory_html):
+        session = self.Session((403, CHALLENGE), (200, directory_html))
+        assert len(self.provider(session).theatres()) > 350
+        assert session.calls == 2
+
+    def test_a_404_is_not_retried_either(self):
+        from screenwatch.adapters.regal.showtimes import RegalUnavailable
+
+        session = self.Session((404, "nope"))
+        with pytest.raises(RegalUnavailable, match="HTTP 404"):
+            self.provider(session).theatres()
+        assert session.calls == 1
+
+    def test_a_500_is_retried(self, directory_html):
+        session = self.Session((503, "busy"), (200, directory_html))
+        assert len(self.provider(session).theatres()) > 350
+        assert session.calls == 2
+
+    def test_a_network_error_is_retried_then_reported(self):
+        session = self.Session(OSError("connection reset"))
+        with pytest.raises(RegalChallenged, match="connection reset"):
+            self.provider(session, retries=3).theatres()
+        assert session.calls == 3
+
+    def test_no_sleep_after_the_final_attempt(self, monkeypatch):
+        """It added backoff_s * retries to the latency of every failure."""
+        slept = []
+        monkeypatch.setattr("screenwatch.providers.regal.time.sleep", slept.append)
+
+        session = self.Session((403, CHALLENGE))
+        provider = RegalProvider(session=session, retries=3, backoff_s=1.0)
+        with pytest.raises(RegalChallenged):
+            provider.theatres()
+        assert len(slept) == 2, "three attempts means two waits between them"
+
+
+class TestBookingLinkPointsSomewhereReal:
+    """The deeplink is the system's final output - it stops at a link and
+    hands over. `/showtimes/{performance_id}` 404s: there is no
+    per-performance page on regmovies.com, the booking flow is client-side
+    routing into webbooking, and every path there renders the same shell.
+    """
+
+    def perf(self):
+        from datetime import datetime
+
+        from screenwatch.adapters.regal.showtimes import RegalPerformance
+
+        return RegalPerformance(
+            performance_id="260019", theatre_code="1929", movie_code="HO1",
+            title="Spider-Man", starts_at_utc=datetime(2026, 8, 2, 21, 30),
+            starts_at_local=datetime(2026, 8, 2, 17, 30), auditorium="9",
+            attributes=(), sold_out=False,
+        )
+
+    def test_it_is_the_dated_theatre_page(self):
+        link = self.perf().deeplink("regal-times-square-1929")
+        assert link == ("https://www.regmovies.com/theatres/"
+                        "regal-times-square-1929?date=2026-08-02")
+
+    def test_it_never_returns_the_dead_performance_path(self):
+        assert "/showtimes/260019" not in self.perf().deeplink("regal-x")
+
+    def test_without_a_theatre_slug_it_degrades_to_the_directory(self):
+        assert self.perf().deeplink() == "https://www.regmovies.com/theatres"
+
+    def test_the_provider_passes_the_slug_through(self, directory_html, theatre_html):
+        session = FakeSession([directory_html])
+        provider = RegalProvider(session=session, backoff_s=0, max_venues=1)
+        provider.theatres()
+        session.responses, session.calls = [theatre_html], 0
+        spec = SearchSpec(work=WorkRef(query="*"),
+                          date_window=DateWindow(date(2020, 1, 1), date(2030, 1, 1)))
+        venues = [v for v in provider.discover(spec)
+                  if v.venue_id == "regal-times-square-1929"]
+        shows = provider.screenings(spec, venues, transport=None)
+        assert shows
+        assert all("/theatres/regal-times-square-1929?date=" in s.deeplink
+                   for s in shows)

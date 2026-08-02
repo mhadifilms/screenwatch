@@ -189,13 +189,26 @@ class CinemarkShowtime:
     runtime_min: int | None
     starts_at_local: datetime
     print_type: str
+    # The seat-map href exactly as the page wrote it.
+    #
+    # Kept rather than rebuilt from the parts. Cinemark's link carries four
+    # parameters - TheaterId, ShowtimeId, CinemarkMovieId and Showtime - and a
+    # reconstruction using only the first two is answered with a redirect to
+    # the homepage. Verified: the two-parameter form lands on "Cinemark
+    # Theatres | Movie Times"; the full one on "Cinemark - Reserve Your Seats"
+    # with the seat markup present.
+    seat_map_path: str = ""
 
     def deeplink(self) -> str:
-        """Points at /TicketSeatMap, which robots.txt disallows *fetching*.
+        """The page a person opens to pick seats and buy.
 
-        Handing it to a person is a different act from crawling it, so it is
-        returned here and never retrieved by this code.
+        The full four-parameter URL the site itself links to. Rebuilding it
+        from theater and showtime alone produced a link that redirected to the
+        homepage - a booking link that silently goes nowhere is worse than no
+        link, because it looks like it worked.
         """
+        if self.seat_map_path:
+            return BASE + self.seat_map_path
         return (
             f"{BASE}/TicketSeatMap/?TheaterId={self.theater_id}"
             f"&ShowtimeId={self.showtime_id}"
@@ -336,6 +349,7 @@ class CinemarkShowtimes:
                     runtime_min=parse_runtime(model.get("movieRunTime") or ""),
                     starts_at_local=datetime.fromisoformat(when),
                     print_type=html_lib.unescape(print_type),
+                    seat_map_path=html_lib.unescape(href),
                 )
             )
 

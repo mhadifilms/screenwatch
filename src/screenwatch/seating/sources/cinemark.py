@@ -63,7 +63,15 @@ class CinemarkSeatSource:
     source = "cinemark:seatmap"
     tier = 3
 
-    def url(self, theater_id: str, showtime_id: str) -> str:
+    def url(self, theater_id: str, showtime_id: str, *, page_url: str = "") -> str:
+        """Prefer the URL the site itself wrote.
+
+        Cinemark's own link carries four parameters; the two-parameter form
+        this can build from ids alone is answered with a redirect to the
+        homepage, which parses to zero seats and reads as "sold out".
+        """
+        if "/TicketSeatMap/" in page_url:
+            return page_url
         return SEAT_MAP.format(theater=theater_id, showtime=showtime_id)
 
     # ------------------------------------------------------------------

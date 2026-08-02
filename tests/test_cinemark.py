@@ -469,3 +469,129 @@ class TestSeatMaps:
 
         with pytest.raises(SeatDataUnavailable, match="no seat buttons"):
             CinemarkSeatSource.parse("<html><body>nothing</body></html>", venue_id="v")
+
+
+class TestSeatMapUrlIsTheOneThePageWrote:
+    """Cinemark's showtime link carries four parameters.
+
+    Rebuilt from TheaterId and ShowtimeId alone it redirects to the homepage,
+    which parses to zero seats - indistinguishable from a sellout. Measured:
+    the two-parameter form lands on "Cinemark Theatres | Movie Times", the
+    full one on "Cinemark - Reserve Your Seats".
+    """
+
+    FULL = ("/TicketSeatMap/?TheaterId=1098&ShowtimeId=272827"
+            "&CinemarkMovieId=107537&Showtime=2026-08-02T20:00:00")
+
+    def test_the_parser_keeps_the_href_verbatim(self):
+        from screenwatch.adapters.cinemark.showtimes import CinemarkShowtimes
+
+        html = (
+            '<script data-json-model="{&quot;cinemarkMovieId&quot;:107537,'
+            '&quot;movieTitle&quot;:&quot;Spider-Man&quot;,'
+            '&quot;movieRunTime&quot;:&quot;2 hr 5 min&quot;}"></script>'
+            '<div class="showtime" data-print-type-name="Standard Format">'
+            f'<a href="{self.FULL.replace("&", "&amp;")}">8:00pm</a></div>'
+        )
+        [show] = CinemarkShowtimes().parse_showtimes(html)
+        assert show.seat_map_path == self.FULL
+        assert show.deeplink().endswith(self.FULL)
+        assert "CinemarkMovieId=107537" in show.deeplink()
+
+    def test_the_seat_source_prefers_the_page_url(self):
+        from screenwatch.seating.sources.cinemark import CinemarkSeatSource
+
+        source = CinemarkSeatSource()
+        full = "https://www.cinemark.com" + self.FULL
+        assert source.url("1098", "272827", page_url=full) == full
+
+    def test_it_falls_back_to_the_two_parameter_form(self):
+        from screenwatch.seating.sources.cinemark import CinemarkSeatSource
+
+        url = CinemarkSeatSource().url("1098", "272827", page_url="")
+        assert "TheaterId=1098" in url and "ShowtimeId=272827" in url
+
+    def test_an_unrelated_page_url_is_not_used_as_a_seat_map(self):
+        from screenwatch.seating.sources.cinemark import CinemarkSeatSource
+
+        url = CinemarkSeatSource().url(
+            "1098", "272827", page_url="https://www.cinemark.com/theatres/x"
+        )
+        assert "/TicketSeatMap/" in url
+
+
+class TestSeatFetchNeverLeaksAChainError:
+    """A chain-specific exception escaping fetch_seats took the whole search
+    down with it - the provider protocol says SeatDataUnavailable."""
+
+    def provider(self, session):
+        from screenwatch.providers.cinemark import CinemarkProvider
+
+        class AllowAll:
+            def check_fetch(self, url):
+                return None
+
+        return CinemarkProvider(session=session, backoff_s=0, retries=1,
+                                robots=AllowAll(), browser=None)
+
+    def option(self):
+        from datetime import datetime, timezone
+
+        from screenwatch.identity.work import Work
+        from screenwatch.models import Presentation
+        from screenwatch.ranking.candidate import Option, Screening
+
+        when = datetime.now(timezone.utc)
+        return Option(screening=Screening(
+            screening_id="cinemark:272827",
+            work=Work(work_id="w", title="X", year=2026),
+            venue_id="cinemark-hazlet-12", venue_name="Hazlet",
+            chain="cinemark", starts_at_utc=when,
+            starts_at_local=when.replace(tzinfo=None),
+            presentation=Presentation(),
+            deeplink="https://www.cinemark.com/TicketSeatMap/?TheaterId=1098"
+                     "&ShowtimeId=272827&CinemarkMovieId=1&Showtime=x",
+        ))
+
+    class Session:
+        def __init__(self, status, body):
+            self.status, self.body = status, body
+
+        def get(self, url, **kw):
+            return type("R", (), {"status_code": self.status, "text": self.body})()
+
+    def test_a_challenge_with_no_browser_degrades_rather_than_raising(self, monkeypatch):
+        from screenwatch.browser import BrowserUnavailable
+        from screenwatch.seating.model import SeatDataUnavailable
+
+        monkeypatch.setattr(
+            "screenwatch.providers.cinemark.shared_browser",
+            lambda: (_ for _ in ()).throw(BrowserUnavailable("no chromium")),
+        )
+        provider = self.provider(self.Session(403, "Just a moment..."))
+        provider._theatres["cinemark-hazlet-12"] = type(
+            "T", (), {"theater_id": "1098"}
+        )()
+        with pytest.raises(SeatDataUnavailable, match="no browser is available"):
+            provider.fetch_seats(self.option(), transport=None)
+
+    def test_a_browser_that_clears_the_challenge_yields_the_grid(self, monkeypatch):
+        from screenwatch.browser import BrowserResponse
+
+        # info is "rowLabel,seatNumber,rowIndex,colIndex".
+        seat_html = (
+            '<button class="seatBlock" info="A,1,0,0" available="true"></button>'
+            '<button class="seatBlock" info="A,2,0,1" available="true"></button>'
+        )
+
+        class FakeBrowser:
+            def visit(self, url, **kw):
+                return BrowserResponse(url=url, status=200, text=seat_html)
+
+        provider = self.provider(self.Session(403, "Just a moment..."))
+        provider._browser = FakeBrowser()
+        provider._theatres["cinemark-hazlet-12"] = type(
+            "T", (), {"theater_id": "1098"}
+        )()
+        room = provider.fetch_seats(self.option(), transport=None)
+        assert len(room.seats) == 2

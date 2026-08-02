@@ -88,6 +88,20 @@ class RegalChallenged(RegalParseError):
     """
 
 
+class RegalBlocked(RegalParseError):
+    """A firewall rule, not a challenge.
+
+    Measured on `/api/*`: a 403 with no challenge markup, from curl_cffi and
+    from a real browser alike, while `experience.regmovies.com/about` returns
+    200 in the same session. Nothing about waiting or retrying changes it, and
+    reporting it as a challenge invites both.
+    """
+
+
+class RegalUnavailable(RegalParseError):
+    """A plain HTTP failure - 404, 500 - that is not worth retrying as one."""
+
+
 @dataclass(frozen=True)
 class RegalTheatre:
     theatre_code: str
@@ -119,8 +133,24 @@ class RegalPerformance:
     attributes: tuple[str, ...]
     sold_out: bool
 
-    def deeplink(self) -> str:
-        return f"{BASE}/showtimes/{self.performance_id}"
+    def deeplink(self, path_name: str | None = None) -> str:
+        """Where to send someone to buy this ticket.
+
+        The theatre page, dated - **not** `/showtimes/{performance_id}`, which
+        this used to return and which 404s. There is no per-performance page
+        on regmovies.com: the booking flow is client-side routing into
+        webbooking.regmovies.com, and every path there renders the same shell,
+        so the URL cannot be reconstructed from outside.
+
+        The dated theatre page is a real page (measured: 200) that lists this
+        showing among the others at that cinema on that day. That is one click
+        further from the checkout than we would like, and it is honest, which
+        a 404 is not.
+        """
+        if not path_name:
+            return BASE + "/theatres"
+        day = self.starts_at_local.date().isoformat()
+        return f"{THEATRE.format(path_name=path_name)}?date={day}"
 
 
 def extract_next_data(html: str) -> dict:
