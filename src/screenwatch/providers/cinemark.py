@@ -42,7 +42,7 @@ from ..models import Availability, Presentation
 from ..presentation import assume_digital
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
-from ..robots import ROBOTS, DisallowedByRobots
+from ..robots import ROBOTS
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.sources.cinemark import CinemarkSeatSource
 from ..service.venues import Venue

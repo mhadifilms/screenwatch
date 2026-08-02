@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Protocol
 
-from .normalize import ProductKind, TitleAnalysis, analyze, match_key
+from .normalize import TitleAnalysis, analyze, match_key
 from .work import Method, TitleLink, Work
 
 _DATA = pathlib.Path(__file__).resolve().parents[1] / "data"

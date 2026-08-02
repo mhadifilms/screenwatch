@@ -13,7 +13,6 @@ the explanation cannot drift from the maths.
 
 from __future__ import annotations
 
-from ..models import Attribute
 from ..seating.groups import Cohesion
 from .candidate import Option
 from .spec import SearchSpec

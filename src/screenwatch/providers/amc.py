@@ -19,7 +19,7 @@ from ..presentation import UnknownFormatError, assume_digital
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import SearchSpec
 from ..resolver import Resolver
-from ..seating.model import Auditorium, SeatDataUnavailable
+from ..seating.model import Auditorium
 from ..seating.sources.amc import AmcSeatSource
 from ..service.venues import Venue
 from ..transport import Transport

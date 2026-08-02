@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from ..seating.groups import Cohesion, SeatGroup, find_groups
+from ..seating.groups import SeatGroup, find_groups
 from ..seating.estimate import estimate, seat_components as estimated_components
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.quality import QualityModel

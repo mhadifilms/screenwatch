@@ -12,9 +12,7 @@ import pytest
 from screenwatch.seating.groups import Cohesion, find_groups
 from screenwatch.seating.model import (
     Auditorium,
-    Seat,
     SeatKind,
-    SeatStatus,
     normalize_geometry,
 )
 from screenwatch.seating.quality import QualityModel

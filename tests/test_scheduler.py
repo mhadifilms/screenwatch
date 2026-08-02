@@ -24,7 +24,6 @@ from screenwatch.service.scheduler import (
 )
 from screenwatch.service.serde import spec_to_json
 from screenwatch.service.store import Store
-from screenwatch.service.watch import WatchService
 
 NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
 TODAY = NOW.date()
@@ -235,3 +234,43 @@ class TestReporting:
 
     def test_no_hits_reads_plainly(self):
         assert describe_hits([]) == "no new screenings"
+
+
+class TestDefaultWiringDoesNotDrift:
+    """Three entry points build a working system, and each used to construct
+    its own provider list. They drifted: the scheduler was still on four
+    providers after C360 and the independents were added, so monitors
+    silently never saw those chains.
+    """
+
+    def test_every_entry_point_uses_the_same_factory(self):
+        import inspect
+
+        from screenwatch.api import app as api_mod
+        from screenwatch.mcp import server as mcp_mod
+        from screenwatch.service import scheduler as sched_mod
+
+        for module, fn in [(api_mod, "default_app"),
+                           (mcp_mod, "build_default"),
+                           (sched_mod, "main")]:
+            source = inspect.getsource(getattr(module, fn))
+            assert "default_service" in source, (
+                f"{module.__name__}.{fn} builds its own providers instead of "
+                "using service.defaults - that is how the drift happened"
+            )
+
+    def test_the_factory_lists_every_provider(self):
+        from screenwatch.service.defaults import default_providers
+
+        chains = {p.chain for p in default_providers()}
+        assert chains == {"amc", "alamo", "regal", "cinemark", "c360", "independent"}
+
+    def test_providers_share_one_resolver(self):
+        """Cross-chain identity only works if the same resolver sees every
+        chain's product ids."""
+        from screenwatch.identity.resolve import WorkResolver
+        from screenwatch.service.defaults import default_providers
+
+        resolver = WorkResolver()
+        providers = default_providers(resolver)
+        assert all(p.work_resolver is resolver for p in providers)

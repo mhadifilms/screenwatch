@@ -13,8 +13,6 @@ from datetime import date, timezone
 import pytest
 
 from screenwatch.adapters.regal.showtimes import (
-    REGAL_IGNORED,
-    REGAL_TOKENS,
     RegalChallenged,
     RegalParseError,
     RegalShowtimes,
@@ -24,7 +22,7 @@ from screenwatch.identity.work import WorkRef
 from screenwatch.models import Attribute, Availability, Brand, Projection
 from screenwatch.presentation import known_tokens, normalize_token
 from screenwatch.providers.regal import RegalProvider
-from screenwatch.ranking.spec import DateWindow, GeoPoint, LocationSpec, SearchSpec
+from screenwatch.ranking.spec import DateWindow, SearchSpec
 from screenwatch.seating.model import SeatDataUnavailable
 
 

@@ -9,7 +9,7 @@ declaration instead of waiting to meet an unknown token in production.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, timezone
 
 import pytest
 
@@ -23,7 +23,6 @@ from screenwatch.models import Attribute, Availability, Brand, Projection
 from screenwatch.providers.alamo import AlamoProvider
 from screenwatch.ranking.spec import DateWindow, GeoPoint, LocationSpec, SearchSpec
 from screenwatch.seating.model import SeatDataUnavailable
-from screenwatch.service.venues import Venue
 
 
 @pytest.fixture(scope="module")

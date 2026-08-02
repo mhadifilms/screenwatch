@@ -9,7 +9,6 @@ stops - no cart, no checkout, no stored payment.
 
 from __future__ import annotations
 
-import json
 from typing import Literal
 
 from mcp.server import MCPServer
@@ -195,27 +194,9 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
 
 
 def build_default() -> tuple[MCPServer, SearchService, WatchService]:
-    from ..identity.resolve import WorkResolver
-    from ..identity.tmdb import TmdbCatalog
-    from ..providers.alamo import AlamoProvider
-    from ..providers.amc import AmcProvider
-    from ..providers.c360 import C360Provider
-    from ..providers.independent import IndependentProvider
-    from ..providers.cinemark import CinemarkProvider
-    from ..providers.regal import RegalProvider
-    from ..service.store import Store
+    from ..service.defaults import default_service
 
-    store = Store("screenwatch.db")
-    # One resolver shared by every provider, so a film resolved from AMC's
-    # product id is the same Work when Regal and Alamo report it too.
-    resolver = WorkResolver(TmdbCatalog.from_env())
-    providers = [
-        AmcProvider(resolver), AlamoProvider(resolver),
-        RegalProvider(resolver), CinemarkProvider(resolver),
-        C360Provider(resolver), IndependentProvider(resolver),
-    ]
-    search = SearchService(providers=providers, store=store, resolver=resolver)
-    watches = WatchService(search, store)
+    search, watches, _store = default_service()
     return build_server(search, watches), search, watches
 
 

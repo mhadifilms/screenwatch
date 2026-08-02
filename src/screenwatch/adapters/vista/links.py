@@ -49,7 +49,6 @@ DATE_CONTAINER = re.compile(
     r'(?:id|data-date|data-day|data-vars-ga-label)="[^"]*?'
     r'(\d{4}-\d{2}-\d{2})[^"]*"'
 )
-_DATE_ANCHOR = DATE_CONTAINER
 
 
 def nearest_date_before(html: str, pos: int, default: date_cls) -> date_cls:
@@ -63,6 +62,8 @@ def nearest_date_before(html: str, pos: int, default: date_cls) -> date_cls:
         return date_cls.fromisoformat(best.group(1))
     except ValueError:
         return default
+
+
 _TITLE = re.compile(
     r'<(?:h[1-6]|a)[^>]*class="[^"]*title[^"]*"[^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})',
     re.I,

@@ -18,7 +18,7 @@ from screenwatch.adapters.vista.links import (
 )
 from screenwatch.identity.work import WorkRef
 from screenwatch.providers.independent import IndependentProvider, load_venues
-from screenwatch.ranking.spec import DateWindow, GeoPoint, LocationSpec, SearchSpec
+from screenwatch.ranking.spec import DateWindow, SearchSpec
 from screenwatch.seating.model import SeatDataUnavailable
 
 VISTA_PAGE = """

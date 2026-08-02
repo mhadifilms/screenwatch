@@ -24,7 +24,7 @@ from screenwatch.models import (
     PresentationSpec,
     Projection,
 )
-from screenwatch.ranking.candidate import Option, Screening
+from screenwatch.ranking.candidate import Screening
 from screenwatch.ranking.spec import (
     Budget,
     DateWindow,
@@ -36,12 +36,11 @@ from screenwatch.ranking.spec import (
     TimeWindow,
     Weights,
 )
-from screenwatch.seating.model import Auditorium, SeatDataUnavailable
+from screenwatch.seating.model import SeatDataUnavailable
 from screenwatch.seating.render import build_auditorium
 from screenwatch.service.search import SearchService
 from screenwatch.service.serde import (
     option_to_dict,
-    spec_from_dict,
     spec_from_json,
     spec_to_dict,
     spec_to_json,

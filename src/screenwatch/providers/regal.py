@@ -35,7 +35,6 @@ from ..presentation import (
 )
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
-from ..browser import BrowserUnavailable, shared_browser
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.sources.regal import BOOKING_API, RegalSeatSource
 from ..service.venues import Venue

@@ -11,12 +11,11 @@ into `Screening`s however it likes, and everything downstream is uniform.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Protocol
 
 from ..identity.normalize import ProductKind
 from ..identity.resolve import WorkResolver
-from ..models import Availability
 from ..ranking.candidate import Option, Screening
 from ..ranking.coarse import coarse_rank
 from ..ranking.diversify import diversify

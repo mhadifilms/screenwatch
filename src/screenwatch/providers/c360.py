@@ -24,7 +24,6 @@ from ..adapters.c360.schedule import (
     BASE,
     LOCATIONS,
     SCREEN_BY_ID,
-    SCREEN_SETTINGS,
     C360Location,
     C360ParseError,
     C360Schedule,
@@ -32,7 +31,7 @@ from ..adapters.c360.schedule import (
     C360Show,
 )
 from ..identity.resolve import WorkResolver
-from ..models import Availability, Presentation
+from ..models import Availability
 from ..presentation import assume_digital
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec

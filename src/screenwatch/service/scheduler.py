@@ -13,7 +13,7 @@ for the read layer:
     warm      screenings exist for the target        5 min
     hot       a hit in the last hour, or target      45 s (jittered)
               date is today
-    cooling   target date has passed                 retired
+    retired   target date has passed                 no longer polled
 
 Jitter is applied to every sleep. Polling on exact round intervals is both a
 recognisable signature and a good way for several watches to stampede the
@@ -27,7 +27,7 @@ import signal
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 from .serde import spec_from_json
 from .store import DEFAULT_USER, Store
@@ -176,23 +176,9 @@ def describe_hits(hits: list[WatchHit]) -> str:
 
 def main() -> None:
     """`python -m screenwatch.service.scheduler`"""
-    from ..identity.resolve import WorkResolver
-    from ..identity.tmdb import TmdbCatalog
-    from ..providers.alamo import AlamoProvider
-    from ..providers.amc import AmcProvider
-    from ..providers.cinemark import CinemarkProvider
-    from ..providers.regal import RegalProvider
-    from .search import SearchService
+    from .defaults import default_service
 
-    store = Store("screenwatch.db")
-    resolver = WorkResolver(TmdbCatalog.from_env())
-    providers = [
-        AmcProvider(resolver), AlamoProvider(resolver),
-        RegalProvider(resolver), CinemarkProvider(resolver),
-    ]
-    search = SearchService(providers=providers, store=store, resolver=resolver)
-    watches = WatchService(search, store)
-
+    _search, watches, store = default_service()
     scheduler = Scheduler(watches, on_hits=lambda h: print(describe_hits(h), flush=True))
     active = len(store.list_watches())
     print(f"screenwatch scheduler: {active} active watch(es); ctrl-c to stop", flush=True)

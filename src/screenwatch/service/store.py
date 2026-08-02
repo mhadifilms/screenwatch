@@ -13,7 +13,6 @@ import json
 import pathlib
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import asdict
 from datetime import datetime, timezone
 
 from ..identity.work import TitleLink, Work

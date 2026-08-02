@@ -7,7 +7,7 @@ lives. Those tests are as much about honouring that as about parsing.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, timezone
 
 import pytest
 

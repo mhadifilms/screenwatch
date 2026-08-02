@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from screenwatch.seating.groups import Cohesion, find_groups
+from screenwatch.seating.groups import find_groups
 from screenwatch.seating.model import SeatDataUnavailable, SeatKind, SeatStatus
 from screenwatch.seating.render import to_svg, to_unicode_grid
 from screenwatch.seating.sources.amc import AmcSeatSource
@@ -74,7 +74,6 @@ class TestCrossAisles:
         """Lincoln Square's IMAX has no rows 5, 11 or 12 - those are walkways.
         Interpolating depth over ordinal position would erase them and put
         row 6 closer to the screen than it physically is."""
-        rows = auditorium.rows()
         assert auditorium.row_count == 13          # 16 numbered, 3 are walkways
 
         depths = sorted({s.y for s in auditorium.seats})

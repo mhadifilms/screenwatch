@@ -19,10 +19,9 @@ from screenwatch.adapters.c360.schedule import (
     C360ParseError,
     C360Schedule,
     iana_timezone,
-    normalize,
 )
 from screenwatch.identity.work import WorkRef
-from screenwatch.models import Attribute, Availability, Brand, Projection
+from screenwatch.models import Availability, Brand, Projection
 from screenwatch.providers.c360 import C360Provider
 from screenwatch.ranking.candidate import Option
 from screenwatch.ranking.spec import DateWindow, SearchSpec

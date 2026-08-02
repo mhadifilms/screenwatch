@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ..identity.normalize import analyze
 from ..seating.render import to_svg, to_unicode_grid
@@ -136,23 +136,7 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
 
 
 def default_app() -> FastAPI:
-    from ..identity.resolve import WorkResolver
-    from ..identity.tmdb import TmdbCatalog
-    from ..providers.alamo import AlamoProvider
-    from ..providers.amc import AmcProvider
-    from ..providers.c360 import C360Provider
-    from ..providers.independent import IndependentProvider
-    from ..providers.cinemark import CinemarkProvider
-    from ..providers.regal import RegalProvider
+    from ..service.defaults import default_service
 
-    store = Store("screenwatch.db")
-    # One resolver shared by every provider, so a film resolved from AMC's
-    # product id is the same Work when Regal and Alamo report it too.
-    resolver = WorkResolver(TmdbCatalog.from_env())
-    providers = [
-        AmcProvider(resolver), AlamoProvider(resolver),
-        RegalProvider(resolver), CinemarkProvider(resolver),
-        C360Provider(resolver), IndependentProvider(resolver),
-    ]
-    search = SearchService(providers=providers, store=store, resolver=resolver)
-    return create_app(search, WatchService(search, store))
+    search, watches, _store = default_service()
+    return create_app(search, watches)
