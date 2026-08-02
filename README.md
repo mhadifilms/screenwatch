@@ -289,11 +289,16 @@ Stated plainly, because a plausible-looking gap is worse than a named one.
   guards hardest. Both fall back to availability-only ranking.
 * **Regal seat maps are unverified.** `GET {booking_api}/api/GetSeatPlan?
   theatreCode=&sessionId=` was recovered from Regal's own bundle and the
-  parser is written against the Vista schema it returns, but Cloudflare
-  firewalled this IP off the booking hosts mid-recon (a hard
-  `Attention Required`, not a solvable challenge), so no live response has
-  been parsed. The provider routes through the browser transport, which is
-  what clears a managed challenge when one is present.
+  parser is written against the Vista schema it returns, but no live response
+  has been parsed.
+
+  Cloudflare denies `/api/*` on the regmovies hosts to every client tried —
+  `curl_cffi` and a real browser alike. It is **a path rule, not an IP ban**:
+  measured in one session, `experience.regmovies.com/about` returns 200 while
+  `/api/tickets` returns 403, and showtime scraping across 402 theatres works
+  throughout. So there is nothing to wait out. Getting a response most likely
+  needs whatever the real booking flow carries that a bare GET does not — an
+  order session token, most plausibly.
 * **Alamo seat maps** need the ticket-type step before the picker renders,
   which is the one place a request would start an order. Left alone.
 * **Elevent / Agile** not built — Metrograph turned out to be Vista, not

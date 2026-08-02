@@ -9,12 +9,17 @@ Endpoint recovered from Regal's own bundle rather than guessed:
 which resolves to `https://webbooking.regmovies.com`.
 
 **Status: implemented from evidence, not yet verified against a live
-response.** Cloudflare firewalled this IP off the Regal booking hosts during
-recon - a hard `Attention Required` block, not a solvable challenge - so the
-parser is written against the Vista seat-plan schema that endpoint returns and
-`parse` is defensive about which of the two common shapes arrives. The
-provider routes through the browser transport, which is what clears a managed
-challenge when one is present.
+response.** Cloudflare denies `/api/*` on the regmovies hosts to every client
+tried, `curl_cffi` and a real browser alike. It is a *path* rule rather than
+an IP ban: measured in a single session, `experience.regmovies.com/about`
+returns 200 while `/api/tickets` returns 403, and showtime scraping across all
+402 theatres works throughout. There is therefore nothing to wait out, and a
+response most likely needs whatever the real booking flow carries that a bare
+GET does not - an order session token being the obvious candidate.
+
+So `parse` is written against the Vista seat-plan schema that endpoint
+returns, and is defensive about which of the two common field spellings
+arrives.
 
 Vista (which Regal runs) returns rows of `SeatsInRow`, each seat carrying a
 status code where 0 means available. Both the modern camelCase and the older

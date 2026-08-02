@@ -185,9 +185,13 @@ class RegalProvider:
         Cloudflare, so the request goes out from inside a real page rather
         than a standalone client.
 
-        Unverified against a live response: Cloudflare has this source IP on a
-        firewall rule (a hard block, not a solvable challenge), so the parser
-        is written from the schema Vista returns and has not yet met one.
+        Unverified against a live response. Cloudflare denies `/api/*` on both
+        regmovies hosts regardless of client - measured: `experience.
+        regmovies.com/about` returns 200 while `/api/tickets` returns 403 in
+        the same session, and the browser transport gets the same 403. It is a
+        path rule, not an IP ban and not a timed one, so waiting changes
+        nothing. The parser is written from the schema Vista returns and has
+        not yet met one.
         """
         screening = option.screening
         theatre = self._theatre_code_for(screening.venue_id)
@@ -208,9 +212,9 @@ class RegalProvider:
             # A firewall rule, not a challenge: waiting will not clear it, so
             # say so rather than implying a retry would help.
             raise SeatDataUnavailable(
-                f"Regal booking API is firewalled from this client "
-                f"(HTTP {response.status}, Cloudflare block) - not a solvable "
-                "challenge; the source IP is denied"
+                f"Regal /api/* is denied by a Cloudflare path rule "
+                f"(HTTP {response.status}) - not a solvable challenge and not "
+                "time-limited; other paths on the same host serve normally"
             )
         if response.challenged or response.status >= 400:
             raise SeatDataUnavailable(
