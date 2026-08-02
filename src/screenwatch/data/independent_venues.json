@@ -36,7 +36,8 @@
       "lat": 40.7311,
       "lon": -74.0027,
       "tz": "America/New_York",
-      "markup": "unknown"
+      "markup": "agile-links",
+      "notes": "Agile WebSales at tickets.ifccenter.com. 140 showtimes across 5+ dates. Bare anchors, plain <h3> titles, textual 'Sun Aug 2' day headings."
     },
     {
       "venue_id": "roxie-sf",
@@ -45,7 +46,8 @@
       "lat": 37.7648,
       "lon": -122.4222,
       "tz": "America/Los_Angeles",
-      "markup": "unknown"
+      "markup": "none",
+      "notes": "WordPress; ticketing on roxie.com itself, no recognised platform signature. Needs recon."
     },
     {
       "venue_id": "music-box-chicago",
@@ -54,7 +56,8 @@
       "lat": 41.9494,
       "lon": -87.6595,
       "tz": "America/Chicago",
-      "markup": "unknown"
+      "markup": "none",
+      "notes": "Homepage returns 1.3KB - a JS gate or redirect. Needs a browser fetch."
     },
     {
       "venue_id": "castro-sf",
@@ -63,7 +66,8 @@
       "lat": 37.762,
       "lon": -122.4349,
       "tz": "America/Los_Angeles",
-      "markup": "unknown"
+      "markup": "none",
+      "notes": "Uses TicketWeb. No extractor yet."
     },
     {
       "venue_id": "metrograph",

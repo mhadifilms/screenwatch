@@ -25,6 +25,7 @@ from ..adapters.regal.showtimes import (
     RegalShowtimes,
     RegalTheatre,
 )
+from ..browser import BrowserUnavailable, shared_browser
 from ..identity.resolve import WorkResolver
 from ..models import Availability, Brand, Presentation, Projection
 from ..presentation import (
@@ -178,13 +179,53 @@ class RegalProvider:
 
     # ------------------------------------------------------------------
     def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
-        """Not available.
+        """Seat plan from Regal's booking API, issued from a browser context.
 
-        `SeatAllocationType: "2"` says seats are reserved, so a layout exists,
-        but it is not in the hydration blob and the ticketing flow behind it
-        is the part Cloudflare guards hardest.
+        The endpoint is a plain GET - no cart, no hold - but it sits behind
+        Cloudflare, so the request goes out from inside a real page rather
+        than a standalone client.
+
+        Unverified against a live response: Cloudflare has this source IP on a
+        firewall rule (a hard block, not a solvable challenge), so the parser
+        is written from the schema Vista returns and has not yet met one.
         """
-        raise SeatDataUnavailable(
-            "Regal seat maps are not in the page payload; the ticketing flow "
-            "behind them is challenge-guarded"
+        screening = option.screening
+        theatre = self._theatre_code_for(screening.venue_id)
+        if not theatre:
+            raise SeatDataUnavailable(
+                f"unknown Regal theatre code for {screening.venue_id}"
+            )
+        session_id = screening.screening_id.split(":", 1)[-1]
+        url = self.seats.url(theatre, session_id, base=self.booking_api)
+
+        try:
+            browser = self._browser or shared_browser()
+            response = browser.fetch_json(url, origin=self.booking_api)
+        except BrowserUnavailable as exc:
+            raise SeatDataUnavailable(f"browser transport unavailable: {exc}") from exc
+
+        if response.blocked:
+            # A firewall rule, not a challenge: waiting will not clear it, so
+            # say so rather than implying a retry would help.
+            raise SeatDataUnavailable(
+                f"Regal booking API is firewalled from this client "
+                f"(HTTP {response.status}, Cloudflare block) - not a solvable "
+                "challenge; the source IP is denied"
+            )
+        if response.challenged or response.status >= 400:
+            raise SeatDataUnavailable(
+                f"Regal seat plan unavailable (HTTP {response.status})"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise SeatDataUnavailable("Regal seat plan was not JSON") from exc
+
+        return self.seats.parse(
+            payload, venue_id=screening.venue_id, screen_id=screening.screen_id or ""
+        )
+
+    def _theatre_code_for(self, venue_id: str) -> str | None:
+        return next(
+            (t.theatre_code for t in self.theatres() if t.venue_id == venue_id), None
         )

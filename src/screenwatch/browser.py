@@ -29,7 +29,17 @@ from dataclasses import dataclass
 
 DEFAULT_PROFILE = pathlib.Path.home() / ".screenwatch" / "browser-profile"
 DEFAULT_TIMEOUT_MS = 45_000
+# A *challenge* resolves itself if you wait and retry - JS runs, a cookie is
+# issued, the page loads. A *block* is a firewall rule: the same request will
+# fail forever from this IP, and retrying only deepens the hole. They look
+# alike (both are Cloudflare 403s) and conflating them meant burning a retry
+# budget against a wall.
 CHALLENGE_MARKERS = ("Just a moment", "Checking your browser", "cf-challenge")
+BLOCK_MARKERS = (
+    "Attention Required",
+    "Sorry, you have been blocked",
+    "You are unable to access",
+)
 
 
 class BrowserUnavailable(RuntimeError):
@@ -44,7 +54,17 @@ class BrowserResponse:
 
     @property
     def challenged(self) -> bool:
+        """A solvable challenge. Worth retrying."""
         return any(m in self.text for m in CHALLENGE_MARKERS)
+
+    @property
+    def blocked(self) -> bool:
+        """A firewall rule. Retrying will not help and makes it worse."""
+        return any(m in self.text for m in BLOCK_MARKERS)
+
+    @property
+    def denied(self) -> bool:
+        return self.challenged or self.blocked
 
     def json(self):
         return json.loads(self.text)
@@ -112,7 +132,8 @@ class BrowserTransport:
         response = page.goto(url, wait_until="domcontentloaded")
         body = page.content()
 
-        if wait_for_challenge and any(m in body for m in CHALLENGE_MARKERS):
+        if wait_for_challenge and any(m in body for m in CHALLENGE_MARKERS) \
+                and not any(m in body for m in BLOCK_MARKERS):
             # The challenge resolves itself and navigates on; waiting for the
             # network to settle is enough, and cheaper than polling the DOM.
             try:

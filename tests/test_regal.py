@@ -187,8 +187,64 @@ class TestPresentation:
 
 
 class TestSeats:
-    def test_seats_are_unavailable_and_say_why(self, directory_html):
+    def test_an_unknown_venue_is_reported_not_guessed(self, directory_html):
+        """Without a theatre code there is no URL to build, and inventing one
+        would send the request to the wrong cinema."""
         provider = RegalProvider(session=FakeSession([directory_html]), backoff_s=0)
-        option = type("O", (), {"screening": None})()
-        with pytest.raises(SeatDataUnavailable, match="challenge-guarded"):
+        option = type("O", (), {"screening": type("S", (), {
+            "venue_id": "regal-not-a-real-venue", "screening_id": "regal:1",
+            "screen_id": "",
+        })()})()
+        with pytest.raises(SeatDataUnavailable, match="unknown Regal theatre code"):
+            provider.fetch_seats(option, transport=None)
+
+
+class TestBlockVsChallenge:
+    """Cloudflare 403s look alike but mean opposite things.
+
+    A challenge resolves if you wait and retry. A block is a firewall rule:
+    the same request fails forever from this IP, and retrying only deepens
+    the hole. Regal's booking API returns the latter, and the retry budget
+    was being burned against a wall.
+    """
+
+    CHALLENGE = "<html><title>Just a moment...</title></html>"
+    BLOCK = ("<html><title>Attention Required! | Cloudflare</title>"
+             "<p>Sorry, you have been blocked</p></html>")
+
+    def response(self, text):
+        from screenwatch.browser import BrowserResponse
+
+        return BrowserResponse(url="https://x", status=403, text=text)
+
+    def test_a_challenge_is_challenged_not_blocked(self):
+        r = self.response(self.CHALLENGE)
+        assert r.challenged and not r.blocked and r.denied
+
+    def test_a_block_is_blocked_not_challenged(self):
+        r = self.response(self.BLOCK)
+        assert r.blocked and not r.challenged and r.denied
+
+    def test_a_normal_response_is_neither(self):
+        r = self.response('{"seats": []}')
+        assert not r.denied
+
+    def test_the_provider_names_a_block_as_unretryable(self):
+        from screenwatch.seating.model import SeatDataUnavailable
+
+        class BlockedBrowser:
+            @staticmethod
+            def fetch_json(url, origin=None):
+                from screenwatch.browser import BrowserResponse
+
+                return BrowserResponse(url=url, status=403,
+                                       text=TestBlockVsChallenge.BLOCK)
+
+        provider = RegalProvider(session=FakeSession(["x"]), backoff_s=0,
+                                 browser=BlockedBrowser())
+        provider._theatres = [type("T", (), {
+            "venue_id": "regal-x", "theatre_code": "1929"})()]
+        option = type("O", (), {"screening": type("S", (), {
+            "venue_id": "regal-x", "screening_id": "regal:1", "screen_id": ""})()})()
+        with pytest.raises(SeatDataUnavailable, match="not a solvable challenge"):
             provider.fetch_seats(option, transport=None)

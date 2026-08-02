@@ -29,13 +29,19 @@ from datetime import date as date_cls, datetime
 
 from ..vista.links import nearest_date_before, parse_clock
 
+# The wrapper is optional. The Coolidge wraps each link in a
+# `sales-state--` div with the time in a nested span; IFC Center emits a bare
+# anchor whose own text is the time. Requiring the wrapper matched one venue
+# and silently missed the other, so the anchor alone is the anchor of the
+# pattern and the wrapper is only consulted for its sales state.
 AGILE_LINK = re.compile(
-    r'<div[^>]*class="[^"]*(?:agiletix|sales-state--)[^"]*"[^>]*>\s*'
-    r'<a\s+href="(?P<url>https?://(?P<host>[^/"]+)/websales/pages/'
-    r'ticketsearchcriteria\.aspx\?evtinfo=(?P<event>[^"&~]+)[^"]*)"'
+    r'<a\s+[^>]*href="(?P<url>https?://(?P<host>[^/"]+)/websales/pages/'
+    r'ticketsearchcriteria\.aspx\?evtinfo=(?P<event>[^"&~]+)[^"]*)"[^>]*>'
     r'(?P<rest>.*?)</a>',
     re.I | re.S,
 )
+# How far back to look for the wrapper that carries the sales state.
+_WRAPPER_LOOKBACK = 400
 _STATE = re.compile(r"sales-state--(\w+)", re.I)
 _TIME_SPAN = re.compile(r'showtime-ticket__time[^>]*>\s*([^<]{1,24})', re.I)
 _VENUE_SPAN = re.compile(r'showtime-ticket__venue[^>]*>\s*([^<]{1,24})', re.I)
@@ -46,6 +52,10 @@ _ANY_TITLE = re.compile(
     r'<(?:h[1-6]|a)[^>]*class="[^"]*title[^"]*"[^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})',
     re.I,
 )
+# Last resort: a bare heading. IFC Center marks films with a plain
+# `<h3><a href="/films/jimmy/">Jimmy</a></h3>` and no title class at all, so
+# requiring one found 140 valid links and threw every one away.
+_ANY_HEADING = re.compile(r"<h[1-6][^>]*>(?:\s*<[^>]+>)*\s*([^<]{2,120})", re.I)
 
 
 # Agile's own vocabulary. Anything unrecognised is treated as unknown rather
@@ -89,24 +99,26 @@ def extract(html: str, *, default_date: date_cls) -> list[AgileShowtime]:
     for match in AGILE_LINK.finditer(html):
         inner = match.group("rest")
 
-        time_text = _TIME_SPAN.search(inner)
-        if not time_text:
-            continue                      # a "more info" link, not a showtime
+        # Nested span first (Coolidge), then the anchor's own text (IFC).
+        span = _TIME_SPAN.search(inner)
+        raw_time = span.group(1) if span else re.sub(r"<[^>]+>", " ", inner)
 
         on = nearest_date_before(html, match.start(), default_date)
-
-        when = parse_clock(html_lib.unescape(time_text.group(1)), on)
+        when = parse_clock(html_lib.unescape(raw_time), on)
         if when is None:
-            continue
+            continue                      # a "more info" link, not a showtime
 
         title = (
             _nearest_before(_TITLE, html, match.start())
             or _nearest_before(_ANY_TITLE, html, match.start())
+            or _nearest_before(_ANY_HEADING, html, match.start())
         )
         if not title:
             continue
 
-        state = _STATE.search(match.group(0))
+        # The sales state lives on a wrapper that may or may not exist.
+        window = html[max(0, match.start() - _WRAPPER_LOOKBACK):match.start()]
+        state = _STATE.search(window)
         venue = _VENUE_SPAN.search(inner)
         out.append(
             AgileShowtime(

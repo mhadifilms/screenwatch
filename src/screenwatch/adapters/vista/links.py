@@ -51,17 +51,52 @@ DATE_CONTAINER = re.compile(
 )
 
 
+# Not every venue puts an ISO date in an attribute. IFC Center groups its
+# listings under plain headings - "Sun Aug 2" - so a textual day heading is a
+# second, weaker signal, used only when no ISO container is closer.
+_TEXT_DAY = re.compile(
+    r"<h[1-6][^>]*>\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*[,\s]+"
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})",
+    re.I,
+)
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun",
+     "jul", "aug", "sep", "oct", "nov", "dec"])}
+
+
 def nearest_date_before(html: str, pos: int, default: date_cls) -> date_cls:
-    """The day container this position sits under, or `default`."""
-    best = None
+    """The day this position sits under, or `default`.
+
+    Prefers an ISO date on a block container; falls back to a textual day
+    heading. A textual heading carries no year, so the default's year is
+    assumed and a December-to-January rollover is corrected by assuming the
+    listing is forward-looking rather than eleven months stale.
+    """
+    iso, text = None, None
     for m in DATE_CONTAINER.finditer(html, 0, pos):
-        best = m
-    if best is None:
-        return default
-    try:
-        return date_cls.fromisoformat(best.group(1))
-    except ValueError:
-        return default
+        iso = m
+    for m in _TEXT_DAY.finditer(html, 0, pos):
+        text = m
+
+    if iso is not None and (text is None or text.start() < iso.start()):
+        try:
+            return date_cls.fromisoformat(iso.group(1))
+        except ValueError:
+            return default
+
+    if text is not None:
+        month = _MONTHS[text.group(1).lower()[:3]]
+        day = int(text.group(2))
+        year = default.year
+        try:
+            candidate = date_cls(year, month, day)
+        except ValueError:
+            return default
+        if (default - candidate).days > 300:
+            candidate = candidate.replace(year=year + 1)
+        return candidate
+
+    return default
 
 
 _TITLE = re.compile(

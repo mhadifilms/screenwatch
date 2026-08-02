@@ -176,7 +176,7 @@ to key off the showtime `status` flipping back, not off seat-level diffs.
 | **Alamo Drafthouse** | ✅ 19 markets, 34 cinemas | ✗ not exposed | One open request per market; self-discovers venues and coordinates |
 | **Regal** | ✅ 402 theatres nationally | ✗ not in payload | `__NEXT_DATA__` blob; Cloudflare challenge is intermittent, cleared by retry |
 | **Cinemark** | ✅ 307 theatres nationally | ✗ **robots.txt disallows** | ASP.NET page; `data-json-model` joined to rendered showtime divs |
-| **Independents** | ✅ schema.org **or** Vista ticket links | ✗ | Metrograph: 183 showtimes / 20 dates. Film Forum's markup is decorative and is reported as such |
+| **Independents** | ✅ schema.org, Vista **or** Agile links | ✗ | 227 showtimes across IFC / Metrograph / Coolidge. Film Forum's markup is decorative and is reported as such |
 | **C360 / Apple Cinemas** | ✅ 14 venues | ⚠ **counts + room shape** | Warm the session on the landing page, then an open JSON API |
 | Elevent, Agile | ✗ | ✗ | Not started |
 
@@ -189,7 +189,7 @@ API's own vocabulary instead of waiting to meet a surprise in production.
 
 ```bash
 uv venv && uv pip install -e '.[dev,api]'
-python -m pytest                      # 453 tests, offline
+python -m pytest                      # 468 tests, offline
 ```
 
 MCP server (stdio):
@@ -240,10 +240,16 @@ loop.
 3. **Agile WebSales links** — `ticketsearchcriteria.aspx?evtinfo=`. These also
    carry a real sales state and the screen name. The Coolidge: 24 showtimes
    including **"The Odyssey in 70mm" on screen MH1** — the rep-house film-print
-   case the whole presentation model exists for.
+   case the whole presentation model exists for. IFC Center: 140 more.
 
-Vista and Agile between them run a large majority of US art houses, so two
-extractors cover the long tail without a line of venue-specific code.
+**227 showtimes across three art houses, no venue-specific code.**
+
+Getting there meant generalising twice. Two Agile venues ship two different
+shapes: the Coolidge wraps each link in a `sales-state--` div with the time in
+a nested span; IFC emits a bare anchor whose own text is the time, under a
+plain `<h3>` with no title class, grouped by a written "Sun Aug 2" heading
+rather than an ISO attribute. Requiring the first shape found all 140 of IFC's
+links and threw every one away.
 
 Deliberately structural, not CSS-based: class names differ per venue and change
 on redesign, but "the anchor text of a ticket link is the showtime, and the

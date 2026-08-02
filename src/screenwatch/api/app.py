@@ -16,7 +16,7 @@ from ..identity.normalize import analyze
 from ..seating.render import to_svg, to_unicode_grid
 from ..service.search import SearchService
 from ..service.serde import option_to_dict, spec_from_dict, spec_to_dict
-from ..service.store import DEFAULT_USER, Store
+from ..service.store import DEFAULT_USER
 from ..service.watch import WatchService
 
 

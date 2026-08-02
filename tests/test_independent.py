@@ -321,3 +321,82 @@ class TestDateContainerVsPicker:
 
         html = '<div id="day-2026-13-45">'
         assert nearest_date_before(html, len(html), date(2026, 8, 1)) == date(2026, 8, 1)
+
+
+class TestAgileMarkupVariants:
+    """Two Agile venues, two different shapes.
+
+    The Coolidge wraps each link in a `sales-state--` div with the time in a
+    nested span. IFC Center emits a bare anchor whose own text is the time,
+    under a plain `<h3>` with no title class, grouped by a textual "Sun Aug 2"
+    heading rather than an ISO attribute.
+
+    The first cut required the Coolidge's shape on all three counts and threw
+    away all 140 of IFC's valid links.
+    """
+
+    IFC_SHAPE = """
+    <div class="daily-schedule sun active">
+      <h3>Sun Aug 2</h3>
+      <ul><li><div class="details"><h3><a href="/films/jimmy/">Jimmy</a></h3>
+        <ul class="times"><li>
+          <a href="https://tickets.ifccenter.com/websales/pages/ticketsearchcriteria.aspx?evtinfo=570910~guid&#038; ">2:50 PM </a>
+        </li></ul>
+      </div></li></ul>
+    </div>
+    """
+
+    def extract(self, html, on=date(2026, 8, 1)):
+        from screenwatch.adapters.agile.links import extract
+
+        return extract(html, default_date=on)
+
+    def test_a_bare_anchor_without_a_wrapper_is_matched(self):
+        assert len(self.extract(self.IFC_SHAPE)) == 1
+
+    def test_time_falls_back_to_the_anchor_text(self):
+        show = self.extract(self.IFC_SHAPE)[0]
+        assert (show.starts_at_local.hour, show.starts_at_local.minute) == (14, 50)
+
+    def test_a_plain_heading_supplies_the_title(self):
+        assert self.extract(self.IFC_SHAPE)[0].title == "Jimmy"
+
+    def test_a_textual_day_heading_supplies_the_date(self):
+        """No ISO attribute anywhere on the page."""
+        assert self.extract(self.IFC_SHAPE)[0].starts_at_local.date() == date(2026, 8, 2)
+
+    def test_missing_sales_state_is_unknown_not_assumed_on_sale(self):
+        show = self.extract(self.IFC_SHAPE)[0]
+        assert show.sales_state == "unknown"
+        assert not show.on_sale and not show.sold_out
+
+    def test_the_coolidge_shape_still_works(self):
+        shows = self.extract(AGILE_PAGE, on=date(2026, 8, 2))
+        assert len(shows) == 2 and shows[0].on_sale and shows[1].sold_out
+
+
+class TestTextualDayHeadings:
+    def parse(self, html, default=date(2026, 8, 1)):
+        from screenwatch.adapters.vista.links import nearest_date_before
+
+        return nearest_date_before(html, len(html), default)
+
+    def test_reads_a_written_day_heading(self):
+        assert self.parse("<h3>Sun Aug 2</h3>") == date(2026, 8, 2)
+
+    def test_an_iso_container_wins_when_it_is_closer(self):
+        html = '<h3>Sun Aug 2</h3><div id="day-2026-08-05">'
+        assert self.parse(html) == date(2026, 8, 5)
+
+    def test_a_textual_heading_wins_when_it_is_closer(self):
+        html = '<div id="day-2026-08-05"></div><h3>Sun Aug 9</h3>'
+        assert self.parse(html) == date(2026, 8, 9)
+
+    def test_a_december_listing_read_in_january_rolls_forward(self):
+        """A textual heading carries no year; assuming the current one would
+        date a January listing eleven months into the past."""
+        assert self.parse("<h3>Mon Jan 5</h3>", default=date(2026, 12, 28)) == \
+               date(2027, 1, 5)
+
+    def test_nonsense_dates_fall_back(self):
+        assert self.parse("<h3>Sun Feb 31</h3>") == date(2026, 8, 1)
