@@ -33,6 +33,8 @@ Ranked first on fitting your whole party, seat position, despite being worse on 
 ```
 adapters/     raw reads, two corroborating parsers per source where possible
 providers/    per-chain seam: fetch + corroborate + resolve identity
+service/defaults.py  the one place the provider list lives — three entry
+              points used to build their own and drifted
 identity/     canonical film identity across every venue's product ids
 seating/      normalized auditoriums, seat quality, group assembly, renderers
 ranking/      two-phase scorer + explanation
@@ -187,7 +189,7 @@ API's own vocabulary instead of waiting to meet a surprise in production.
 
 ```bash
 uv venv && uv pip install -e '.[dev,api]'
-python -m pytest                      # 436 tests, offline
+python -m pytest                      # 453 tests, offline
 ```
 
 MCP server (stdio):
@@ -295,6 +297,18 @@ Stated plainly, because a plausible-looking gap is worse than a named one.
   `AliasCatalog` and `NullCatalog` ship. Identity works degraded without it —
   products still group by cleaned title, at low confidence.
 * **Scheduler.** `run_due()` exists; nothing calls it on a timer yet.
+
+## Entry points
+
+All three go through `service.defaults.default_service()`, and a test asserts
+they do. They previously built their own provider lists and drifted — the
+scheduler was a chain behind, so monitors silently never saw it.
+
+```bash
+screenwatch-mcp                                     # stdio MCP
+uvicorn screenwatch.api.app:default_app --factory   # localhost HTTP
+screenwatch-scheduler                               # always-on monitors
+```
 
 ## Before you rely on this
 
