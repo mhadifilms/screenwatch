@@ -76,11 +76,17 @@ and the negative case where missing evidence remains unknown.
 
 ### Independent venues
 
-`src/screenwatch/data/independent_venues.json` is a curated registry. Keep
-ticketing platform and markup fields aligned with the actual listing strategy.
-For example, a Vista-backed venue should not retain an old Elevent label in a
-second metadata file. The directory merge test exists to catch this class of
-drift.
+`src/screenwatch/data/independent_venues.json` is a routing/parser override
+registry, not the independent-venue census. National discovery comes from the
+OpenStreetMap adapter. Keep ticketing platform and markup fields aligned with
+the actual listing strategy. For example, a Vista-backed venue should not
+retain an old Elevent label in a second metadata file. The directory merge
+test exists to catch this class of drift.
+
+When a provider adds a fast-path cap, it must also implement the
+`SearchSpec.exhaustive` path so a caller can request the complete configured
+scope. A source-side limit or failure must remain visible in provider stats;
+removing a local cap must not turn an upstream refusal into an empty result.
 
 ### Provider behavior
 

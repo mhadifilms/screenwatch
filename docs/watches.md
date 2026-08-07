@@ -65,6 +65,7 @@ curl -s http://127.0.0.1:8787/v1/watches \
         }
       ],
       "strict_presentations": true,
+      "coverage": "exhaustive",
       "include_sold_out": true,
       "release_radar": true
     }
@@ -76,6 +77,12 @@ release schedule. Set it to the dates that matter to the user. For open-ended
 ticket watches with `include_sold_out: true`, the service uses a rolling
 31-day horizon so returned tickets remain watchable without an artificial
 one-week cutoff.
+
+Use `coverage: "exhaustive"` for a release watch when missing one venue would
+matter. The setting is serialized with the watch, so every poll uses the same
+coverage contract. Watch health exposes upstream errors and clipped scope;
+exhaustive removes Screenwatch's local caps but cannot make a blocked or
+website-less source publish inventory.
 
 For a known high-value venue, add its id to `location.allow`. This is useful
 when the trip is intentional, but it does not turn one observed screening into

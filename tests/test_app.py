@@ -84,6 +84,7 @@ def test_local_app_and_data_endpoints_are_available():
         },
     )
     assert searched.status_code == 200
+    assert searched.json()["coverage"] == "nearby"
     assert client.get("/v1/analytics/inventory?group_by=chain").json()["groups"]
 
     venues = client.get("/v1/venues?sort=name").json()

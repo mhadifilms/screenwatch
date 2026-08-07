@@ -96,10 +96,11 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
             "considered": result.considered,
             "seatmaps_fetched": result.seatmaps_fetched,
             "complete": result.complete,
+            "coverage": result.coverage,
             "duration_ms": result.duration_ms,
             "provider_stats": list(result.provider_stats),
             "provider_errors": list(result.provider_errors),
-            # What the providers' caps left unread, so a model reading this
+            # What fast-path caps or source failures left unread, so a model
             # can say "nothing in what I checked" rather than "nothing".
             "clipped": list(result.clipped),
             "unresolved_titles": list(result.unresolved_titles),

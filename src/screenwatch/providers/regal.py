@@ -187,13 +187,21 @@ class RegalProvider(ScopeReporting):
         self._reset_scope()
         self._seat_requests.clear()
         out: list[Screening] = []
-        for venue in self._clip_venues(venues):
+        for venue in self._clip_venues(venues, exhaustive=spec.exhaustive):
             theatre = by_id.get(venue.venue_id)
             if theatre is None:
                 continue
             window = spec.window(venue.today())   # the venue's date, not UTC's
-            day_cap = max(self.max_days, WATCH_MAX_DAYS) if spec.include_sold_out else None
-            days = self._clip_days(_days(window.start, window.end), cap=day_cap)
+            day_cap = (
+                None
+                if spec.exhaustive
+                else max(self.max_days, WATCH_MAX_DAYS) if spec.include_sold_out else None
+            )
+            days = self._clip_days(
+                _days(window.start, window.end),
+                cap=day_cap,
+                exhaustive=spec.exhaustive,
+            )
             for day in days:
                 # Regal's public query uses US date formatting even though
                 # the showtime payload returns ISO local timestamps.

@@ -155,6 +155,14 @@ class SearchSpecInput(BaseModel):
         2, description="How many options from the same venue+format may run "
                        "before other choices get a turn. 0 disables re-ordering."
     )
+    coverage: Literal["auto", "nearby", "exhaustive"] = Field(
+        "auto",
+        description=(
+            "Source coverage policy. auto exhaustively checks a city, radius, "
+            "chain, or explicit venue scope; nearby is the fast bounded mode; "
+            "exhaustive removes venue/day caps for a national or long-horizon crawl."
+        ),
+    )
 
     def to_dict(self) -> dict:
         data = self.model_dump(exclude_none=False)

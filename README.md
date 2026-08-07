@@ -2,7 +2,7 @@
 
 Screenwatch is a local-first US theater intelligence system: a browser app,
 HTTP API, MCP server, and durable notification engine over theater chains and
-selected independent cinemas.
+the long tail of independent cinemas.
 
 It is built to answer a practical question:
 
@@ -18,15 +18,17 @@ adds a ticket to a cart, or stores payment information.
 ## Read this first: data truth
 
 Screenwatch builds its venue graph from source discovery and records every
-claim with provenance. It is US-wide for the configured exhibitor sources, not
-a promise that every independent cinema in the country is enumerated. The
-product deliberately distinguishes live observations, estimates, curated
-routing configuration, and unknowns.
+claim with provenance. Official exhibitor directories cover the major chains;
+OpenStreetMap cinema records provide a national independent-cinema directory,
+while each venue's showtime availability remains an explicit source-backed
+observation. The product deliberately distinguishes live observations,
+estimates, curated routing configuration, and unknowns.
 
 | Dataset or surface | Current state | How to interpret it |
 | --- | --- | --- |
 | Official chain directories | AMC national theatre sitemap, Regal national directory, Cinemark sitemap, C360 locations, Alamo market schedule | Venue existence, routing, geography, and freshness are source-linked; each provider reports its own coverage and limits. |
-| `src/screenwatch/data/independent_venues.json` | Curated routing registry | Selected independent venues only; this is configuration, not a national census or hardware claim. |
+| OpenStreetMap `amenity=cinema` directory | National independent-venue discovery | Source-linked venue identity and geography; a mapped venue is not a promise that its website publishes showtimes. |
+| `src/screenwatch/data/independent_venues.json` | Curated routing/parser overrides | Special handling for known ticketing platforms and HTML quirks; this is configuration, not a hardware claim. |
 | Local SQLite evidence store | Directory, screening-presentation, and room/seat observations | Every observation has a source, URL where available, timestamp, scope, and confidence. Missing data remains unknown. |
 | Permanent venue hardware claims | 0 shipped | The system does not turn a static guess file into a fact. Use timestamped observed capabilities and room profiles instead. |
 
@@ -118,10 +120,12 @@ curl -s http://127.0.0.1:8787/v1/search \
   }'
 ```
 
-Search responses include `complete`, `clipped`, `provider_errors`, provider
-timings, source handles, seat-data type, and an explanation for each option.
-If a provider cap or source failure means the system did not inspect
-everything in scope, the response says so.
+Search responses include `coverage`, `complete`, `clipped`, `provider_errors`,
+provider timings, source handles, seat-data type, and an explanation for each
+option. Use `coverage: "exhaustive"` for a national or long-horizon crawl;
+use `coverage: "nearby"` for the fast bounded mode. `coverage: "auto"`
+selects exhaustive behavior for an explicitly scoped city, radius, chain, or
+venue search and keeps an unscoped query cheap.
 
 ## MCP
 
@@ -174,19 +178,23 @@ limits, and seat-data quality visible all the way to the transports.
 
 ## Data coverage and limitations
 
-Current provider behavior, measured source quirks, seat surfaces, and scope
-caps are documented in [Source coverage](docs/source-coverage.md).
+Current provider behavior, source quirks, seat surfaces, and the difference
+between fast and exhaustive coverage are documented in
+[Source coverage](docs/source-coverage.md).
 
 The important operating boundaries are:
 
 - A source's presentation label is evidence about that screening. It is not a
   permanent room inventory. Permanent hardware claims are intentionally zero
   until a narrowly scoped source capture and verification workflow is added.
-- Independent venue coverage is intentionally curated rather than discovered
-  from a national registry.
-- Directory discovery is broad, but showtime searches remain bounded by
-  provider caps. `complete`, `clipped`, and `provider_errors` are part of the
-  answer and must be checked for nationwide analysis.
+- Independent venue discovery is national and source-linked through
+  OpenStreetMap; the curated JSON file only supplies parser and routing
+  overrides for known venues.
+- `coverage: "exhaustive"` removes Screenwatch's venue/day caps for the
+  requested scope and makes national/long-horizon searches possible. Upstream
+  outages, bot challenges, missing websites, and provider-side limits remain
+  visible in `complete`, `clipped`, and `provider_errors` rather than being
+  mistaken for no inventory.
 - Alamo exposes reserved-seat availability but no public seat grid or count;
   it cannot produce exact seat choices.
 - C360 exposes a sold count and room shape, so contiguous-seat availability is
@@ -194,7 +202,7 @@ The important operating boundaries are:
 - Regal seat enrichment requires Chromium and a browser-rendered public page.
 - TMDB identity enrichment requires `TMDB_API_KEY`; without it, the resolver
   uses a lower-confidence local alias catalog.
-- Provider caps and source outages are normal operating conditions and are
+- Fast nearby mode and source outages are normal operating conditions and are
   surfaced as warnings or clipped scope instead of being hidden.
 
 Nothing in the repository purchases tickets or bypasses a checkout flow.

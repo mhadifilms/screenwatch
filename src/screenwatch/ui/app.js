@@ -71,6 +71,7 @@
       include_sold_out: false,
       release_radar: $("#release-radar").checked,
       max_seatmap_fetches: 10,
+      coverage: $("#coverage-mode").value || "auto",
     };
     return spec;
   }
@@ -132,8 +133,11 @@
     loading.hidden = true;
     empty.hidden = result.options.length > 0;
     list.innerHTML = result.options.map(renderOption).join("");
-    $("#result-meta").textContent = `${result.options.length} ranked options · ${result.considered} considered · ${Math.round(result.duration_ms)}ms`;
-    const notes = [...(result.provider_errors || []), ...(result.clipped || [])];
+    $("#result-meta").textContent = `${result.options.length} ranked options · ${result.considered} considered · ${result.coverage || "nearby"} coverage · ${Math.round(result.duration_ms)}ms`;
+    const coverageNote = result.coverage === "exhaustive"
+      ? "Exhaustive source traversal requested"
+      : "Fast bounded source traversal requested";
+    const notes = [coverageNote, ...(result.provider_errors || []), ...(result.clipped || [])];
     const scopeNote = $("#scope-note");
     scopeNote.hidden = notes.length === 0;
     scopeNote.innerHTML = `<strong>Coverage note:</strong> ${notes.map(escapeHtml).join(" · ")}`;

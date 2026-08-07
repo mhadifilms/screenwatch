@@ -16,7 +16,9 @@ The configured sources currently include:
 - Cinemark's official sitemap, with coordinates hydrated only from official
   theater pages as they are visited;
 - C360 location records and Alamo market schedules;
-- a clearly marked curated registry for selected independent cinemas.
+- OpenStreetMap's `amenity=cinema` directory for independent-cinema discovery;
+- a clearly marked curated routing/parser registry for known independent
+  ticketing sites.
 
 The counts are intentionally dynamic. Query `/v1/analytics/overview` or
 `/v1/evidence/overview` after a refresh rather than copying a stale count into
@@ -104,8 +106,10 @@ object.
 ## Coverage rules
 
 - A provider's directory count is not a showtime count.
-- A showtime count is not a national census; provider caps and errors are
-  carried in `complete`, `clipped`, and `provider_errors`.
+- A showtime count is not a national census. `coverage: "exhaustive"` removes
+  Screenwatch's local venue/day caps, but upstream errors, unmapped websites,
+  bot challenges, and missing source surfaces are still carried in `complete`,
+  `clipped`, and `provider_errors`.
 - A seat count is not a seat grid. C360 can support an estimate; AMC,
   Cinemark, and rendered Regal sources can support a grid when the source
   returns one.

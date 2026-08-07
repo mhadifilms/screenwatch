@@ -57,6 +57,9 @@ class Observatory:
                 "seat_detail": detail,
                 "max_venues": getattr(provider, "max_venues", None),
                 "max_days": getattr(provider, "max_days", None),
+                "max_markets": getattr(provider, "max_markets", None),
+                "coverage_modes": ["auto", "nearby", "exhaustive"],
+                "auto_scoped_exhaustive": True,
             })
         return {
             "inventory": inventory,

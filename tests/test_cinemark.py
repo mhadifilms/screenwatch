@@ -322,6 +322,7 @@ class TestGeographyBootstrap:
             work=WorkRef(query="*"),
             date_window=DateWindow(date(2026, 8, 2), date(2026, 8, 2)),
             location=LocationSpec(**loc),
+            coverage="nearby",
         )
 
     def test_state_centroids_narrow_the_candidate_set(self):

@@ -1,0 +1,83 @@
+{
+  "version": 0.6,
+  "generator": "screenwatch-test-fixture",
+  "elements": [
+    {
+      "type": "node",
+      "id": 101,
+      "lat": 37.7648,
+      "lon": -122.4222,
+      "tags": {
+        "amenity": "cinema",
+        "name": "The Roxie",
+        "website": "roxie.com",
+        "addr:housenumber": "3117",
+        "addr:street": "16th Street",
+        "addr:city": "San Francisco",
+        "addr:state": "CA",
+        "addr:postcode": "94114",
+        "operator": "Roxie Theater"
+      }
+    },
+    {
+      "type": "way",
+      "id": 202,
+      "center": {"lat": 40.7291, "lon": -74.0048},
+      "tags": {
+        "amenity": "cinema",
+        "name": "The Indie House",
+        "contact:website": "https://indie.example/cinema",
+        "addr:city": "New York",
+        "addr:state": "NY",
+        "addr:street": "Film Avenue"
+      }
+    },
+    {
+      "type": "node",
+      "id": 303,
+      "lat": 37.7833,
+      "lon": -122.4075,
+      "tags": {
+        "amenity": "cinema",
+        "name": "AMC Metreon 16",
+        "operator": "AMC Theatres"
+      }
+    },
+    {
+      "type": "node",
+      "id": 101,
+      "lat": 37.7648,
+      "lon": -122.4222,
+      "tags": {
+        "amenity": "cinema",
+        "name": "The Roxie (duplicate)"
+      }
+    },
+    {
+      "type": "node",
+      "id": 404,
+      "lat": 21.3069,
+      "lon": -157.8583,
+      "tags": {
+        "amenity": "cinema",
+        "official_name": "Hawaii Picture Palace",
+        "url": "https://hawaii.example",
+        "is_in:city": "Honolulu",
+        "is_in:state": "HI",
+        "postal_code": "96813"
+      }
+    },
+    {
+      "type": "node",
+      "id": 505,
+      "lat": 37.77,
+      "lon": -122.42,
+      "tags": {"amenity": "cinema"}
+    },
+    {
+      "type": "way",
+      "id": 606,
+      "tags": {"amenity": "cinema", "name": "No Geometry Cinema"}
+    }
+  ]
+}

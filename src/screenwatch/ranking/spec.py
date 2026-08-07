@@ -230,12 +230,36 @@ class SearchSpec:
     release_radar: bool = False                   # cheap catalog/sitemap signal
     max_seatmap_fetches: int = 10                  # phase B budget, in requests
     diversify_per_group: int = 2                   # same venue+format runs before others
+    coverage: str = "auto"                         # auto, nearby, or exhaustive
 
     def __post_init__(self) -> None:
         if self.party_size < 1:
             raise ValueError("party_size must be at least 1")
         if self.max_seatmap_fetches < 0:
             raise ValueError("max_seatmap_fetches must not be negative")
+        if self.coverage not in {"auto", "nearby", "exhaustive"}:
+            raise ValueError("coverage must be auto, nearby, or exhaustive")
+
+    @property
+    def exhaustive(self) -> bool:
+        """Whether this request should inspect every in-scope source record.
+
+        ``auto`` is exhaustive once the caller gives us a geographic or
+        explicit venue scope. An unscoped request remains a deliberately
+        bounded discovery query until the caller opts into a national crawl.
+        """
+        if self.coverage == "exhaustive":
+            return True
+        if self.coverage == "nearby":
+            return False
+        location = self.location
+        return bool(
+            location.origin
+            or location.city
+            or location.allow
+            or location.chains
+            or location.venue_types
+        )
 
     def window(self, today: date) -> DateWindow:
         # A normal search stays intentionally cheap. Watches include sold-out

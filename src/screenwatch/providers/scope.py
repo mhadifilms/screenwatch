@@ -1,11 +1,12 @@
 """Honest reporting of what a provider did not look at.
 
-Every provider caps its own work: so many venues, so many days ahead. The
-caps are real and necessary - a seven-day search across 402 Regal theatres is
-thousands of page loads - but an uncounted cap is a lie. A search that read
-three of a user's eleven nearby Cinemarks and found nothing reports exactly
-what a search that read all eleven and found nothing reports, and the two are
-not the same answer.
+Every provider has a fast path: so many venues, so many days ahead. The fast
+path is useful for interactive work - a seven-day search across 402 Regal
+theatres is thousands of page loads - but an uncounted cap is a lie. The
+exhaustive path explicitly removes Screenwatch's local caps for callers that
+need the full configured scope. A search that read three of a user's eleven
+nearby Cinemarks and found nothing reports exactly what a search that read all
+eleven and found nothing reports, and the two are not the same answer.
 
 So a provider that clips says so, and `SearchResult.clipped` carries it up to
 whoever asked. The cap stays; the silence goes.
@@ -17,7 +18,7 @@ WATCH_MAX_DAYS = 31
 
 
 class ScopeReporting:
-    """Mixin: record and expose what this provider's caps left out.
+    """Mixin: record and expose what a fast-path cap left out.
 
     `screenings()` calls `_reset_scope()` on entry and `_clip*` when a cap
     bites; the service reads `clipped` afterwards. Per-call state rather than
@@ -40,9 +41,11 @@ class ScopeReporting:
         if formatted not in self._errors:
             self._errors = (*self._errors, formatted)
 
-    def _clip_venues(self, venues: list) -> list:
+    def _clip_venues(self, venues: list, *, exhaustive: bool = False) -> list:
         """Apply `max_venues`, recording the ones dropped."""
         cap = getattr(self, "max_venues", None)
+        if exhaustive:
+            cap = None
         if cap is None or len(venues) <= cap:
             return list(venues)
         dropped = venues[cap:]
@@ -53,9 +56,14 @@ class ScopeReporting:
         )
         return list(venues[:cap])
 
-    def _clip_days(self, days: list, *, cap: int | None = None) -> list:
+    def _clip_days(
+        self, days: list, *, cap: int | None = None, exhaustive: bool = False
+    ) -> list:
         """Apply `max_days`, recording the tail dropped."""
-        cap = getattr(self, "max_days", None) if cap is None else cap
+        if not exhaustive:
+            cap = getattr(self, "max_days", None) if cap is None else cap
+        else:
+            cap = None
         if cap is None or len(days) <= cap:
             return list(days)
         self._note_clip(

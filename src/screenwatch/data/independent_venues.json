@@ -2,9 +2,9 @@
   "_comment": [
     "Independent venues read through the generic schema.org adapter.",
     "",
-    "Curated rather than discovered: there is no registry of independent",
-    "cinemas to crawl, and a list of the ones a user actually cares about is",
-    "cheaper and more honest than pretending to enumerate them.",
+    "National discovery comes from OpenStreetMap amenity=cinema records.",
+    "This file is only a routing/parser override registry for known venues",
+    "whose ticketing platform or markup needs explicit handling.",
     "",
     "`markup` records what was observed at capture time:",
     "  usable      - ScreeningEvent nodes with real startDate values",

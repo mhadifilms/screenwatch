@@ -59,7 +59,7 @@ class SearchResult:
     seatmaps_fetched: int = 0
     unresolved_titles: tuple[str, ...] = ()
     provider_errors: tuple[str, ...] = ()
-    # What the providers' own caps left unread. Not an error - the caps are
+    # What the fast-path caps left unread. Not an error - the caps are
     # deliberate - but the difference between "nothing is on" and "nothing is
     # on in the part we looked at", which the caller has to be able to see.
     clipped: tuple[str, ...] = ()
@@ -73,6 +73,11 @@ class SearchResult:
     def complete(self) -> bool:
         """Did the search cover everything the spec asked for?"""
         return not self.clipped and not self.provider_errors
+
+    @property
+    def coverage(self) -> str:
+        """Effective source coverage mode used by this result."""
+        return "exhaustive" if self.spec.exhaustive else "nearby"
 
     @property
     def best(self) -> Option | None:
@@ -188,11 +193,17 @@ class SearchService:
                     "chain": provider.chain,
                     "status": "not_in_scope",
                     "discovered": 0,
+                    "coverage": "exhaustive",
                 })
                 continue
             discover = getattr(provider, "discover", None)
             if discover is None:
-                stats.append({"chain": provider.chain, "status": "unsupported", "discovered": 0})
+                stats.append({
+                    "chain": provider.chain,
+                    "status": "unsupported",
+                    "discovered": 0,
+                    "coverage": "exhaustive",
+                })
                 continue
             provider_started = time.perf_counter()
             try:
@@ -210,6 +221,7 @@ class SearchService:
                     "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
                     "errors": provider_errors,
                     "clipped": provider_clipped,
+                    "coverage": "exhaustive",
                 })
             except Exception as exc:                       # noqa: BLE001
                 message = f"{provider.chain} discovery: {type(exc).__name__}: {exc}"
@@ -225,10 +237,12 @@ class SearchService:
                     "error": f"{type(exc).__name__}: {exc}",
                     "errors": list(dict.fromkeys(provider_errors)),
                     "clipped": provider_clipped,
+                    "coverage": "exhaustive",
                 })
         return {
             "scope": "national_directory",
             "full_refresh": True,
+            "coverage": "exhaustive",
             "discovered": discovered_total,
             "directory_total": len(self.directory.all()),
             "provider_stats": stats,
@@ -307,7 +321,9 @@ class SearchService:
                 continue
             if discover := getattr(provider, "discover", None):
                 try:
-                    discovered = self._call_discover(provider, spec) or []
+                    discovered = self._call_discover(
+                        provider, spec, full=spec.exhaustive
+                    ) or []
                     discovery_count = len(discovered)
                     self._register_discovered(discovered)
                 except Exception as exc:                       # noqa: BLE001
@@ -318,7 +334,11 @@ class SearchService:
                 discovery_clipped.extend(getattr(provider, "clipped", ()))
 
             unlocated = []
-            if spec.location.origin is not None and spec.location.city is None:
+            if (
+                spec.location.origin is not None
+                and spec.location.city is None
+                and not spec.exhaustive
+            ):
                 unlocated = [
                     venue for venue in discovered
                     if venue.point is None and venue.venue_id not in spec.location.allow
@@ -330,7 +350,11 @@ class SearchService:
                     "include them in an origin-based search"
                 )
 
-            venues = self.directory.matching(spec.location, chain=provider.chain)
+            venues = self.directory.matching(
+                spec.location,
+                chain=provider.chain,
+                include_unknown=spec.exhaustive,
+            )
             provider_clipped = list(discovery_clipped)
             # A provider without a discover() hook may still be a valid
             # screening source (and may have its own venue identity in the
@@ -428,6 +452,9 @@ class SearchService:
                     "clipped": provider_clipped,
                 })
 
+        effective_coverage = "exhaustive" if spec.exhaustive else "nearby"
+        for stat in provider_stats:
+            stat.setdefault("coverage", effective_coverage)
         self._last_provider_stats = tuple(provider_stats)
 
         return screenings, errors, clipped

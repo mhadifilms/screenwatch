@@ -112,7 +112,7 @@ class AlamoProvider(ScopeReporting):
     def discover(self, spec: SearchSpec, *, full: bool = False) -> list[Venue]:
         """Venues this provider knows about, for the directory to filter."""
         out: list[Venue] = []
-        markets = list(self.markets) if full else self._relevant_markets(spec)
+        markets = list(self.markets) if full or spec.exhaustive else self._relevant_markets(spec)
         for market in markets:
             try:
                 cinemas, _ = self._market(market)

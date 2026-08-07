@@ -4,10 +4,11 @@ The long-tail provider. Art houses and single-screen cinemas have no shared
 backend, but many publish `ScreeningEvent` markup because SEO demands it, and
 nobody bot-protects their own SEO. One adapter covers all of them.
 
-Venues are configured in `data/independent_venues.json` rather than
-discovered: there is no registry of independent cinemas to crawl, and a
-curated list of the ones a user actually cares about is both cheaper and more
-honest than pretending to enumerate them.
+The national venue directory comes from OpenStreetMap's `amenity=cinema`
+records, queried through Overpass and cached in the local directory. The
+configuration file remains useful as a routing and parser-override registry
+for venues whose websites need a known adapter, but it is not the coverage
+boundary.
 
 Reality check, measured: a meaningful fraction publish markup that validates
 but carries no usable `startDate`. Film Forum is the canonical example - 56
@@ -39,14 +40,17 @@ from __future__ import annotations
 
 import json
 import pathlib
+import urllib.parse
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from ..adapters.agile.links import extract as extract_agile
 from ..adapters.agile.links import has_agile_links
 from ..adapters.base import ParseError
+from ..adapters.cinemark.showtimes import STATE_TZ
 from ..adapters.generic.jsonld import IncompleteStructuredData, JsonLdScreenings
 from ..adapters.generic.listing import extract as extract_listing
+from ..adapters.openstreetmap.cinemas import OsmCinema, OsmCinemaDirectory
 from ..adapters.vista.links import extract as extract_vista
 from ..adapters.vista.links import has_vista_links
 from ..browser import BrowserUnavailable, shared_browser
@@ -61,6 +65,30 @@ from ..transport import Transport
 from .scope import ScopeReporting
 
 _DATA = pathlib.Path(__file__).resolve().parents[1] / "data"
+
+_STATE_NAMES = {
+    "alabama": "al", "alaska": "ak", "arizona": "az", "arkansas": "ar",
+    "california": "ca", "colorado": "co", "connecticut": "ct", "delaware": "de",
+    "florida": "fl", "georgia": "ga", "hawaii": "hi", "idaho": "id",
+    "illinois": "il", "indiana": "in", "iowa": "ia", "kansas": "ks",
+    "kentucky": "ky", "louisiana": "la", "maine": "me", "maryland": "md",
+    "massachusetts": "ma", "michigan": "mi", "minnesota": "mn", "mississippi": "ms",
+    "missouri": "mo", "montana": "mt", "nebraska": "ne", "nevada": "nv",
+    "new hampshire": "nh", "new jersey": "nj", "new mexico": "nm",
+    "new york": "ny", "north carolina": "nc", "north dakota": "nd",
+    "ohio": "oh", "oklahoma": "ok", "oregon": "or", "pennsylvania": "pa",
+    "rhode island": "ri", "south carolina": "sc", "south dakota": "sd",
+    "tennessee": "tn", "texas": "tx", "utah": "ut", "vermont": "vt",
+    "virginia": "va", "washington": "wa", "west virginia": "wv",
+    "wisconsin": "wi", "wyoming": "wy", "district of columbia": "dc",
+}
+_CHAIN_MARKERS = (
+    "amc ", "regal ", "cinemark", "alamo drafthouse", "apple cinemas",
+    "studio movie grill", "harkins", "marcus theatres", "showplace icon",
+    "landmark theatres", "angelika film center", "bow tie cinemas", "b&b theatres",
+    "gqt movies", "mjr theatres", "silverspot cinema", "look cinemas",
+    "reading cinemas", "hoyts", "cinepolis", "fandango at home",
+)
 
 
 def load_venues(path: pathlib.Path | None = None) -> list[dict]:
@@ -78,18 +106,49 @@ class IndependentProvider(ScopeReporting):
         work_resolver: WorkResolver | None = None,
         *,
         venues: list[dict] | None = None,
-        max_venues: int | None = None,
+        max_venues: int | None = 100,
+        store=None,
+        osm_directory: OsmCinemaDirectory | None = None,
+        discovery_transport: Transport | None = None,
+        osm_enabled: bool = True,
     ) -> None:
         self.work_resolver = work_resolver or WorkResolver()
         self._config = venues if venues is not None else load_venues()
-        # Uncapped by default. The list is curated by hand rather than
-        # crawled, so every venue in it is one the user asked for; a default of
-        # six silently ignored the seventh.
         self.max_venues = max_venues
+        self.store = store
+        self.osm = osm_directory or OsmCinemaDirectory()
+        self._discovery_transport = discovery_transport
+        self.osm_enabled = osm_enabled
+        self._osm_rows: dict[str, dict] = {}
         self.incomplete: dict[str, str] = {}
 
     # ------------------------------------------------------------------
-    def discover(self, spec: SearchSpec) -> list[Venue]:
+    def discover(self, spec: SearchSpec, *, full: bool = False) -> list[Venue]:
+        self._load_cached_osm_rows()
+        rows = {
+            row["venue_id"]: {
+                **row,
+                "source": "independent-registry",
+                "source_url": row.get("url"),
+            }
+            for row in self._config
+        }
+        for row in self._osm_rows.values():
+            key, merged = _merge_osm_row(rows, row)
+            rows[key] = merged
+        if self.osm_enabled:
+            try:
+                cinemas = self._discover_osm(spec, full=full or spec.exhaustive)
+                for cinema in cinemas:
+                    row = self._osm_row(cinema)
+                    self._osm_rows[row["venue_id"]] = row
+                    key, merged = _merge_osm_row(rows, row)
+                    rows[key] = merged
+            except Exception as exc:  # noqa: BLE001
+                self._note_error(
+                    f"OSM discovery failed: {type(exc).__name__}: {exc}"
+                )
+        self._venue_config = rows
         return [
             Venue(
                 venue_id=row["venue_id"],
@@ -102,20 +161,112 @@ class IndependentProvider(ScopeReporting):
                 ),
                 market=row.get("url"),          # the page to read, not a market
                 url=row.get("url"),
-                source="independent-registry",
-                source_url=row.get("url"),
+                venue_type=row.get("venue_type") or "cinema",
+                markup=row.get("markup"),
+                notes=row.get("notes"),
+                source=row.get("source", "independent-registry"),
+                source_url=row.get("source_url") or row.get("url"),
             )
-            for row in self._config
+            for row in rows.values()
         ]
+
+    def _transport_for_discovery(self) -> Transport:
+        if self._discovery_transport is None:
+            self._discovery_transport = Transport(
+                min_interval_s=1.0,
+                user_agent=(
+                    "screenwatch/1.0 (+https://github.com/mhadifilms/screenwatch)"
+                ),
+            )
+        return self._discovery_transport
+
+    def _discover_osm(self, spec: SearchSpec, *, full: bool) -> list[OsmCinema]:
+        if not full and spec.location.origin is None:
+            return [self._osm_cinema_from_row(row) for row in self._osm_rows.values()]
+        transport = self._transport_for_discovery()
+        if full:
+            cinemas = self.osm.national(transport)
+        else:
+            cinemas = self.osm.nearby(
+                transport,
+                spec.location.origin,
+                spec.location.radius_km,
+            )
+        return [cinema for cinema in cinemas if not _looks_like_chain(cinema)]
+
+    @staticmethod
+    def _osm_cinema_from_row(row: dict) -> OsmCinema:
+        osm_type, _, osm_id = row["venue_id"].rpartition("-")
+        try:
+            numeric_id = int(osm_id)
+        except ValueError:
+            numeric_id = 0
+        return OsmCinema(
+            osm_type=osm_type.rsplit("-", 1)[-1] or "node",
+            osm_id=numeric_id,
+            name=row["name"],
+            latitude=float(row["lat"]),
+            longitude=float(row["lon"]),
+            website=row.get("url"),
+            city=row.get("city"),
+            state=row.get("state"),
+            postal_code=row.get("postal_code"),
+            address=row.get("address"),
+        )
+
+    @staticmethod
+    def _osm_row(cinema: OsmCinema) -> dict:
+        details = [
+            f"Address: {cinema.address}" if cinema.address else None,
+            f"Operator: {cinema.operator}" if cinema.operator else None,
+            f"Wikidata: {cinema.wikidata}" if cinema.wikidata else None,
+        ]
+        return {
+            "venue_id": cinema.venue_id,
+            "name": cinema.name,
+            "url": cinema.website,
+            "lat": cinema.latitude,
+            "lon": cinema.longitude,
+            "tz": _timezone_for_state(cinema.state),
+            "city": cinema.city,
+            "state": cinema.state,
+            "postal_code": cinema.postal_code,
+            "address": cinema.address,
+            "operator": cinema.operator,
+            "markup": "unknown",
+            "notes": (
+                "Directory metadata from OpenStreetMap. Online showtimes are "
+                "attempted only when the mapped venue publishes a website. "
+                + " ".join(detail for detail in details if detail)
+            ),
+            "source": "osm:overpass",
+            "source_url": cinema.osm_url,
+        }
+
+    def _load_cached_osm_rows(self) -> None:
+        if self.store is None:
+            return
+        for row in self.store.directory_venues():
+            if row.get("source") != "osm:overpass" or row.get("venue_id") in self._osm_rows:
+                continue
+            if row.get("lat") is None or row.get("lon") is None:
+                continue
+            self._osm_rows[row["venue_id"]] = {
+                **row,
+                "source": "osm:overpass",
+                "source_url": row.get("source_url"),
+            }
 
     def screenings(
         self, spec: SearchSpec, venues: list[Venue], transport: Transport
     ) -> list[Screening]:
-        by_id = {row["venue_id"]: row for row in self._config}
+        by_id = getattr(self, "_venue_config", None) or {
+            row["venue_id"]: row for row in self._config
+        }
 
         self._reset_scope()
         out: list[Screening] = []
-        for venue in self._clip_venues(venues):
+        for venue in self._clip_venues(venues, exhaustive=spec.exhaustive):
             row = by_id.get(venue.venue_id)
             if not row or not row.get("url"):
                 continue
@@ -324,3 +475,74 @@ class IndependentProvider(ScopeReporting):
             "schema.org markup carries no seat data; a platform adapter is "
             "needed for reserved-seating independents"
         )
+
+
+def _looks_like_chain(cinema: OsmCinema) -> bool:
+    haystack = f"{cinema.name} {cinema.operator or ''}".casefold()
+    return any(marker in haystack for marker in _CHAIN_MARKERS)
+
+
+def _url_host(value: str | None) -> str | None:
+    if not value:
+        return None
+    host = urllib.parse.urlparse(value).netloc.casefold()
+    return host.removeprefix("www.") or None
+
+
+def _nearby_config(existing: dict, row: dict) -> bool:
+    if not all(existing.get(key) is not None for key in ("lat", "lon")):
+        return False
+    if not all(row.get(key) is not None for key in ("lat", "lon")):
+        return False
+    return GeoPoint(float(existing["lat"]), float(existing["lon"])).km_to(
+        GeoPoint(float(row["lat"]), float(row["lon"]))
+    ) <= 0.75
+
+
+def _merge_osm_row(rows: dict[str, dict], row: dict) -> tuple[str, dict]:
+    """Keep one stable identity when OSM maps a configured venue too.
+
+    The config owns parser/routing fields; OSM contributes a source-linked
+    directory observation and current geography. Unmatched OSM records keep
+    their stable object id so a later refresh cannot manufacture duplicates.
+    """
+    for venue_id, existing in rows.items():
+        if not str(existing.get("source", "")).startswith("independent-registry"):
+            continue
+        same_site = (
+            _url_host(existing.get("url"))
+            and _url_host(existing.get("url")) == _url_host(row.get("url"))
+        )
+        same_place = (
+            existing.get("name", "").casefold() == row.get("name", "").casefold()
+            and _nearby_config(existing, row)
+        )
+        if not (same_site or same_place):
+            continue
+        merged = {
+            **row,
+            **existing,
+            "venue_id": venue_id,
+            "name": existing.get("name") or row.get("name"),
+            "url": existing.get("url") or row.get("url"),
+            "lat": row.get("lat") if row.get("lat") is not None else existing.get("lat"),
+            "lon": row.get("lon") if row.get("lon") is not None else existing.get("lon"),
+            "city": row.get("city") or existing.get("city"),
+            "state": row.get("state") or existing.get("state"),
+            "postal_code": row.get("postal_code") or existing.get("postal_code"),
+            "address": row.get("address") or existing.get("address"),
+            "source": "independent-registry+osm:overpass",
+            "source_url": row.get("source_url"),
+            "notes": (
+                f"{existing.get('notes', '')} Directory identity corroborated by "
+                f"{row.get('source_url')}."
+            ).strip(),
+        }
+        return venue_id, merged
+    return row["venue_id"], row
+
+
+def _timezone_for_state(state: str | None) -> str:
+    token = (state or "").strip().casefold()
+    abbreviation = token if len(token) == 2 else _STATE_NAMES.get(token)
+    return STATE_TZ.get(abbreviation or "", "America/Chicago")

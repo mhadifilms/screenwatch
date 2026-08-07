@@ -108,9 +108,12 @@ class CinemarkProvider(ScopeReporting):
         already visited keep their coordinates, so a repeated search in the
         same region gets progressively better distance ranking.
         """
+        full = full or spec.exhaustive
         self._load_persisted_geo()
         plausible = self.slugs() if full else self._plausible_slugs(spec)
-        if not full:
+        if full and spec.location.origin is not None:
+            self._bootstrap_geo(plausible, spec, all_unknown=True)
+        elif not full:
             self._bootstrap_geo(plausible, spec)
 
         out: list[Venue] = []
@@ -154,7 +157,9 @@ class CinemarkProvider(ScopeReporting):
                 name=row.get("name") or venue_id, lat=row["lat"], lon=row["lon"],
             )
 
-    def _bootstrap_geo(self, slugs: list[str], spec: SearchSpec) -> None:
+    def _bootstrap_geo(
+        self, slugs: list[str], spec: SearchSpec, *, all_unknown: bool = False
+    ) -> None:
         """Learn coordinates for a few unvisited venues.
 
         Cinemark hides geography on the theatre page, so without this the
@@ -168,7 +173,9 @@ class CinemarkProvider(ScopeReporting):
         unknown = [
             slug for slug in slugs
             if self._venue_id_for(slug) not in self._theatres
-        ][: self.bootstrap_limit]
+        ]
+        if not all_unknown:
+            unknown = unknown[: self.bootstrap_limit]
 
         for slug in unknown:
             try:
@@ -231,7 +238,7 @@ class CinemarkProvider(ScopeReporting):
     ) -> list[Screening]:
         self._reset_scope()
         out: list[Screening] = []
-        for venue in self._clip_venues(venues):
+        for venue in self._clip_venues(venues, exhaustive=spec.exhaustive):
             if not venue.market:
                 continue
             # Cinemark venues carry no zone until their page is parsed, so this
@@ -243,8 +250,13 @@ class CinemarkProvider(ScopeReporting):
                     window.start + timedelta(days=i)
                     for i in range((window.end - window.start).days + 1)
                 ],
-                cap=(max(self.max_days, WATCH_MAX_DAYS)
-                     if spec.include_sold_out else None),
+                cap=(
+                    None
+                    if spec.exhaustive
+                    else max(self.max_days, WATCH_MAX_DAYS)
+                    if spec.include_sold_out else None
+                ),
+                exhaustive=spec.exhaustive,
             )
             for day in days:
                 html = self._get(self.adapter.theatre_url(venue.market, day.isoformat()))

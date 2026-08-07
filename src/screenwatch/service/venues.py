@@ -1,9 +1,10 @@
 """Venue directory: the join between a SearchSpec's geography and adapters.
 
-The directory is a source-backed graph. It starts empty (apart from the
-explicit independent routing registry) and is populated by provider discovery,
-then persisted locally with the source and source URL that supplied each row.
-There is deliberately no packaged hardware overlay hiding inside it.
+The directory is a source-backed graph. It starts with explicit independent
+routing overrides and is populated by provider discovery, including the
+OpenStreetMap independent-cinema directory, then persisted locally with the
+source and source URL that supplied each row. There is deliberately no
+packaged hardware overlay hiding inside it.
 """
 
 from __future__ import annotations
@@ -316,12 +317,23 @@ class VenueDirectory:
     def types(self) -> list[str]:
         return sorted({venue.venue_type for venue in self._venues.values()})
 
-    def matching(self, location: LocationSpec, *, chain: str | None = None) -> list[Venue]:
+    def matching(
+        self,
+        location: LocationSpec,
+        *,
+        chain: str | None = None,
+        include_unknown: bool = False,
+    ) -> list[Venue]:
         """Venues the spec admits, nearest first.
 
         Explicitly allowed venues are always included and sorted first even
         when they are outside the radius - naming a venue means you want it,
         which is exactly the drive-two-hours-for-70mm case.
+
+        ``include_unknown`` is used only by an explicit exhaustive origin
+        search. It keeps coordinate-less source records in the candidate set
+        so missing geography does not become a false negative; provider stats
+        make that uncertainty visible.
         """
         out = [
             v for v in self._venues.values()
@@ -336,6 +348,7 @@ class VenueDirectory:
                     and _matches_city(v, location.city)
                     and v.point is None
                 )
+                or (include_unknown and v.point is None and location.origin is not None)
             )
         ]
         out.sort(

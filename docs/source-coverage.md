@@ -1,8 +1,11 @@
 # Source coverage
 
-Coverage is a set of source behaviors, not a claim of perfect national
-enumeration. Provider caps, bot protection, markup drift, and missing surfaces
-are part of the result and are reported to callers.
+Coverage is a set of source behaviors, not a claim that every upstream surface
+is always reachable. Screenwatch has two local coverage modes: `nearby` is a
+fast bounded search, while `exhaustive` removes Screenwatch's venue/day caps
+for the requested scope. Bot protection, markup drift, missing websites,
+upstream limits, and source failures remain part of the result and are
+reported to callers.
 
 ## Current providers
 
@@ -10,10 +13,10 @@ are part of the result and are reported to callers.
 | --- | --- | --- | --- | --- |
 | AMC | Official national theatre sitemap with ids, slugs, geography, and URLs | Sitemap and showtime surfaces | Exact GraphQL grid | Queue/interstitial traversal and source drift are guarded; seat maps are a read-only request |
 | Alamo Drafthouse | Open market schedule JSON for configured markets | Open market schedule JSON | Availability only | Source exposes sellable/sold-out state but no public seat count or grid |
-| Regal | Official national directory payload | Theatre/showtime pages | Exact browser-rendered grid | Chromium is required for seat enrichment; provider caps national reads |
+| Regal | Official national directory payload | Theatre/showtime pages | Exact browser-rendered grid | Chromium is required for seat enrichment; `nearby` caps reads, `exhaustive` traverses the requested directory scope |
 | Cinemark | Official sitemap; page coordinates hydrate lazily | Sitemap and theatre pages | Exact seat grid | Seat page may require Chromium to clear a challenge; ticket routes are not guessed |
 | Apple Cinemas / C360 | Official locations endpoint | Open JSON after session warm-up | Estimated | Sold count and room shape are available; contiguous seats remain an estimate |
-| Independents | Curated routing registry | Schema.org, Vista links, Agile links, or own-site listings | Availability or unknown | Registry is curated; source markup can be decorative or browser-only |
+| Independents | [OpenStreetMap `amenity=cinema` records](https://wiki.openstreetmap.org/wiki/Tag%3Aamenity%3Dcinema) queried through [Overpass](https://wiki.openstreetmap.org/wiki/Overpass_API/Language_Guide), plus curated routing overrides | Schema.org, Vista links, Agile links, or mapped own-site listings | Availability or unknown | OSM establishes a source-linked venue record; a venue without a mapped website remains directory-only |
 
 Directory discovery is persisted separately from showtime search. A national
 directory row proves that the provider reported a venue; it does not prove that
@@ -31,8 +34,21 @@ Search results include:
 - `provider_stats`: per-provider counts and timings.
 
 `complete: true` means the configured providers reported no error or clipping
-for that run. It does not mean every US theater or every ticketing surface was
-available to the internet at that moment.
+for that run. In `exhaustive` mode it means Screenwatch completed its requested
+source traversal; it still does not mean every US theater or every ticketing
+surface was available to the internet at that moment.
+
+## Choosing coverage
+
+| Mode | Behavior | Best for |
+| --- | --- | --- |
+| `nearby` | Uses provider fast-path caps and cached/local geography | Interactive previews and low-cost polling |
+| `auto` | Exhaustive for a city, radius, chain, venue type, or explicit venue scope; nearby for an unscoped request | Normal API, MCP, app, and watch requests |
+| `exhaustive` | Removes Screenwatch venue/day caps and asks every configured source for the requested scope | Nationwide inventories, long-horizon release watches, and audits |
+
+The source can still decline a request, require Chromium, expose no website, or
+return incomplete markup. Those states are represented as source errors or
+unknown observations, never as fabricated empty inventory.
 
 ## Measured source notes
 

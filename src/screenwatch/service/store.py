@@ -156,7 +156,8 @@ CREATE TABLE IF NOT EXISTS venue_geo (
     updated_at TEXT NOT NULL
 );
 
--- The durable venue graph. Provider discovery is bounded, but once a venue
+-- The durable venue graph. Fast discovery may be bounded, while exhaustive
+-- discovery can add every source record in the requested scope. Once a venue
 -- has been observed it should remain queryable after the process restarts.
 CREATE TABLE IF NOT EXISTS directory_venues (
     venue_id           TEXT PRIMARY KEY,

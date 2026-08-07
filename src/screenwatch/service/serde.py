@@ -100,6 +100,7 @@ def spec_to_dict(spec: SearchSpec) -> dict:
         "release_radar": spec.release_radar,
         "max_seatmap_fetches": spec.max_seatmap_fetches,
         "diversify_per_group": spec.diversify_per_group,
+        "coverage": spec.coverage,
     }
 
 
@@ -156,6 +157,7 @@ def spec_from_dict(data: dict) -> SearchSpec:
         release_radar=data.get("release_radar", False),
         max_seatmap_fetches=data.get("max_seatmap_fetches", 10),
         diversify_per_group=data.get("diversify_per_group", 2),
+        coverage=data.get("coverage", "auto"),
     )
 
 

@@ -93,13 +93,21 @@ class AmcProvider(ScopeReporting):
     ) -> list[Screening]:
         self._reset_scope()
         out: list[Screening] = []
-        for venue in self._clip_venues(venues):
+        for venue in self._clip_venues(venues, exhaustive=spec.exhaustive):
             if not venue.market:
                 continue          # cannot build a showtimes URL without the market
             # Anchored on the venue's own date, not UTC's - see `local_today`.
             window = spec.window(venue.today())
-            day_cap = max(self.max_days, WATCH_MAX_DAYS) if spec.include_sold_out else None
-            for day in self._clip_days(_days(window.start, window.end), cap=day_cap):
+            day_cap = (
+                None
+                if spec.exhaustive
+                else max(self.max_days, WATCH_MAX_DAYS) if spec.include_sold_out else None
+            )
+            for day in self._clip_days(
+                _days(window.start, window.end),
+                cap=day_cap,
+                exhaustive=spec.exhaustive,
+            ):
                 out.extend(self._one_day(spec, venue, day, transport))
         return out
 

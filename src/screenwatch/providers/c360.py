@@ -159,7 +159,7 @@ class C360Provider(ScopeReporting):
         by_id = {loc.venue_id: loc for loc in self.locations()}
         out: list[Screening] = []
 
-        for venue in self._clip_venues(venues):
+        for venue in self._clip_venues(venues, exhaustive=spec.exhaustive):
             loc = by_id.get(venue.venue_id)
             if loc is None:
                 continue
@@ -172,8 +172,13 @@ class C360Provider(ScopeReporting):
                     window.start + timedelta(days=i)
                     for i in range((window.end - window.start).days + 1)
                 ],
-                cap=(max(self.max_days, WATCH_MAX_DAYS)
-                     if spec.include_sold_out else None),
+                cap=(
+                    None
+                    if spec.exhaustive
+                    else max(self.max_days, WATCH_MAX_DAYS)
+                    if spec.include_sold_out else None
+                ),
+                exhaustive=spec.exhaustive,
             )
             for day in days:
                 payload = self._json(

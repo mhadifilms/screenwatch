@@ -70,6 +70,7 @@ The smallest useful request is:
       "label": "Any IMAX"
     }
   ],
+  "coverage": "exhaustive",
   "include_sold_out": true
 }
 ```
@@ -83,12 +84,20 @@ filters, venue-type filters, explicit `allow` venue ids, and `deny` venue ids.
 An explicitly allowed venue remains in scope even when it is outside the
 radius—the API does not assume that a 70mm trip is accidental.
 
+`coverage` is `auto`, `nearby`, or `exhaustive`. `auto` is exhaustive whenever
+the request has a city, origin/radius, chain, venue type, or explicit venue
+scope; it stays nearby for an unscoped request. `nearby` is the low-cost
+bounded mode. `exhaustive` removes Screenwatch's venue/day caps for the
+requested scope and is the right choice for a national search or a long-lived
+release watch.
+
 ## Reading a search response
 
 The response includes:
 
 - `options`: ranked screening-plus-seat products;
 - `narration` and `comparison`: human-readable explanations;
+- `coverage`: the effective source traversal mode (`nearby` or `exhaustive`);
 - `complete`: whether provider errors or scope clipping changed the search;
 - `clipped` and `provider_errors`: what was not read or failed;
 - `provider_stats`: counts and timing per source;

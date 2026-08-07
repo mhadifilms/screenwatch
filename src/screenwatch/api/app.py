@@ -60,6 +60,7 @@ def _result_payload(result: SearchResult, *, limit: int | None = None) -> dict:
         "provider_errors": list(result.provider_errors),
         "clipped": list(result.clipped),
         "complete": result.complete,
+        "coverage": result.coverage,
         "started_at": result.started_at,
         "finished_at": result.finished_at,
         "duration_ms": result.duration_ms,

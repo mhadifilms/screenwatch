@@ -93,10 +93,12 @@ class Transport:
         queue_host: str = "https://amctheatres.queue-it.net",
         min_interval_s: float = 2.0,
         timeout: int = 25,
+        user_agent: str | None = None,
     ) -> None:
         self._session = requests.Session(impersonate=impersonate)
         self._queue_host = queue_host
         self._timeout = timeout
+        self._user_agent = user_agent
         self._pacer = Pacer(min_interval_s=min_interval_s)
         self._etags: dict[str, str] = {}
 
@@ -126,6 +128,8 @@ class Transport:
     def _raw_get(self, url: str, *, conditional: bool = False) -> Response:
         self._pacer.wait()
         headers = {"accept-language": "en-US,en;q=0.9"}
+        if self._user_agent:
+            headers["user-agent"] = self._user_agent
         if conditional and (etag := self._etags.get(url)):
             headers["if-none-match"] = etag
         r = self._session.get(url, headers=headers, timeout=self._timeout)
