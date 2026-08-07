@@ -74,6 +74,7 @@ class Observatory:
                 "types": self.directory.types(),
             },
             "providers": providers,
+            "provider_health": self.store.provider_health(),
             "principles": [
                 "A confirmed seat grid outranks an estimate.",
                 "Unknown coverage is reported instead of being presented as empty.",

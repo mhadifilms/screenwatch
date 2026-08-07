@@ -141,6 +141,12 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
     ) -> dict:
         return {"searches": observatory.recent_searches(limit=limit, user_id=uid)}
 
+    @app.get("/v1/analytics/providers")
+    def provider_health(
+        limit: int = Query(100, ge=1, le=1000), uid: str = Depends(user)
+    ) -> dict:
+        return {"providers": search.store.provider_health(user_id=uid, limit=limit)}
+
     @app.get("/v1/venues")
     def venues(
         chain: str | None = None,

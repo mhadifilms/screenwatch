@@ -100,6 +100,9 @@ def test_search_id_persists_and_scopes_seat_map():
     assert body["search_id"].startswith("search_")
     assert body["provider_stats"][0]["screenings"] == 1
     assert body["complete"] is True
+    provider_health = client.get("/v1/analytics/providers").json()["providers"]
+    assert provider_health[0]["chain"] == "amc"
+    assert provider_health[0]["health"] == "healthy"
     option_id = body["options"][0]["option_id"]
 
     session = client.get(f"/v1/search/{body['search_id']}").json()

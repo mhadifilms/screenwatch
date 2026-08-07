@@ -248,7 +248,7 @@ claude mcp add screenwatch -- "$PWD/.venv/bin/python" -m screenwatch.mcp.server
 | `find_screenings` | ranked options with reasons and tradeoffs |
 | `get_seatmap` | unicode grid or SVG, recommended seats highlighted |
 | `explain_ranking` | pairwise component comparison |
-| `get_data_overview` | indexed inventory, provider coverage, seat surfaces, and alert backlog |
+| `get_data_overview` | indexed inventory, provider coverage, source health, seat surfaces, and alert backlog |
 | `list_venues` / `get_venue` | venue types, room capabilities, inventory, and seat-data limits |
 | `refresh_venues` | refresh bounded provider venue discovery into the local graph |
 | `create_watch` / `list_watches` / `cancel_watch` / `poll_watches` / `acknowledge_hits` | monitors and durable alerts |
@@ -274,6 +274,7 @@ Important HTTP surfaces include:
 | `GET /v1/venues` / `GET /v1/venues/{venue_id}` | theater graph and local inventory evidence |
 | `POST /v1/venues/refresh` | source discovery for venue metadata and coordinates |
 | `GET /v1/analytics/overview` | source coverage, indexed counts, watches, and pending alerts |
+| `GET /v1/analytics/providers` | persisted source freshness, latency, clipping, and error health |
 | `POST /v1/watches` / `POST /v1/watches/poll` | durable new-release and seat-return monitors |
 | `GET /v1/search/{search_id}/seatmap/{option_id}` | scoped seat-map retrieval without a fragile global last-search state |
 

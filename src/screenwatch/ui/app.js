@@ -204,6 +204,10 @@
     const exact = (meta.providers || []).filter((p) => p.seat_data === "exact").length;
     $("#metric-seat-data").textContent = exact ? `${exact} exact` : "warming";
     $("#metric-alerts").textContent = Number(inventory.alerts?.pending || 0).toLocaleString();
+    const health = meta.provider_health || [];
+    $("#provider-health").innerHTML = health.length
+      ? health.map((provider) => `<span class="health-pill ${escapeHtml(provider.health)}"><span></span>${escapeHtml(provider.chain)} · ${escapeHtml(provider.health)}${provider.last_status === "error" ? " · needs attention" : ""}</span>`).join("")
+      : `<span class="health-empty">Source health appears after the first search.</span>`;
   }
 
   async function loadOverview() {

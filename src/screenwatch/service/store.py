@@ -940,6 +940,63 @@ class Store:
             out.append(item)
         return out
 
+    def provider_health(
+        self, *, user_id: str = DEFAULT_USER, limit: int = 100
+    ) -> list[dict]:
+        """Summarize source freshness from the persisted search audit trail."""
+        rows = self._conn.execute(
+            "SELECT finished_at, provider_stats FROM search_runs "
+            "WHERE user_id=? ORDER BY finished_at DESC LIMIT ?",
+            (user_id, max(1, min(limit, 1000))),
+        ).fetchall()
+        summary: dict[str, dict] = {}
+        for row in rows:
+            try:
+                stats = json.loads(row["provider_stats"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            for stat in stats:
+                chain = stat.get("chain", "unknown")
+                item = summary.setdefault(chain, {
+                    "chain": chain,
+                    "runs": 0,
+                    "ok_runs": 0,
+                    "error_runs": 0,
+                    "not_in_scope_runs": 0,
+                    "clipped_runs": 0,
+                    "screenings": 0,
+                    "last_run": row["finished_at"],
+                    "last_status": stat.get("status"),
+                    "last_error": stat.get("error"),
+                    "duration_ms_total": 0.0,
+                })
+                item["runs"] += 1
+                status = stat.get("status")
+                if status == "ok":
+                    item["ok_runs"] += 1
+                elif status == "error":
+                    item["error_runs"] += 1
+                elif status == "not_in_scope":
+                    item["not_in_scope_runs"] += 1
+                if stat.get("clipped"):
+                    item["clipped_runs"] += 1
+                item["screenings"] += stat.get("screenings", 0) or 0
+                item["duration_ms_total"] += stat.get("duration_ms", 0.0) or 0.0
+        out = []
+        for item in summary.values():
+            runs = item.pop("runs")
+            total = item.pop("duration_ms_total")
+            item["runs"] = runs
+            item["average_duration_ms"] = round(total / runs, 2) if runs else 0.0
+            item["health"] = (
+                "error" if item["error_runs"]
+                else "degraded" if item["clipped_runs"]
+                else "healthy" if item["ok_runs"]
+                else "not_observed"
+            )
+            out.append(item)
+        return sorted(out, key=lambda item: item["chain"])
+
     def inventory_overview(self) -> dict:
         """Aggregate the local evidence store without touching the network."""
         totals = self._conn.execute(
