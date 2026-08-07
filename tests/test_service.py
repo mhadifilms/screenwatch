@@ -47,7 +47,7 @@ from screenwatch.service.serde import (
     spec_to_json,
 )
 from screenwatch.service.store import Store
-from screenwatch.service.venues import VenueDirectory
+from screenwatch.service.venues import Venue, VenueDirectory
 from screenwatch.service.watch import WatchService
 
 WORK = Work(work_id="tmdb:1", title="Dune: Part Three", year=2026)
@@ -144,6 +144,25 @@ class TestSpecRoundTrip:
 
 # --------------------------------------------------------------------------
 class TestStore:
+    def test_directory_venues_survive_restart(self, tmp_path):
+        path = tmp_path / "directory.db"
+        first = Store(path)
+        first.put_directory_venues([
+            Venue(
+                venue_id="regal-test", name="Regal Test", chain="regal",
+                city="Testville", state="CA", venue_type="multiplex",
+            )
+        ])
+        first.close()
+
+        second = Store(path)
+        rows = second.directory_venues()
+        assert rows[0]["venue_id"] == "regal-test"
+        assert rows[0]["city"] == "Testville"
+        service = SearchService([], store=second, directory=VenueDirectory())
+        assert service.directory.get("regal-test").city == "Testville"
+        second.close()
+
     def test_work_and_link_persist(self, store):
         store.put_work(WORK)
         store.put_link(TitleLink("amc", "1", "Dune: Part Three", "tmdb:1",
@@ -288,6 +307,41 @@ class TestSearchService:
                                 today=date(2026, 8, 2))
         assert result.options == []
         assert result.provider_errors and "chain down" in result.provider_errors[0]
+
+    def test_venue_refresh_persists_discovery_and_respects_chain_scope(self):
+        class Discovering:
+            chain = "regal"
+
+            def __init__(self):
+                self.calls = 0
+
+            def discover(self, spec):
+                self.calls += 1
+                return [Venue(
+                    venue_id="regal-discovered",
+                    name="Regal Discovered",
+                    chain=self.chain,
+                )]
+
+        store = Store.memory()
+        provider = Discovering()
+        service = SearchService([provider], store=store,
+                                directory=VenueDirectory(), transport=object())
+        out_of_scope = service.discover_venues(
+            SearchSpec(work=WorkRef(query="venue refresh"),
+                       location=LocationSpec(chains=frozenset({"amc"})))
+        )
+        assert provider.calls == 0
+        assert out_of_scope["provider_stats"][0]["status"] == "not_in_scope"
+
+        in_scope = service.discover_venues(
+            SearchSpec(work=WorkRef(query="venue refresh"),
+                       location=LocationSpec(chains=frozenset({"regal"})))
+        )
+        assert provider.calls == 1
+        assert in_scope["discovered"] == 1
+        assert store.directory_venues()[0]["venue_id"] == "regal-discovered"
+        store.close()
 
     def test_missing_seat_data_degrades_rather_than_failing(self):
         service = self.build([screening("amc:1")])
@@ -631,6 +685,29 @@ class TestVenueDirectory:
         assert {venue.chain for venue in rows} == {"independent"}
         assert {venue.venue_type for venue in rows} == {"independent"}
 
+    def test_discovered_chain_gets_a_directory_type(self):
+        d = VenueDirectory()
+        d.register([Venue(venue_id="regal-new", name="Regal New", chain="regal")])
+        assert d.get("regal-new").venue_type == "multiplex"
+
+    def test_city_filter_admits_coordinate_less_city_records(self):
+        d = VenueDirectory({
+            "c360-cambridge": {
+                "name": "Apple Cinemas Cambridge",
+                "chain": "c360",
+                "city": "Cambridge",
+                "venue_type": "multiplex",
+            },
+            "c360-white-plains": {
+                "name": "Apple Cinemas White Plains",
+                "chain": "c360",
+                "city": "White Plains",
+                "venue_type": "multiplex",
+            },
+        })
+        rows = d.matching(LocationSpec(city="Cambridge"))
+        assert [venue.venue_id for venue in rows] == ["c360-cambridge"]
+
 
 # --------------------------------------------------------------------------
 class TestTransportsAgree:
@@ -752,7 +829,7 @@ class TestMcpTools:
             "resolve_title", "find_screenings", "get_seatmap", "explain_ranking",
             "create_watch", "list_watches", "cancel_watch", "poll_watches",
             "acknowledge_hits", "get_booking_link", "get_data_overview",
-            "list_venues", "get_venue",
+            "list_venues", "get_venue", "refresh_venues",
         }
 
     @pytest.mark.asyncio

@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 import pathlib
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -27,6 +28,8 @@ class Venue:
     tz: str | None = None
     point: GeoPoint | None = None
     market: str | None = None
+    city: str | None = None
+    state: str | None = None
     ticketing_platform: str | None = None
     url: str | None = None
     venue_type: str = "cinema"
@@ -61,6 +64,8 @@ class Venue:
             "type_label": self.display_type,
             "timezone": self.tz,
             "market": self.market,
+            "city": self.city,
+            "state": self.state,
             "ticketing_platform": self.ticketing_platform,
             "url": self.url,
             "markup": self.markup,
@@ -106,6 +111,8 @@ def _to_venue(venue_id: str, info: dict) -> Venue:
         tz=info.get("tz"),
         point=point,
         market=info.get("market"),
+        city=info.get("city"),
+        state=info.get("state"),
         ticketing_platform=info.get("ticketing_platform"),
         url=info.get("url"),
         venue_type=info.get("venue_type") or _venue_type(
@@ -137,6 +144,20 @@ def _venue_type(chain: str, name: str, info: dict | None = None) -> str:
     if chain in {"amc", "regal", "cinemark", "c360", "alamo"}:
         return "multiplex"
     return "cinema"
+
+
+def _city_key(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def _matches_city(venue: Venue, city: str) -> bool:
+    needle = _city_key(city)
+    if not needle:
+        return True
+    return any(
+        needle in _city_key(value)
+        for value in (venue.city, venue.market, venue.name)
+    )
 
 
 def _independent_seed() -> dict[str, dict]:
@@ -186,7 +207,13 @@ class VenueDirectory:
         for venue in venues:
             current = self._venues.get(venue.venue_id)
             if current is None:
-                self._venues[venue.venue_id] = venue
+                self._venues[venue.venue_id] = (
+                    replace(
+                        venue,
+                        venue_type=_venue_type(venue.chain, venue.name, venue.to_dict()),
+                    )
+                    if venue.venue_type == "cinema" else venue
+                )
                 continue
             # Discovery has fresher coordinates and routing identifiers; the
             # curated directory has better type/format context. Merge both.
@@ -197,6 +224,8 @@ class VenueDirectory:
                 tz=current.tz or venue.tz,
                 point=venue.point or current.point,
                 market=venue.market or current.market,
+                city=current.city or venue.city,
+                state=current.state or venue.state,
                 ticketing_platform=current.ticketing_platform or venue.ticketing_platform,
                 url=current.url or venue.url,
                 venue_type=(
@@ -272,7 +301,15 @@ class VenueDirectory:
             if (chain is None or v.chain == chain)
             and (not location.chains or v.chain in location.chains)
             and (not location.venue_types or v.venue_type in location.venue_types)
-            and location.admits(v.venue_id, v.point)
+            and (not location.city or _matches_city(v, location.city))
+            and (
+                location.admits(v.venue_id, v.point)
+                or (
+                    location.city is not None
+                    and _matches_city(v, location.city)
+                    and v.point is None
+                )
+            )
         ]
         out.sort(
             key=lambda v: (

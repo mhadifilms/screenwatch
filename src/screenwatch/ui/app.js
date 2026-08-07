@@ -43,17 +43,25 @@
     return values.map((value) => specs[value]);
   }
 
+  function buildLocation() {
+    const location = {
+      radius_km: Number($("#radius").value || 40),
+      allow: [],
+      deny: [],
+      chains: $("#chain-filter").value ? [$("#chain-filter").value] : [],
+      venue_types: $("#type-filter").value ? [$("#type-filter").value] : [],
+    };
+    const lat = $("#lat").value;
+    const lon = $("#lon").value;
+    if (lat && lon) location.origin = { lat: Number(lat), lon: Number(lon) };
+    return location;
+  }
+
   function buildSpec({ strict = false } = {}) {
     const spec = {
       work: { query: $("#title").value.trim() },
       party_size: Math.max(1, Number($("#party").value || 1)),
-      location: {
-        radius_km: Number($("#radius").value || 40),
-        allow: [],
-        deny: [],
-        chains: $("#chain-filter").value ? [$("#chain-filter").value] : [],
-        venue_types: $("#type-filter").value ? [$("#type-filter").value] : [],
-      },
+      location: buildLocation(),
       date_window: { start: $("#from-date").value, end: $("#through-date").value },
       presentations: buildPresentations(),
       strict_presentations: strict,
@@ -61,9 +69,6 @@
       include_sold_out: false,
       max_seatmap_fetches: 10,
     };
-    const lat = $("#lat").value;
-    const lon = $("#lon").value;
-    if (lat && lon) spec.location.origin = { lat: Number(lat), lon: Number(lon) };
     return spec;
   }
 
@@ -164,7 +169,7 @@
       $("#title").focus();
       return;
     }
-    if (!state.spec) state.spec = buildSpec({ strict: true });
+    state.spec = buildSpec({ strict: true });
     const label = $("#watch-label").value.trim() || `${state.spec.work.query} watch`;
     const spec = { ...state.spec, strict_presentations: state.spec.presentations?.length > 0, include_sold_out: true };
     try {
@@ -185,7 +190,7 @@
 
   async function pollWatches() {
     try {
-      const payload = await api("/v1/watches/poll", { method: "POST" });
+      const payload = await api("/v1/watches/poll?acknowledge=true", { method: "POST" });
       announceHits(payload.hits || []);
       await loadWatches();
       await loadOverview();
@@ -231,6 +236,22 @@
     } catch (error) { showToast(error.message, "error"); }
   }
 
+  async function refreshVenues() {
+    const button = $("#refresh-venues");
+    button.disabled = true;
+    button.textContent = "Refreshing…";
+    try {
+      const result = await api("/v1/venues/refresh", {
+        method: "POST",
+        body: JSON.stringify(buildLocation()),
+      });
+      await Promise.all([loadVenues(), loadOverview()]);
+      const note = result.errors?.length ? ` with ${result.errors.length} source note${result.errors.length === 1 ? "" : "s"}` : "";
+      showToast(`Venue graph refreshed — ${Number(result.discovered || 0).toLocaleString()} records observed${note}.`);
+    } catch (error) { showToast(error.message, "error"); }
+    finally { button.disabled = false; button.textContent = "Refresh sources"; }
+  }
+
   async function loadHealth() {
     const status = $("#health-status");
     try { await api("/v1/health"); status.className = "status-dot ready"; status.innerHTML = "<span></span>local engine ready"; }
@@ -242,6 +263,7 @@
     $("#watch-form").addEventListener("submit", createWatch);
     $("#poll-button").addEventListener("click", pollWatches);
     $("#venue-filter").addEventListener("input", () => { clearTimeout(state.venueTimer); state.venueTimer = setTimeout(loadVenues, 180); });
+    $("#refresh-venues").addEventListener("click", refreshVenues);
     $("#venue-chain").addEventListener("change", loadVenues);
     $("#venue-type").addEventListener("change", loadVenues);
     $("#venue-sort").addEventListener("change", loadVenues);

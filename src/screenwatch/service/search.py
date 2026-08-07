@@ -23,7 +23,7 @@ from ..ranking.coarse import coarse_rank
 from ..ranking.diversify import diversify
 from ..ranking.explain import annotate, compare, narrate
 from ..ranking.fine import fine_rank
-from ..ranking.spec import SearchSpec
+from ..ranking.spec import GeoPoint, SearchSpec
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..transport import Transport
 from .serde import spec_to_json
@@ -97,14 +97,101 @@ class SearchService:
         self.providers = providers
         # Providers that persist learned venue geography share the store, so
         # an expensive discovery is amortised across runs rather than repeated.
+        self.store = store or Store.memory()
         for provider in providers:
             if getattr(provider, "store", "unset") is None:
-                provider.store = store
-        self.store = store or Store.memory()
+                provider.store = self.store
         self.resolver = resolver or WorkResolver()
         self.directory = directory or VenueDirectory()
+        self._hydrate_directory()
         self._transport = transport
         self._last_provider_stats: tuple[dict, ...] = ()
+
+    def _hydrate_directory(self) -> None:
+        """Merge provider discoveries from earlier processes into the graph."""
+        rows = getattr(self.store, "directory_venues", lambda: [])()
+        for row in rows:
+            point = (
+                GeoPoint(row["lat"], row["lon"])
+                if row.get("lat") is not None and row.get("lon") is not None
+                else None
+            )
+            self.directory.register([
+                Venue(
+                    venue_id=row["venue_id"],
+                    name=row["name"],
+                    chain=row["chain"],
+                    tz=row.get("tz"),
+                    point=point,
+                    market=row.get("market"),
+                    city=row.get("city"),
+                    state=row.get("state"),
+                    ticketing_platform=row.get("ticketing_platform"),
+                    url=row.get("url"),
+                    venue_type=row.get("venue_type") or "cinema",
+                    markup=row.get("markup"),
+                    notes=row.get("notes"),
+                    source=row.get("source") or "store",
+                )
+            ])
+
+    def _register_discovered(self, discovered: list[Venue]) -> None:
+        if not discovered:
+            return
+        self.directory.register(discovered)
+        records = []
+        for venue in discovered:
+            record = self.directory.get(venue.venue_id)
+            if record is not None:
+                records.append(record)
+        self.store.put_directory_venues(records)
+
+    def discover_venues(self, spec: SearchSpec) -> dict:
+        """Refresh provider venue metadata without requiring a film query."""
+        started = time.perf_counter()
+        stats: list[dict] = []
+        errors: list[str] = []
+        discovered_total = 0
+        for provider in self.providers:
+            if spec.location.chains and provider.chain not in spec.location.chains:
+                stats.append({
+                    "chain": provider.chain,
+                    "status": "not_in_scope",
+                    "discovered": 0,
+                })
+                continue
+            discover = getattr(provider, "discover", None)
+            if discover is None:
+                stats.append({"chain": provider.chain, "status": "unsupported", "discovered": 0})
+                continue
+            provider_started = time.perf_counter()
+            try:
+                discovered = discover(spec)
+                self._register_discovered(discovered)
+                discovered_total += len(discovered)
+                stats.append({
+                    "chain": provider.chain,
+                    "status": "ok",
+                    "discovered": len(discovered),
+                    "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
+                })
+            except Exception as exc:                       # noqa: BLE001
+                message = f"{provider.chain} discovery: {type(exc).__name__}: {exc}"
+                errors.append(message)
+                stats.append({
+                    "chain": provider.chain,
+                    "status": "error",
+                    "discovered": 0,
+                    "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+        return {
+            "discovered": discovered_total,
+            "directory_total": len(self.directory.all()),
+            "provider_stats": stats,
+            "errors": errors,
+            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+        }
 
     @property
     def transport(self) -> Transport:
@@ -131,11 +218,22 @@ class SearchService:
         for provider in self.providers:
             provider_started = time.perf_counter()
             discovery_count = 0
+            if spec.location.chains and provider.chain not in spec.location.chains:
+                provider_stats.append({
+                    "chain": provider.chain,
+                    "status": "not_in_scope",
+                    "venues": 0,
+                    "discovered": 0,
+                    "screenings": 0,
+                    "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
+                    "clipped": [],
+                })
+                continue
             if discover := getattr(provider, "discover", None):
                 try:
                     discovered = discover(spec)
                     discovery_count = len(discovered)
-                    self.directory.register(discovered)
+                    self._register_discovered(discovered)
                 except Exception as exc:                       # noqa: BLE001
                     errors.append(f"{provider.chain} discovery: {type(exc).__name__}: {exc}")
             venues = self.directory.matching(spec.location, chain=provider.chain)

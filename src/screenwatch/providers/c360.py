@@ -142,6 +142,8 @@ class C360Provider(ScopeReporting):
                     tz=loc.tz,
                     point=point,
                     market=loc.location_id,       # the API key, not a market
+                    city=loc.city,
+                    state=loc.state,
                 )
             )
         return out
@@ -260,4 +262,3 @@ class C360Provider(ScopeReporting):
             row_lengths=tuple(count for _, count in shape.rows),
             name=shape.name,
         )
-

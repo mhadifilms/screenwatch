@@ -9,9 +9,10 @@ from screenwatch.api.app import create_app
 from screenwatch.identity.work import Work, WorkRef
 from screenwatch.models import Availability, Brand, Presentation, Projection
 from screenwatch.ranking.candidate import Screening
-from screenwatch.ranking.spec import SearchSpec
+from screenwatch.ranking.spec import DateWindow, SearchSpec
 from screenwatch.seating.render import build_auditorium
 from screenwatch.service.search import SearchService
+from screenwatch.service.serde import spec_to_json
 from screenwatch.service.store import Store
 from screenwatch.service.venues import VenueDirectory
 from screenwatch.service.watch import WatchService
@@ -77,6 +78,9 @@ def test_local_app_and_data_endpoints_are_available():
     scoped = client.get("/v1/venues?chain=amc&type=multiplex").json()
     assert scoped["venues"]
     assert {venue["chain"] for venue in scoped["venues"]} == {"amc"}
+    refreshed = client.post("/v1/venues/refresh", json={"chains": ["amc"]})
+    assert refreshed.status_code == 200
+    assert refreshed.json()["provider_stats"][0]["status"] == "unsupported"
     assert client.get("/v1/venues/amc-metreon-16").status_code == 200
     store.close()
 
@@ -130,6 +134,27 @@ def test_watch_replay_anchor_is_preserved_for_a_manual_run():
     store.close()
 
 
+def test_local_notification_poll_can_acknowledge_displayed_hits():
+    client, store = _client()
+    watch_id = "w-notification"
+    store.create_watch(
+        "w-notification",
+        "notification test",
+        spec_to_json(SearchSpec(
+            work=WorkRef(query=WORK.title),
+            date_window=DateWindow(datetime(2026, 8, 2).date(), datetime(2026, 8, 2).date()),
+        )),
+    )
+    hit_id, _ = store.record_hit_status(
+        watch_id, "canonical:test", {"title": WORK.title}, event_key="test-alert"
+    )
+    response = client.post("/v1/watches/poll?acknowledge=true")
+    assert response.status_code == 200
+    assert response.json()["hits"][0]["hit_id"] == hit_id
+    assert client.get("/v1/notifications").json()["count"] == 0
+    store.close()
+
+
 @pytest.mark.asyncio
 async def test_mcp_exposes_data_and_venue_intelligence():
     from screenwatch.mcp.server import build_server
@@ -154,4 +179,8 @@ async def test_mcp_exposes_data_and_venue_intelligence():
     venue_result = await server.call_tool("get_venue", {"venue_id": "amc-metreon-16"})
     venue = json.loads(venue_result.content[0].text)
     assert venue["seat_surface"] == "exact"
+
+    refresh_result = await server.call_tool("refresh_venues", {"location": {}})
+    refresh = json.loads(refresh_result.content[0].text)
+    assert refresh["provider_stats"][0]["status"] == "unsupported"
     store.close()

@@ -205,7 +205,7 @@ API's own vocabulary instead of waiting to meet a surprise in production.
 
 ```bash
 uv venv && uv pip install -e '.[dev,api]'
-python -m pytest                      # 601 tests, offline
+python -m pytest                      # 606 tests, offline
 ruff check src tests                  # ruleset pinned in pyproject.toml
 ```
 
@@ -232,6 +232,10 @@ the scope to one or more exhibitors or venue types (`multiplex`, `art_house`,
 `dine_in`, `drive_in`, or `independent`). Those filters are also available in
 the MCP `LocationInput` and the HTTP venue graph.
 
+The venue graph is durable: **Refresh sources** discovers bounded provider
+metadata and coordinates, stores it in SQLite, and makes it available to the
+next app or MCP process without repeating discovery.
+
 MCP server (stdio):
 
 ```bash
@@ -246,6 +250,7 @@ claude mcp add screenwatch -- "$PWD/.venv/bin/python" -m screenwatch.mcp.server
 | `explain_ranking` | pairwise component comparison |
 | `get_data_overview` | indexed inventory, provider coverage, seat surfaces, and alert backlog |
 | `list_venues` / `get_venue` | venue types, room capabilities, inventory, and seat-data limits |
+| `refresh_venues` | refresh bounded provider venue discovery into the local graph |
 | `create_watch` / `list_watches` / `cancel_watch` / `poll_watches` / `acknowledge_hits` | monitors and durable alerts |
 | `get_booking_link` | final URL — **hard stop** |
 
@@ -267,6 +272,7 @@ Important HTTP surfaces include:
 |---|---|
 | `POST /v1/search` | ranked options plus `search_id`, provider timing, completeness, and scope notes |
 | `GET /v1/venues` / `GET /v1/venues/{venue_id}` | theater graph and local inventory evidence |
+| `POST /v1/venues/refresh` | source discovery for venue metadata and coordinates |
 | `GET /v1/analytics/overview` | source coverage, indexed counts, watches, and pending alerts |
 | `POST /v1/watches` / `POST /v1/watches/poll` | durable new-release and seat-return monitors |
 | `GET /v1/search/{search_id}/seatmap/{option_id}` | scoped seat-map retrieval without a fragile global last-search state |

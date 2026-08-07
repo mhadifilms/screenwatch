@@ -31,6 +31,21 @@ def _attrs(names) -> frozenset[Attribute]:
     return frozenset(Attribute(n) for n in names or ())
 
 
+def location_from_dict(data: dict | None) -> LocationSpec:
+    """Decode the reusable location fragment used by search and refresh APIs."""
+    loc = data or {}
+    origin = loc.get("origin")
+    return LocationSpec(
+        origin=GeoPoint(origin["lat"], origin["lon"]) if origin else None,
+        radius_km=loc.get("radius_km", 40.0),
+        city=loc.get("city"),
+        allow=frozenset(loc.get("allow") or ()),
+        deny=frozenset(loc.get("deny") or ()),
+        chains=frozenset(loc.get("chains") or ()),
+        venue_types=frozenset(loc.get("venue_types") or ()),
+    )
+
+
 def spec_to_dict(spec: SearchSpec) -> dict:
     return {
         "work": {k: v for k, v in
@@ -88,8 +103,6 @@ def spec_to_dict(spec: SearchSpec) -> dict:
 
 
 def spec_from_dict(data: dict) -> SearchSpec:
-    loc = data.get("location") or {}
-    origin = loc.get("origin")
     seating = data.get("seating") or {}
     budget = data.get("budget") or {}
 
@@ -109,15 +122,7 @@ def spec_from_dict(data: dict) -> SearchSpec:
     return SearchSpec(
         work=WorkRef(**(data.get("work") or {"query": ""})),
         party_size=data.get("party_size", 1),
-        location=LocationSpec(
-            origin=GeoPoint(origin["lat"], origin["lon"]) if origin else None,
-            radius_km=loc.get("radius_km", 40.0),
-            city=loc.get("city"),
-            allow=frozenset(loc.get("allow") or ()),
-            deny=frozenset(loc.get("deny") or ()),
-            chains=frozenset(loc.get("chains") or ()),
-            venue_types=frozenset(loc.get("venue_types") or ()),
-        ),
+        location=location_from_dict(data.get("location")),
         date_window=(
             DateWindow(date.fromisoformat(dw["start"]), date.fromisoformat(dw["end"]))
             if dw else None

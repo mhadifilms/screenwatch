@@ -156,6 +156,29 @@ CREATE TABLE IF NOT EXISTS venue_geo (
     updated_at TEXT NOT NULL
 );
 
+-- The durable venue graph. Provider discovery is bounded, but once a venue
+-- has been observed it should remain queryable after the process restarts.
+CREATE TABLE IF NOT EXISTS directory_venues (
+    venue_id           TEXT PRIMARY KEY,
+    name               TEXT NOT NULL,
+    chain              TEXT NOT NULL,
+    tz                 TEXT,
+    lat                REAL,
+    lon                REAL,
+    market             TEXT,
+    city               TEXT,
+    state              TEXT,
+    ticketing_platform TEXT,
+    url                TEXT,
+    venue_type         TEXT NOT NULL,
+    markup             TEXT,
+    notes              TEXT,
+    source             TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_directory_venues_chain
+    ON directory_venues(chain, venue_type);
+
 CREATE TABLE IF NOT EXISTS user_prefs (
     user_id TEXT NOT NULL,
     key     TEXT NOT NULL,
@@ -777,6 +800,60 @@ class Store:
             "SELECT * FROM venue_geo WHERE chain=?", (chain,)
         ).fetchall()
         return {r["venue_id"]: dict(r) for r in rows}
+
+    def put_directory_venues(self, venues) -> None:
+        """Persist provider-discovered directory records in one transaction."""
+        if not venues:
+            return
+        now = _now()
+        with self.tx() as c:
+            c.executemany(
+                """INSERT INTO directory_venues
+                   (venue_id, name, chain, tz, lat, lon, market, city, state,
+                    ticketing_platform, url, venue_type, markup, notes, source, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(venue_id) DO UPDATE SET
+                     name=excluded.name, chain=excluded.chain, tz=excluded.tz,
+                     lat=COALESCE(excluded.lat, directory_venues.lat),
+                     lon=COALESCE(excluded.lon, directory_venues.lon),
+                     market=COALESCE(excluded.market, directory_venues.market),
+                     city=COALESCE(excluded.city, directory_venues.city),
+                     state=COALESCE(excluded.state, directory_venues.state),
+                     ticketing_platform=COALESCE(excluded.ticketing_platform,
+                                                 directory_venues.ticketing_platform),
+                     url=COALESCE(excluded.url, directory_venues.url),
+                     venue_type=excluded.venue_type,
+                     markup=COALESCE(excluded.markup, directory_venues.markup),
+                     notes=COALESCE(excluded.notes, directory_venues.notes),
+                     source=excluded.source, updated_at=excluded.updated_at""",
+                [
+                    (
+                        venue.venue_id,
+                        venue.name,
+                        venue.chain,
+                        venue.tz,
+                        venue.point.lat if venue.point else None,
+                        venue.point.lon if venue.point else None,
+                        venue.market,
+                        venue.city,
+                        venue.state,
+                        venue.ticketing_platform,
+                        venue.url,
+                        venue.venue_type,
+                        venue.markup,
+                        venue.notes,
+                        venue.source,
+                        now,
+                    )
+                    for venue in venues
+                ],
+            )
+
+    def directory_venues(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM directory_venues ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     # -------------------------------------------------------------- prefs
     def set_pref(self, key: str, value, user_id: str = DEFAULT_USER) -> None:

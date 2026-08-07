@@ -1,7 +1,7 @@
 [project]
 name = "screenwatch"
-version = "0.1.0"
-description = "Ranked cinema showtime search across formats, chains and independents"
+version = "0.2.0"
+description = "Local-first US theater intelligence, seat ranking, and release watches"
 requires-python = ">=3.11"
 dependencies = [
     "curl_cffi>=0.7",

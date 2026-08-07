@@ -16,12 +16,19 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ..identity.normalize import analyze
-from ..mcp.schemas import SearchSpecInput
-from ..ranking.spec import GeoPoint
+from ..identity.work import WorkRef
+from ..mcp.schemas import LocationInput, SearchSpecInput
+from ..ranking.spec import GeoPoint, SearchSpec
 from ..seating.render import to_svg, to_unicode_grid
 from ..service.observatory import Observatory
 from ..service.search import SearchResult, SearchService
-from ..service.serde import option_to_dict, spec_from_dict, spec_from_json, spec_to_dict
+from ..service.serde import (
+    location_from_dict,
+    option_to_dict,
+    spec_from_dict,
+    spec_from_json,
+    spec_to_dict,
+)
 from ..service.store import DEFAULT_USER
 from ..service.watch import WatchService
 
@@ -154,6 +161,15 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
             limit=limit,
         )
         return {"venues": rows, "total": len(rows), "types": search.directory.types()}
+
+    @app.post("/v1/venues/refresh")
+    def refresh_venues(location: LocationInput) -> dict:
+        """Discover source venue metadata without fetching showtimes."""
+        spec = SearchSpec(
+            work=WorkRef(query="venue refresh"),
+            location=location_from_dict(location.model_dump()),
+        )
+        return search.discover_venues(spec)
 
     @app.get("/v1/venues/{venue_id}")
     def venue_detail(venue_id: str, lat: float | None = None, lon: float | None = None) -> dict:

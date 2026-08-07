@@ -14,12 +14,20 @@ from typing import Literal
 from mcp.server import MCPServer
 
 from ..identity.normalize import analyze
+from ..identity.work import WorkRef
+from ..ranking.spec import SearchSpec
 from ..seating.render import to_svg, to_unicode_grid
 from ..service.observatory import Observatory
 from ..service.search import SearchResult, SearchService
-from ..service.serde import option_to_dict, spec_from_dict, spec_from_json, spec_to_dict
+from ..service.serde import (
+    location_from_dict,
+    option_to_dict,
+    spec_from_dict,
+    spec_from_json,
+    spec_to_dict,
+)
 from ..service.watch import WatchService
-from .schemas import SearchSpecInput
+from .schemas import LocationInput, SearchSpecInput
 
 
 def build_server(search: SearchService, watches: WatchService) -> MCPServer:
@@ -103,6 +111,18 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
     )
     def get_data_overview() -> dict:
         return observatory.overview()
+
+    @server.tool(
+        description="Refresh the local venue graph from the configured US sources. "
+        "This discovers venue metadata and coordinates, persists it locally, and "
+        "does not fetch film showtimes or seat maps."
+    )
+    def refresh_venues(location: LocationInput) -> dict:
+        spec = SearchSpec(
+            work=WorkRef(query="venue refresh"),
+            location=location_from_dict(location.model_dump()),
+        )
+        return search.discover_venues(spec)
 
     @server.tool(
         description="List known US venues with type, chain, coordinates, seat-data "

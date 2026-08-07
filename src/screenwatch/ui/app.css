@@ -151,6 +151,7 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 
 .venues-panel { margin-top: 18px; padding: 25px; }
 .venue-tools { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.venue-tools .button:disabled { cursor: wait; opacity: .6; }
 .compact-input, .compact-select { min-height: 34px; padding: 7px 9px; font-size: 11px; }
 .compact-input { width: 180px; }
 .venue-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }

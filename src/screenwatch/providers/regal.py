@@ -169,6 +169,8 @@ class RegalProvider(ScopeReporting):
                 tz=t.tz,
                 point=GeoPoint(t.lat, t.lon) if t.lat is not None else None,
                 market=t.path_name,          # the URL segment, not a real market
+                city=t.city,
+                state=t.state,
             )
             for t in self.theatres()
         ]
