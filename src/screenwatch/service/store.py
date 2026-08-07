@@ -1192,6 +1192,74 @@ class Store:
             "seats_capacity": 0,
         }
 
+    def room_profiles(self, venue_id: str) -> list[dict]:
+        """Summarize observed auditorium capacities for one venue.
+
+        A room profile is derived only from the latest seat observation for
+        each screening. It is deliberately labelled observed: a cinema can
+        have rooms that have never been queried, and a source may expose a
+        count without exposing a stable room identifier.
+        """
+        rows = self._conn.execute(
+            """WITH latest AS (
+                         SELECT ss.screening_id, ss.captured_at, ss.available,
+                                ss.capacity, ss.payload,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY ss.screening_id
+                                    ORDER BY ss.captured_at DESC
+                                ) AS position
+                           FROM seat_snapshots ss
+                           JOIN screenings s ON s.screening_id=ss.screening_id
+                          WHERE s.venue_id=?
+                       )
+                       SELECT screening_id, captured_at, available, capacity, payload
+                         FROM latest WHERE position=1
+                        ORDER BY captured_at DESC""",
+            (venue_id,),
+        ).fetchall()
+        profiles: dict[str, dict] = {}
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            room_id = str(payload.get("screen_id") or row["screening_id"])
+            profile = profiles.setdefault(room_id, {
+                "room_id": room_id,
+                "name": payload.get("screen_name"),
+                "observed_showings": 0,
+                "capacities": [],
+                "available": None,
+                "rows": payload.get("row_count"),
+                "geometry_confidence": payload.get("geometry_confidence"),
+                "last_seen": row["captured_at"],
+            })
+            profile["observed_showings"] += 1
+            profile["capacities"].append(int(row["capacity"]))
+            if profile["available"] is None:
+                profile["available"] = int(row["available"])
+            profile["last_seen"] = max(profile["last_seen"], row["captured_at"])
+            if profile["rows"] is None:
+                profile["rows"] = payload.get("row_count")
+            if profile["geometry_confidence"] is None:
+                profile["geometry_confidence"] = payload.get("geometry_confidence")
+
+        out = []
+        for profile in profiles.values():
+            capacities = sorted(profile.pop("capacities"))
+            middle = len(capacities) // 2
+            median = capacities[middle] if len(capacities) % 2 else round(
+                (capacities[middle - 1] + capacities[middle]) / 2, 1
+            )
+            profile.update({
+                "capacity_min": capacities[0],
+                "capacity_max": capacities[-1],
+                "capacity_median": median,
+                "source": "latest seat observations",
+            })
+            out.append(profile)
+        return sorted(out, key=lambda item: (-item["capacity_max"], item["room_id"]))
+
     def inventory_analytics(self, *, group_by: str = "chain", limit: int = 100) -> list[dict]:
         """Aggregate indexed evidence by a safe, documented dimension.
 

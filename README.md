@@ -280,7 +280,7 @@ Important HTTP surfaces include:
 | Route | Purpose |
 |---|---|
 | `POST /v1/search` | ranked options plus `search_id`, provider timing, completeness, and scope notes |
-| `GET /v1/venues` / `GET /v1/venues/{venue_id}` | theater graph and local inventory evidence |
+| `GET /v1/venues` / `GET /v1/venues/{venue_id}` | theater graph, local inventory evidence, and observed room capacity profiles |
 | `POST /v1/venues/refresh` | source discovery for venue metadata and coordinates |
 | `GET /v1/analytics/overview` | source coverage, indexed counts, watches, and pending alerts |
 | `GET /v1/analytics/providers` | persisted source freshness, latency, clipping, and error health |

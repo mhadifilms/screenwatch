@@ -112,7 +112,7 @@ class Observatory:
 
     def get_venue(self, venue_id: str, *, origin: GeoPoint | None = None) -> dict | None:
         venue = self.directory.get(venue_id)
-        return self._venue_record(venue, origin=origin) if venue else None
+        return self._venue_record(venue, origin=origin, detail=True) if venue else None
 
     def recent_searches(self, *, limit: int = 20, user_id: str = "local") -> list[dict]:
         return self.store.recent_search_runs(limit=limit, user_id=user_id)
@@ -135,7 +135,9 @@ class Observatory:
             ),
         }
 
-    def _venue_record(self, venue: Venue, *, origin: GeoPoint | None = None) -> dict:
+    def _venue_record(
+        self, venue: Venue, *, origin: GeoPoint | None = None, detail: bool = False
+    ) -> dict:
         record = venue.to_dict(origin=origin)
         record["inventory"] = self.store.inventory_by_venue(venue.venue_id)
         record["seat_surface"] = _SEAT_SURFACES.get(
@@ -153,4 +155,10 @@ class Observatory:
             }
             for capability in venue_capabilities(venue.venue_id)
         ]
+        if detail:
+            record["observed_rooms"] = self.store.room_profiles(venue.venue_id)
+            record["room_caveat"] = (
+                "Room profiles are inferred from the latest seat observations; "
+                "unqueried rooms are not counted."
+            )
         return record

@@ -554,7 +554,14 @@ class SearchService:
                 option.screening.screening_id,
                 auditorium.available,
                 auditorium.capacity,
-                {"geometry_confidence": auditorium.geometry_confidence},
+                {
+                    "geometry_confidence": auditorium.geometry_confidence,
+                    "screen_id": auditorium.screen_id,
+                    "screen_name": auditorium.name,
+                    "row_count": auditorium.row_count,
+                    "row_lengths": list(auditorium.row_lengths),
+                    "has_grid": auditorium.has_grid,
+                },
             )
             return auditorium
 

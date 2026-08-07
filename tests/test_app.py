@@ -126,6 +126,10 @@ def test_search_id_persists_and_scopes_seat_map():
     )
     assert seatmap.status_code == 200
     assert seatmap.json()["seat_data"] == "grid"
+    detail = client.get("/v1/venues/amc-metreon-16").json()
+    assert detail["observed_rooms"][0]["capacity_max"] == 12
+    assert detail["observed_rooms"][0]["rows"] == 2
+    assert "unqueried rooms" in detail["room_caveat"]
     assert store.recent_search_runs()[0]["run_id"] == body["search_id"]
     assert client.get(
         f"/v1/search/{body['search_id']}", headers={"x-user-id": "another-user"}
