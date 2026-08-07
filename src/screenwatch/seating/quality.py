@@ -6,11 +6,12 @@ That is the whole point of normalizing geometry first: one tuning, all rooms.
 
 The default is a middle *area*, not one magic row. Once a layout is known,
 `for_auditorium()` selects the rows in the central half of the room's
-normalized depth and gives that band a shallow preference for the exact
-centre. The band is made from the rows that actually exist, so gaps,
-cross-aisles, short rooms and irregular layouts do not need venue-specific
-row numbers. Venues with unusually steep or shallow rakes can still override
-`ideal_depth` in the verified hardware metadata overlay.
+ normalized depth and gives that band a shallow preference for the exact
+ centre. The band is made from the rows that actually exist, so gaps,
+ cross-aisles, short rooms and irregular layouts do not need venue-specific
+ row numbers. A caller can provide an explicit `ideal_depth` when it has
+ independently reviewed room evidence; observed listings never calibrate the
+ seat model automatically.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ class QualityModel:
 
     @classmethod
     def for_venue(cls, venue_id: str | None, **overrides) -> QualityModel:
-        """Per-venue tuning from verified metadata, then caller overrides."""
+        """Apply explicit caller tuning; observed listings never calibrate seats."""
         base: dict[str, object] = {}
         if (
             venue_id
@@ -50,8 +51,8 @@ class QualityModel:
             and (depth := info.get("ideal_depth")) is not None
         ):
             base["ideal_depth"] = float(depth)
-            # An explicit hardware calibration is more authoritative than
-            # the generic middle-band prior. The caller can override this.
+            # A future explicit calibration may override the generic
+            # middle-band prior. Observed screening evidence does not.
             base["adaptive_middle"] = False
         if overrides.get("ideal_depth") is not None and "adaptive_middle" not in overrides:
             base["adaptive_middle"] = False

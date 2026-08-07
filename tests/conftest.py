@@ -44,6 +44,11 @@ def amc_sitemap_movies() -> str:
 
 
 @pytest.fixture(scope="session")
+def amc_sitemap_theatres() -> str:
+    return load("amc", "sitemap-theatres.xml")
+
+
+@pytest.fixture(scope="session")
 def filmforum_home() -> str:
     return load("independent", "filmforum-home.html")
 

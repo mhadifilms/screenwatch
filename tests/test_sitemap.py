@@ -34,6 +34,27 @@ class TestParse:
         with pytest.raises(ValueError, match="zero movie entries"):
             AmcSitemap().parse("<urlset></urlset>")
 
+    def test_parses_the_national_theatre_directory(self, amc_sitemap_theatres):
+        entries = AmcSitemap().parse_theatres(amc_sitemap_theatres)
+        assert len(entries) > 100
+        assert len({entry.venue_id for entry in entries}) == len(entries)
+        assert all(entry.url.startswith("https://www.amctheatres.com/movie-theatres/")
+                   for entry in entries)
+        assert all(entry.theatre_id and entry.name and entry.city and entry.state
+                   for entry in entries)
+        assert sum(entry.latitude is not None and entry.longitude is not None
+                   for entry in entries) / len(entries) > 0.99
+
+    def test_theatre_entry_uses_official_slug_and_coordinates(self, amc_sitemap_theatres):
+        entry = AmcSitemap().parse_theatres(amc_sitemap_theatres)[0]
+        assert entry.venue_id == f"amc-{entry.slug}"
+        assert entry.market
+        assert entry.latitude is not None and entry.longitude is not None
+
+    def test_empty_theatre_sitemap_raises(self):
+        with pytest.raises(ValueError, match="zero theatre entries"):
+            AmcSitemap().parse_theatres("<urlset></urlset>")
+
     def test_digest_is_order_insensitive(self):
         a = "<url><loc>https://x/movies/a-1</loc></url><url><loc>https://x/movies/b-2</loc></url>"
         b = "<url><loc>https://x/movies/b-2</loc></url><url><loc>https://x/movies/a-1</loc></url>"

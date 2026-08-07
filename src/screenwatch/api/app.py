@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from .. import __version__
 from ..identity.normalize import analyze
 from ..identity.work import WorkRef
 from ..mcp.schemas import LocationInput, SearchSpecInput
@@ -71,7 +72,7 @@ def _result_payload(result: SearchResult, *, limit: int | None = None) -> dict:
 def create_app(search: SearchService, watches: WatchService) -> FastAPI:
     app = FastAPI(
         title="Screenwatch",
-        version="0.2.0",
+        version=__version__,
         description=(
             "US theater and release intelligence: ranked showtimes, seat-aware "
             "options, durable watches, venue coverage, explicit data provenance, "
@@ -182,6 +183,11 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    @app.get("/v1/evidence/overview")
+    def evidence_overview() -> dict:
+        """Return local source-observation coverage without implying a census."""
+        return search.store.evidence_overview()
+
     @app.get("/v1/venues")
     def venues(
         chain: str | None = None,
@@ -217,6 +223,12 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
             location=location_from_dict(location.model_dump()),
         )
         return search.discover_venues(spec)
+
+    @app.get("/v1/venues/{venue_id}/evidence")
+    def venue_evidence(venue_id: str) -> dict:
+        if search.directory.get(venue_id) is None:
+            raise HTTPException(404, "unknown venue_id")
+        return search.store.venue_evidence(venue_id)
 
     @app.get("/v1/venues/{venue_id}")
     def venue_detail(venue_id: str, lat: float | None = None, lon: float | None = None) -> dict:

@@ -101,6 +101,9 @@ class IndependentProvider(ScopeReporting):
                     if row.get("lat") is not None else None
                 ),
                 market=row.get("url"),          # the page to read, not a market
+                url=row.get("url"),
+                source="independent-registry",
+                source_url=row.get("url"),
             )
             for row in self._config
         ]

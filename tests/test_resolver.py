@@ -159,7 +159,7 @@ class TestEndToEnd:
                   if f.presentation.projection is Projection.FILM_70MM_15PERF]
         assert len(imax70) == 1
         assert imax70[0].availability is Availability.SOLD_OUT
-        # The source does not publish aspect ratio; unverified seed hardware
-        # must not turn that absence into a fact.
+        # The source does not publish aspect ratio; absence of a separately
+        # scoped room observation must not turn that into a fact.
         assert imax70[0].presentation.aspect is None
         assert imax70[0].deeplink.startswith("https://www.amctheatres.com/showtimes/")

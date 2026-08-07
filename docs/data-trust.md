@@ -1,127 +1,133 @@
 # Data trust and provenance
 
-This document is the contract for interpreting Screenwatch output. The goal
-is not to make every number look complete; it is to make the evidence level of
-every number legible.
+This is the contract for interpreting Screenwatch output. The system stores
+what a source said, when it said it, where it was observed, and how broad the
+claim is. It does not silently convert a listing into a permanent theater
+hardware fact.
 
-## Current audit
+## What is in the product
 
-Audited on 2026-08-06:
+The venue graph is populated by provider discovery and persisted in SQLite.
+The configured sources currently include:
 
-| Check | Result | Risk |
-| --- | ---: | --- |
-| Hardware overlay records | 7 | Not national coverage |
-| Rows with `source: seed-unverified` | 7 / 7 | Candidate metadata, not evidence |
-| Rows with a non-null `verified_at` | 0 / 7 | No row is eligible for hardware inference |
-| Hardware rows used to infer a missing live aspect | 0 | Runtime boundary is enforced |
-| Independent venue registry entries | 7 | Curated list, not a census |
+- AMC's official national theater sitemap, including theatre id, slug, city,
+  state, coordinates, and official URL;
+- Regal's national directory payload;
+- Cinemark's official sitemap, with coordinates hydrated only from official
+  theater pages as they are visited;
+- C360 location records and Alamo market schedules;
+- a clearly marked curated registry for selected independent cinemas.
 
-The file is packaged at
-`src/screenwatch/data/venue_hardware.json`. There is no root-level
-`data/venue_hardware.json` in this repository. The file's `source` and
-`verified_at` fields are intentional and should not be “cleaned up” by
-replacing them with a vague `hardware` label.
+The counts are intentionally dynamic. Query `/v1/analytics/overview` or
+`/v1/evidence/overview` after a refresh rather than copying a stale count into
+an analysis.
 
-## What the seed file means
+## Venue hardware is not a seed file
 
-The seven rows are hypotheses about notable screens, formats, coordinates, and
-venue metadata. They are useful as a work queue and as a place to preserve
-candidate knowledge, but they are not a verified hardware database.
+The old seven-row `venue_hardware.json` fixture has been removed from runtime
+and from the repository. There are no packaged permanent hardware claims.
+That is a deliberate production boundary: a guessed IMAX aspect ratio or a
+remembered 70mm projector is not evidence that a particular screening uses it.
 
-For an unverified row, Screenwatch may:
+Instead, the store records two useful kinds of live evidence:
 
-- show the candidate record in venue detail so the gap is visible;
-- retain it as a possible future enrichment target;
-- use the approximate directory information as a clearly labeled fallback
-  while a provider has not yet supplied fresher metadata.
+1. `screening_presentation` — a source reported a format, projection, brand,
+   aspect, or accessibility attribute for one screening;
+2. `room_observation` — a seat-map or auditorium endpoint returned a room
+   identifier, capacity, geometry, and/or occupancy at a timestamp.
 
-Screenwatch must not:
+The API calls these “observed capabilities” and “observed rooms.” They are
+useful for searches, watches, and analysis, but their scope remains visible.
+An observation of `IMAX / digital_laser / 1.43` on one screening does not mean
+every IMAX showing at that venue is 1.43.
 
-- fill a live screening's missing aspect ratio from that row;
-- infer that a listing is 70mm, IMAX GT, Dolby, or any other format merely
-  because the venue owns a candidate-capability row;
-- treat the seven rows as evidence that other venues do not have that format;
-- report the seven rows as national theater or room coverage.
+## Observation record
 
-The runtime exposes this boundary through `hardware_provenance()` and the
-public `hardware` object. A current seed response looks like:
-
-```json
-{
-  "status": "unverified",
-  "source": "seed-unverified",
-  "verified_at": null,
-  "usable_for_inference": false,
-  "recorded": true
-}
-```
-
-The aggregate is included in `GET /v1/analytics/overview` and
-`get_data_overview`:
+Every evidence row has this shape internally and is summarized publicly:
 
 ```json
 {
-  "path": "src/screenwatch/data/venue_hardware.json",
-  "status": "seed-unverified",
-  "records": 7,
-  "verified_records": 0,
-  "unverified_records": 7
+  "kind": "room_observation",
+  "subject_key": "imax-1",
+  "source": "amc:seat-map",
+  "source_url": "https://www.amctheatres.com/...",
+  "observed_at": "2026-08-06T20:15:00+00:00",
+  "evidence_scope": "screening-seat-map",
+  "confidence": 1.0
 }
 ```
+
+`source` identifies the parser or upstream surface. `source_url` is the URL a
+person can inspect when the source exposes one. `observed_at` is when the local
+process captured the value, not a claim about when the theater installed a
+projector. `evidence_scope` prevents a room observation from being mistaken
+for a building-wide inventory.
 
 ## Evidence levels
 
 | Level | Meaning | Example |
 | --- | --- | --- |
-| `observed` | A configured source returned this value at a timestamp | A provider returned a showtime and its ticket URL |
-| `verified` | Curated metadata has a named source and verification timestamp | A venue's official technical page confirms a room profile |
-| `estimated` | A deterministic estimate is derived from observed values | C360 contiguous-seat probability from sold count and room shape |
-| `availability` | The source exposes a sellable/sold-out state but no seat detail | Alamo session state |
-| `unverified` | Candidate metadata has not passed the verification contract | The seven hardware rows |
-| `unknown` | No evidence is available | A venue with no observed seat surface |
+| `observed` | A configured source returned the value at a timestamp | A showtime feed says IMAX laser |
+| `estimated` | A deterministic result derived from observed inputs | C360 party-fit probability from room shape and sold count |
+| `availability` | The source exposes sellable/sold-out state without seats | An Alamo session status |
+| `curated` | Human-maintained routing/configuration | An independent venue's ticketing URL |
+| `unknown` | No usable evidence is available | No seat surface observed for a venue |
 
-“Unknown” is not “no.” A missing IMAX capability means Screenwatch has not
-verified one, not that the theater lacks IMAX.
+“Unknown” is not “no.” A missing capability means Screenwatch has not observed
+one in the configured sources.
 
-## Verification workflow
+## Reading the API
 
-To promote a hardware row, capture evidence that is specific to the venue and
-the claim. A useful verification entry should include:
+`GET /v1/evidence/overview` reports counts by observation kind, distinct venues,
+source count, and first/last observation timestamps. `GET
+/v1/venues/{venue_id}/evidence` groups one venue's observations into
+source-linked presentation claims and room rollups. The `rooms` entries expose
+latest observed availability/capacity plus capacity ranges, source URLs, scope,
+and freshness. `GET /v1/venues/{venue_id}` includes the same evidence summary
+plus `observed_rooms` on the detailed response.
 
-1. the exact venue and room/screen identifier;
-2. the claim's scope—for example, “15/70 projector in auditorium 1,” not
-   merely “this chain has IMAX”;
-3. a named source URL or an attached source capture;
-4. the date checked and, where relevant, the date the source says the hardware
-   was installed or changed;
-5. what remains unknown or could have changed.
+The compatibility-shaped `hardware` object is intentionally explicit:
 
-Then update the row's `source` to a meaningful source label, set
-`verified_at` to an ISO date, and add the evidence note. Do not mark a row
-verified because a chain's marketing label happens to match the candidate
-format. “IMAX with Laser” does not establish 1.43:1, and a venue's ownership
-of a 70mm projector does not prove that a specific showtime is a 70mm print.
-
-The runtime rule is deliberately mechanical:
-
-```python
-usable_for_inference = bool(verified_at) and source not in {
-    None, "", "seed-unverified"
+```json
+{
+  "status": "observations-only",
+  "permanent_claims": 0,
+  "usable_for_inference": false
 }
 ```
 
-This makes verification auditable and prevents a future refactor from turning
-an old seed into an invisible authority.
+The `capabilities` array on a venue is therefore not a technical inventory. It
+is a compact list of observed screening presentations. Each item includes its
+observation count, sources, URLs, scope, and freshness through the `evidence`
+object.
 
-## Other coverage boundaries
+## Coverage rules
 
-The independent registry at
-`src/screenwatch/data/independent_venues.json` is also curated. Its job is to
-make selected art houses visible to the generic listing adapters; it is not a
-claim that the US independent market has been enumerated.
+- A provider's directory count is not a showtime count.
+- A showtime count is not a national census; provider caps and errors are
+  carried in `complete`, `clipped`, and `provider_errors`.
+- A seat count is not a seat grid. C360 can support an estimate; AMC,
+  Cinemark, and rendered Regal sources can support a grid when the source
+  returns one.
+- A room observed once is not proof that every room was observed.
+- A missing source URL lowers auditability; it does not make a value verified.
+- Repeated observations are retained so freshness and change detection can be
+  measured instead of guessed.
 
-The local evidence cube reports only what configured providers actually
-observed. Seat totals use the latest snapshot for a known screening. Missing
-seat maps, missing venues, and provider clipping remain missing or are
-reported as warnings; they are not coerced to zero.
+The local evidence cube only answers what configured providers actually
+observed. It never coerces missing venues, room profiles, or seat maps to zero.
 
+## Adding a future permanent hardware claim
+
+If a future contributor adds a permanent hardware dataset, it must be a
+separate, explicit evidence type—not a fallback mixed into directory rows. The
+claim must include:
+
+1. a stable venue and room/screen identifier;
+2. a narrowly scoped claim, such as “15/70 projector in auditorium 1”;
+3. an official source URL or attached capture;
+4. capture date and, where available, the source's effective date;
+5. a review/expiry policy for equipment that can change.
+
+Until all of those exist, the claim remains `unknown` and live screening data
+must stand on its own.

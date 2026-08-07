@@ -26,6 +26,14 @@ THEATRES = f"{BASE}/sitemaps/sitemap-theatres.xml"
 _LOC = re.compile(r"<loc>([^<]+)</loc>")
 _ENTRY = re.compile(r"<url>\s*<loc>([^<]+)</loc>(?:\s*<lastmod>([^<]+)</lastmod>)?", re.DOTALL)
 _MOVIE_SLUG = re.compile(r"/movies/([a-z0-9\-]+?)(?:-(\d+))?$")
+_THEATRE_BLOCK = re.compile(r"<url\b.*?</url>", re.IGNORECASE | re.DOTALL)
+_THEATRE_URL = re.compile(
+    r"/movie-theatres/([^/]+)/([^/?#]+)$", re.IGNORECASE
+)
+_ATTRIBUTE = re.compile(
+    r'<Attribute\s+name="([^"]+)">([^<]*)</Attribute>',
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +46,31 @@ class MovieEntry:
     @property
     def key(self) -> str:
         return self.movie_id or self.slug
+
+
+@dataclass(frozen=True)
+class TheatreEntry:
+    """One official AMC theatre directory row from the sitemap PageMap."""
+
+    theatre_id: str
+    name: str
+    market: str
+    slug: str
+    url: str
+    city: str | None
+    state: str | None
+    postal_code: str | None
+    address: str | None
+    latitude: float | None
+    longitude: float | None
+
+    @property
+    def venue_id(self) -> str:
+        return f"amc-{self.slug}"
+
+    @property
+    def key(self) -> str:
+        return self.theatre_id or self.venue_id
 
 
 class AmcSitemap:
@@ -60,6 +93,56 @@ class AmcSitemap:
             )
         if not out:
             raise ValueError("sitemap parsed to zero movie entries - shape changed")
+        return out
+
+    def parse_theatres(self, raw: str) -> list[TheatreEntry]:
+        """Parse the national theatre sitemap, including its PageMap data.
+
+        The URL alone proves that a page exists. The embedded PageMap is the
+        official source for the display name, theatre id, city/state, and
+        coordinates. Rows missing a stable id or coordinates are retained only
+        when the required identity fields are present; no coordinates are
+        guessed from the market slug.
+        """
+        out: list[TheatreEntry] = []
+        for block in _THEATRE_BLOCK.findall(raw):
+            loc_match = _LOC.search(block)
+            if not loc_match:
+                continue
+            url = loc_match.group(1).strip()
+            path_match = _THEATRE_URL.search(url)
+            if not path_match:
+                continue
+            attributes = dict(_ATTRIBUTE.findall(block))
+            theatre_id = attributes.get("theatreId", "").strip()
+            slug = path_match.group(2).strip()
+            if not theatre_id or not slug:
+                continue
+
+            def number(name: str, values: dict[str, str] = attributes) -> float | None:
+                value = values.get(name, "").strip()
+                try:
+                    return float(value) if value else None
+                except ValueError:
+                    return None
+
+            out.append(
+                TheatreEntry(
+                    theatre_id=theatre_id,
+                    name=attributes.get("title", "").strip() or slug,
+                    market=path_match.group(1).strip(),
+                    slug=slug,
+                    url=url,
+                    city=attributes.get("city", "").strip() or None,
+                    state=attributes.get("state", "").strip() or None,
+                    postal_code=attributes.get("postalCode", "").strip() or None,
+                    address=attributes.get("addressLine1", "").strip() or None,
+                    latitude=number("latitude"),
+                    longitude=number("longitude"),
+                )
+            )
+        if not out:
+            raise ValueError("sitemap parsed to zero theatre entries - shape changed")
         return out
 
     @staticmethod

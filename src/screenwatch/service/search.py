@@ -10,10 +10,12 @@ into `Screening`s however it likes, and everything downstream is uniform.
 
 from __future__ import annotations
 
+import inspect
+import json
 import time
 import uuid
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Protocol
 
 from ..adapters.amc.sitemap import AmcSitemap
@@ -45,7 +47,7 @@ class Provider(Protocol):
 
     # Optional. Providers whose API knows where its own venues are (Alamo
     # ships coordinates for every cinema in a market) implement this so the
-    # system is not limited to the hand-maintained seed table.
+    # system is not limited to a hand-maintained routing registry.
     # def discover(self, spec: SearchSpec) -> list[Venue]: ...
 
 
@@ -133,12 +135,35 @@ class SearchService:
                     markup=row.get("markup"),
                     notes=row.get("notes"),
                     source=row.get("source") or "store",
+                    source_url=row.get("source_url"),
+                    observed_at=row.get("observed_at"),
                 )
             ])
+
+    @staticmethod
+    def _call_discover(provider, spec: SearchSpec, *, full: bool = False):
+        """Call discovery with full-refresh support without breaking plugins."""
+        discover = getattr(provider, "discover", None)
+        if discover is None:
+            return None
+        if full:
+            try:
+                if "full" in inspect.signature(discover).parameters:
+                    return discover(spec, full=True)
+            except (TypeError, ValueError):
+                # Builtins and unusual plugin callables may not expose a
+                # signature. Falling back keeps the provider seam compatible.
+                pass
+        return discover(spec)
 
     def _register_discovered(self, discovered: list[Venue]) -> None:
         if not discovered:
             return
+        observed_at = datetime.now(UTC).isoformat()
+        discovered = [
+            replace(venue, observed_at=venue.observed_at or observed_at)
+            for venue in discovered
+        ]
         self.directory.register(discovered)
         records = []
         for venue in discovered:
@@ -171,7 +196,7 @@ class SearchService:
                 continue
             provider_started = time.perf_counter()
             try:
-                discovered = discover(spec)
+                discovered = self._call_discover(provider, spec, full=True) or []
                 self._register_discovered(discovered)
                 discovered_total += len(discovered)
                 provider_errors = list(getattr(provider, "errors", ()))
@@ -202,11 +227,14 @@ class SearchService:
                     "clipped": provider_clipped,
                 })
         return {
+            "scope": "national_directory",
+            "full_refresh": True,
             "discovered": discovered_total,
             "directory_total": len(self.directory.all()),
             "provider_stats": stats,
             "errors": errors,
             "clipped": clipped,
+            "complete": not errors and not clipped,
             "duration_ms": round((time.perf_counter() - started) * 1000, 2),
         }
 
@@ -279,7 +307,7 @@ class SearchService:
                 continue
             if discover := getattr(provider, "discover", None):
                 try:
-                    discovered = discover(spec)
+                    discovered = self._call_discover(provider, spec) or []
                     discovery_count = len(discovered)
                     self._register_discovered(discovered)
                 except Exception as exc:                       # noqa: BLE001
@@ -304,7 +332,13 @@ class SearchService:
 
             venues = self.directory.matching(spec.location, chain=provider.chain)
             provider_clipped = list(discovery_clipped)
-            if not venues:
+            # A provider without a discover() hook may still be a valid
+            # screening source (and may have its own venue identity in the
+            # returned Screening objects). Give it a chance with an empty
+            # directory input; providers that do implement discovery have
+            # already told us that an empty match is meaningful and are kept
+            # in the explicit not-in-scope branch below.
+            if not venues and discover is not None:
                 for message in discovery_errors:
                     if message not in errors:
                         errors.append(message)
@@ -327,6 +361,21 @@ class SearchService:
                 continue
             try:
                 found = provider.screenings(spec, venues, self.transport)
+                if not venues and found:
+                    # This fallback is for custom/legacy providers whose
+                    # listing endpoint is intrinsically venue-scoped. The
+                    # screening itself is the source-backed directory claim;
+                    # it is not a hardware seed.
+                    self._register_discovered([
+                        Venue(
+                            venue_id=s.venue_id,
+                            name=s.venue_name,
+                            chain=s.chain,
+                            source=(s.sources[0] if s.sources else f"{s.chain}:screening"),
+                            source_url=s.deeplink,
+                        )
+                        for s in found
+                    ])
                 screenings.extend(found)
                 screening_errors = list(getattr(provider, "errors", ()))
                 provider_errors = [*discovery_errors, *screening_errors]
@@ -562,6 +611,11 @@ class SearchService:
                     "row_lengths": list(auditorium.row_lengths),
                     "has_grid": auditorium.has_grid,
                 },
+                venue_id=option.screening.venue_id,
+                source="|".join(option.screening.sources)
+                if option.screening.sources else f"{option.screening.chain}:seat-map",
+                source_url=option.screening.deeplink,
+                evidence_scope="screening-seat-map",
             )
             return auditorium
 
@@ -609,6 +663,7 @@ class SearchService:
         return next((p for p in self.providers if p.chain == chain), None)
 
     def _persist(self, options: list[Option]) -> None:
+        observations = []
         for option in options:
             s = option.screening
             self.store.put_work(s.work)
@@ -623,6 +678,40 @@ class SearchService:
                 availability=s.availability.value,
                 deeplink=s.deeplink,
             )
+            presentation_payload = {
+                "projection": s.presentation.projection.value,
+                "brand": s.presentation.brand.value,
+                "aspect": s.presentation.aspect,
+                "attributes": sorted(attribute.value for attribute in s.presentation.attrs),
+                "label": s.presentation.describe(),
+                "raw": s.presentation.raw,
+                "screening_id": s.screening_id,
+                "canonical_screening_id": s.canonical_screening_id,
+                "work_id": s.work.work_id,
+                "title": s.work.title,
+                "starts_at_utc": s.starts_at_utc.isoformat(),
+            }
+            subject_key = json.dumps(
+                {
+                    key: presentation_payload[key]
+                    for key in ("projection", "brand", "aspect", "attributes")
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            sources = s.sources or (f"{s.chain}:screening",)
+            for source in sources:
+                observations.append({
+                    "venue_id": s.venue_id,
+                    "kind": "screening_presentation",
+                    "subject_key": subject_key,
+                    "payload": presentation_payload,
+                    "source": source,
+                    "source_url": s.deeplink,
+                    "evidence_scope": "screening",
+                    "confidence": 1.0,
+                })
+        self.store.record_venue_observations(observations)
 
     def booking_link(self, option_id: str) -> str | None:
         """The final step. The system stops here, deliberately.

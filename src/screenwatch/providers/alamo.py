@@ -2,7 +2,7 @@
 
 Unlike AMC, Alamo tells you where its cinemas are - the schedule payload
 carries coordinates, timezone and status for every venue in a market. So this
-provider *discovers* its venues rather than relying on the seed table, which
+provider *discovers* its venues rather than relying on a routing registry, which
 is why `Provider` grew an optional `discover()` step.
 
 One request per market covers every cinema in it, so the fetch loop is over
@@ -15,7 +15,9 @@ from __future__ import annotations
 from curl_cffi import requests
 
 from ..adapters.alamo.schedule import (
+    BASE,
     KNOWN_MARKETS,
+    SCHEDULE,
     AlamoCinema,
     AlamoSchedule,
     AlamoScheduleParseError,
@@ -107,10 +109,11 @@ class AlamoProvider(ScopeReporting):
             )
         return [m for _, m in scored[: self.max_markets]]
 
-    def discover(self, spec: SearchSpec) -> list[Venue]:
+    def discover(self, spec: SearchSpec, *, full: bool = False) -> list[Venue]:
         """Venues this provider knows about, for the directory to filter."""
         out: list[Venue] = []
-        for market in self._relevant_markets(spec):
+        markets = list(self.markets) if full else self._relevant_markets(spec)
+        for market in markets:
             try:
                 cinemas, _ = self._market(market)
             except Exception as exc:                            # noqa: BLE001
@@ -124,6 +127,9 @@ class AlamoProvider(ScopeReporting):
                     tz=c.tz,
                     point=GeoPoint(c.lat, c.lon) if c.lat is not None else None,
                     market=c.market,
+                    url=f"{BASE}/cinemas/{c.slug}" if c.slug else BASE,
+                    source="alamo:schedule",
+                    source_url=SCHEDULE.format(market=market),
                 )
                 for c in cinemas if c.status == "OPEN"
             )

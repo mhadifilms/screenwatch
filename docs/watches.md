@@ -78,8 +78,8 @@ ticket watches with `include_sold_out: true`, the service uses a rolling
 one-week cutoff.
 
 For a known high-value venue, add its id to `location.allow`. This is useful
-when the trip is intentional, but it does not turn unverified hardware seed
-metadata into proof that the venue can project the requested format.
+when the trip is intentional, but it does not turn one observed screening into
+proof that every room at the venue can project the requested format.
 
 ## Release radar is not ticket radar
 
@@ -109,4 +109,3 @@ watch and does not stop unrelated watches.
 Watch health is visible through `last_success`, `last_error`, `last_warning`,
 and `error_count`. A quiet watch with a dead provider should therefore look
 different from a quiet watch that successfully found nothing.
-

@@ -71,8 +71,8 @@ class TestRscParser:
         assert imax70[0].key.venue_id == "amc-lincoln-square-13"
         assert imax70[0].key.movie_id == "76238"
         assert imax70[0].presentation.brand is Brand.IMAX
-        # The source does not publish aspect ratio, and the packaged hardware
-        # overlay is intentionally unverified, so this stays unknown.
+        # The source does not publish aspect ratio, and no separate room
+        # evidence was captured for this fixture, so this stays unknown.
         assert imax70[0].presentation.aspect is None
 
     def test_separates_imax_film_from_standard_70mm(self, amc_showtimes_html, now):

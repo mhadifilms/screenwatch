@@ -11,22 +11,18 @@ Three paths, because venues describe themselves in three different ways:
      titles carry the format. No token table can ever cover this, so it is
      pattern matching over free text, with a confidence score.
 
-  3. `refine` - a verified venue metadata overlay. Fills in what the listing hides
-     only when the overlay has explicit provenance.
-     AMC Lincoln Square 13 is a 1.43:1 house but advertises only "IMAX with
-     Laser at AMC"; the Coolidge's 70mm is a different screen from its
-     digital rooms. Neither fact is in any listing.
+  3. `refine` - a deliberately conservative seam for explicit venue evidence.
+     It is currently a no-op: a source-backed screening observation may describe
+     the room it was observed in, but it is not promoted into a permanent venue
+     hardware fact. That distinction keeps a single listing from turning into
+     an unsupported claim about every showing in a building.
 """
 
 from __future__ import annotations
 
-import json
-import pathlib
 import re
 
 from .models import Attribute, Brand, Presentation, Projection
-
-_DATA = pathlib.Path(__file__).resolve().parent / "data"
 
 
 class UnknownFormatError(ValueError):
@@ -272,112 +268,57 @@ def classify_text(text: str, venue_id: str | None = None) -> tuple[Presentation,
     return (refine(out, venue_id) if venue_id else out), confidence
 
 
-# ------------------------------------------------ venue metadata overlay ---
-
-def _load_venues() -> dict[str, dict]:
-    path = _DATA / "venue_hardware.json"
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))["venues"]
-
-
-_VENUES: dict[str, dict] = _load_venues()
-
-
 def hardware_provenance(venue_id: str) -> dict:
-    """Return the trust boundary for a curated hardware record.
+    """Return a compatibility-shaped answer for non-persistent callers.
 
-    The shipped file is intentionally useful as a set of hypotheses while it
-    is still explicitly marked ``seed-unverified``.  It must not silently turn
-    a listing's missing aspect ratio or a seat-scoring prior into a fact.  A
-    record becomes usable for inference only after both a non-seed source and
-    ``verified_at`` are present.
+    Permanent hardware claims are not a packaged lookup table. They are
+    source-backed observations in :class:`screenwatch.service.store.Store`,
+    where the API can include their source URL, timestamp, and scope. The
+    presentation classifier has no store, so it must report that it has no
+    trusted venue claim rather than reaching for a local seed.
     """
-    info = _VENUES.get(venue_id)
-    if info is None:
-        return {
-            "status": "unknown",
-            "source": None,
-            "verified_at": None,
-            "usable_for_inference": False,
-            "recorded": False,
-            "note": "No curated hardware record is loaded for this venue.",
-        }
-
-    source = info.get("source")
-    verified_at = info.get("verified_at")
-    usable = bool(verified_at) and source not in {None, "", "seed-unverified"}
     return {
-        "status": "verified" if usable else "unverified",
-        "source": source,
-        "verified_at": verified_at,
-        "usable_for_inference": usable,
-        "recorded": True,
+        "status": "unknown",
+        "source": None,
+        "source_url": None,
+        "verified_at": None,
+        "usable_for_inference": False,
+        "recorded": False,
+        "evidence_scope": "venue",
         "note": (
-            "Hardware metadata may be shown as a candidate, but it is not used "
-            "to infer a screening's presentation until verified."
-            if not usable else
-            "Hardware metadata is eligible for narrowly scoped inference."
+            "No permanent venue hardware claim is loaded. Live screening and "
+            "room observations are exposed separately with their own sources."
         ),
     }
 
 
 def hardware_dataset_summary() -> dict:
-    """Summarize the shipped hardware overlay without overstating coverage."""
-    records = list(_VENUES.items())
-    verified = [
-        venue_id for venue_id, _info in records
-        if hardware_provenance(venue_id)["usable_for_inference"]
-    ]
-    unverified = [
-        venue_id for venue_id, _info in records
-        if hardware_provenance(venue_id)["status"] == "unverified"
-    ]
+    """Describe the removed static overlay for compatibility.
+
+    The real summary is store-backed and assembled by ``Observatory``. This
+    function remains so older clients do not break while making the absence of
+    packaged claims explicit.
+    """
     return {
-        "path": "src/screenwatch/data/venue_hardware.json",
-        "schema_version": _load_venue_schema_version(),
-        "status": "verified" if verified and not unverified else "seed-unverified",
-        "records": len(records),
-        "verified_records": len(verified),
-        "unverified_records": len(unverified),
-        "verified_venue_ids": verified,
-        "unverified_venue_ids": unverified,
+        "status": "observations-only",
+        "records": 0,
+        "verified_records": 0,
+        "unverified_records": 0,
         "coverage_note": (
-            "This is a seven-venue candidate overlay, not a national hardware "
-            "registry. Missing venues and missing capabilities are unknown."
+            "No static venue hardware seed is shipped. Source-backed screening "
+            "and room observations live in the local evidence store."
         ),
     }
 
 
-def _load_venue_schema_version() -> int | None:
-    path = _DATA / "venue_hardware.json"
-    try:
-        return json.loads(path.read_text(encoding="utf-8")).get("schema_version")
-    except (OSError, json.JSONDecodeError, AttributeError):
-        return None
-
-
 def venue(venue_id: str) -> dict | None:
-    return _VENUES.get(venue_id)
+    """Compatibility accessor; permanent venue claims are store-backed."""
+    return None
 
 
 def venue_capabilities(venue_id: str) -> list[Presentation]:
-    """Candidate screen profiles from the overlay, including unverified rows.
-
-    This low-level accessor preserves the raw candidate data for inspection.
-    Callers making an inference should use :func:`trusted_venue_capabilities`.
-    """
-    info = _VENUES.get(venue_id)
-    if not info:
-        return []
-    return [
-        Presentation(
-            projection=Projection[s["projection"]] if s.get("projection") else Projection.UNKNOWN,
-            brand=Brand[s["brand"]] if s.get("brand") else Brand.NONE,
-            aspect=s.get("aspect"),
-        )
-        for s in info.get("screens", [])
-    ]
+    """Return no static capabilities; use Observatory for live evidence."""
+    return []
 
 
 def trusted_venue_capabilities(venue_id: str) -> list[Presentation]:
@@ -388,10 +329,8 @@ def trusted_venue_capabilities(venue_id: str) -> list[Presentation]:
 
 
 def trusted_venue_info(venue_id: str) -> dict | None:
-    """Return hardware metadata only when its provenance is explicit."""
-    if not hardware_provenance(venue_id)["usable_for_inference"]:
-        return None
-    return venue(venue_id)
+    """Permanent venue hardware claims are not available to this stateless API."""
+    return None
 
 
 def refine(p: Presentation, venue_id: str | None) -> Presentation:

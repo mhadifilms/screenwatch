@@ -15,23 +15,26 @@ available when a seat surface exists. It explains tradeoffs, preserves source
 and freshness metadata, and stops at a booking link. It never creates a hold,
 adds a ticket to a cart, or stores payment information.
 
-## Read this first: current data truth
+## Read this first: data truth
 
-Screenwatch is useful today, but it is not a complete national theater
-registry. The product deliberately distinguishes live observations, estimates,
-curated metadata, and unknowns.
+Screenwatch builds its venue graph from source discovery and records every
+claim with provenance. It is US-wide for the configured exhibitor sources, not
+a promise that every independent cinema in the country is enumerated. The
+product deliberately distinguishes live observations, estimates, curated
+routing configuration, and unknowns.
 
 | Dataset or surface | Current state | How to interpret it |
 | --- | --- | --- |
-| `src/screenwatch/data/venue_hardware.json` | 7 rows; **0 verified**; every row is `source: seed-unverified` | Candidate hardware metadata only. It is exposed with provenance and is not used to infer a live screening's missing format geometry. |
-| `src/screenwatch/data/independent_venues.json` | 7 curated venues | A transparent starting list, not a census of independent cinemas. |
-| Chain and ticketing adapters | Live source reads, bounded by provider caps | A result means “observed in the sources and scope reported by this run,” not “every US theater was checked.” |
-| Local SQLite evidence store | Durable observations from searches and watches | Missing data is unknown; it is never silently converted to zero. |
+| Official chain directories | AMC national theatre sitemap, Regal national directory, Cinemark sitemap, C360 locations, Alamo market schedule | Venue existence, routing, geography, and freshness are source-linked; each provider reports its own coverage and limits. |
+| `src/screenwatch/data/independent_venues.json` | Curated routing registry | Selected independent venues only; this is configuration, not a national census or hardware claim. |
+| Local SQLite evidence store | Directory, screening-presentation, and room/seat observations | Every observation has a source, URL where available, timestamp, scope, and confidence. Missing data remains unknown. |
+| Permanent venue hardware claims | 0 shipped | The system does not turn a static guess file into a fact. Use timestamped observed capabilities and room profiles instead. |
 
-The exact provenance summary is available from `GET /v1/analytics/overview`,
-`get_data_overview`, and every venue detail record. See
-[Data trust and provenance](docs/data-trust.md) before using hardware or
-coverage numbers in an analysis.
+The exact coverage and evidence summary is available from
+`GET /v1/analytics/overview`, `GET /v1/evidence/overview`,
+`get_data_overview`, `get_venue_evidence`, and every venue detail record. See
+[Data trust and provenance](docs/data-trust.md) before treating an observation
+as a permanent room fact.
 
 ## What works
 
@@ -50,9 +53,9 @@ coverage numbers in an analysis.
   possible.
 - A low-cost AMC catalog signal for release radar. Catalog presence is clearly
   labeled as an early signal, not proof that tickets are on sale.
-- Venue filtering by city, radius, chain, venue type, and explicit venue id;
-  local inventory analytics; provider health; observed room profiles; and
-  durable alert history.
+- National source discovery plus venue filtering by city, radius, chain, venue
+  type, and explicit venue id; local inventory analytics; provider health;
+  source-linked observed room profiles; and durable alert history.
 - The same service objects power the browser app, HTTP API, MCP server, and
   scheduler so those surfaces do not drift.
 
@@ -135,10 +138,11 @@ The main tools are:
 | `resolve_title` | Canonicalize a title and inspect variants/bookability |
 | `find_screenings` | Rank options with reasons, tradeoffs, and seat evidence |
 | `get_seatmap` | Render a normalized seat map for a search option |
-| `get_data_overview` | Inspect source coverage, freshness, hardware provenance, and alert backlog |
+| `get_data_overview` | Inspect source coverage, freshness, evidence provenance, and alert backlog |
 | `get_inventory_analytics` | Group observed evidence by chain, venue, type, city, format, or availability |
-| `list_venues` / `get_venue` | Explore venues, seat surfaces, capabilities, and provenance |
-| `refresh_venues` | Discover bounded provider venue metadata into SQLite |
+| `list_venues` / `get_venue` | Explore venues, seat surfaces, observed capabilities, and provenance |
+| `get_venue_evidence` | Inspect timestamped room and presentation evidence for one venue |
+| `refresh_venues` | Refresh official provider directories into SQLite |
 | `create_watch` / `poll_watches` | Create and run durable monitors |
 | `get_watch_history` | Audit alert state transitions and delivery status |
 | `get_booking_link` | Get the final source URL; this is the hard stop |
@@ -173,13 +177,16 @@ limits, and seat-data quality visible all the way to the transports.
 Current provider behavior, measured source quirks, seat surfaces, and scope
 caps are documented in [Source coverage](docs/source-coverage.md).
 
-The biggest current limitations are:
+The important operating boundaries are:
 
-- The hardware overlay is seven unverified candidate rows, not a nationwide
-  screen-by-screen inventory. Unknown is the correct answer for every other
-  venue until evidence is added.
+- A source's presentation label is evidence about that screening. It is not a
+  permanent room inventory. Permanent hardware claims are intentionally zero
+  until a narrowly scoped source capture and verification workflow is added.
 - Independent venue coverage is intentionally curated rather than discovered
   from a national registry.
+- Directory discovery is broad, but showtime searches remain bounded by
+  provider caps. `complete`, `clipped`, and `provider_errors` are part of the
+  answer and must be checked for nationwide analysis.
 - Alamo exposes reserved-seat availability but no public seat grid or count;
   it cannot produce exact seat choices.
 - C360 exposes a sold count and room shape, so contiguous-seat availability is
@@ -203,8 +210,7 @@ git diff --check
 ```
 
 See [Development and contribution](docs/development.md) for the test
-strategy, fixture policy, provider workflow, and the rules for adding verified
-metadata.
+strategy, fixture policy, provider workflow, and the evidence contract.
 
 ## Repository map
 

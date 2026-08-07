@@ -1,6 +1,6 @@
 [project]
 name = "screenwatch"
-version = "0.2.0"
+version = "1.0.0"
 description = "Local-first US theater intelligence, seat ranking, and release watches"
 requires-python = ">=3.11"
 dependencies = [

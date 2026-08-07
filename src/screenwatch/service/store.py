@@ -174,10 +174,34 @@ CREATE TABLE IF NOT EXISTS directory_venues (
     markup             TEXT,
     notes              TEXT,
     source             TEXT NOT NULL,
+    source_url         TEXT,
+    observed_at        TEXT,
     updated_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_directory_venues_chain
     ON directory_venues(chain, venue_type);
+
+-- Every non-trivial venue claim is an observation with a scope. A screening
+-- format token is evidence about that screening; a seat map is evidence about
+-- the observed room at that moment. Neither is silently promoted to a
+-- permanent hardware fact. Keeping this append-only ledger makes freshness,
+-- source disagreement, and coverage measurable instead of implicit.
+CREATE TABLE IF NOT EXISTS venue_observations (
+    observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    venue_id       TEXT NOT NULL,
+    kind           TEXT NOT NULL,
+    subject_key    TEXT NOT NULL,
+    payload        TEXT NOT NULL,
+    source         TEXT NOT NULL,
+    source_url     TEXT,
+    observed_at    TEXT NOT NULL,
+    evidence_scope TEXT NOT NULL,
+    confidence     REAL NOT NULL DEFAULT 1.0
+);
+CREATE INDEX IF NOT EXISTS idx_venue_observations_venue
+    ON venue_observations(venue_id, kind, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_venue_observations_source
+    ON venue_observations(source, observed_at DESC);
 
 CREATE TABLE IF NOT EXISTS user_prefs (
     user_id TEXT NOT NULL,
@@ -245,7 +269,7 @@ class Store:
         self._conn.close()
 
     def _migrate(self) -> None:
-        """Add alert and canonical-identity columns to older databases."""
+        """Add columns introduced after the first local database release."""
         screening_columns = {
             row[1]
             for row in self._conn.execute("PRAGMA table_info(screenings)")
@@ -288,6 +312,25 @@ class Store:
             "ON watch_hits(watch_id, event_key) WHERE event_key <> ''"
         )
 
+        directory_columns = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(directory_venues)")
+        }
+        for name, definition in {
+            "source_url": "TEXT",
+            "observed_at": "TEXT",
+        }.items():
+            if name not in directory_columns:
+                self._conn.execute(
+                    f"ALTER TABLE directory_venues ADD COLUMN {name} {definition}"
+                )
+        # Older rows were still observed by the local process; using their
+        # update timestamp is more truthful than leaving freshness blank.
+        self._conn.execute(
+            "UPDATE directory_venues SET observed_at=updated_at "
+            "WHERE observed_at IS NULL"
+        )
+
     @contextmanager
     def tx(self):
         try:
@@ -296,6 +339,38 @@ class Store:
         except Exception:
             self._conn.rollback()
             raise
+
+    @staticmethod
+    def _insert_venue_observation(
+        c,
+        *,
+        venue_id: str,
+        kind: str,
+        subject_key: str,
+        payload: dict,
+        source: str,
+        source_url: str | None,
+        observed_at: str,
+        evidence_scope: str,
+        confidence: float = 1.0,
+    ) -> None:
+        c.execute(
+            """INSERT INTO venue_observations
+               (venue_id, kind, subject_key, payload, source, source_url,
+                observed_at, evidence_scope, confidence)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                venue_id,
+                kind,
+                subject_key,
+                json.dumps(payload, sort_keys=True),
+                source,
+                source_url,
+                observed_at,
+                evidence_scope,
+                max(0.0, min(1.0, confidence)),
+            ),
+        )
 
     # ----------------------------------------------------------- identity
     def put_work(self, work: Work) -> None:
@@ -432,21 +507,84 @@ class Store:
             self._register_alias(c, canonical_id, screening_id, chain, now)
 
     # -------------------------------------------------------------- seats
-    def put_seat_snapshot(self, screening_id: str, available: int, capacity: int,
-                          payload: dict) -> None:
+    def put_seat_snapshot(
+        self,
+        screening_id: str,
+        available: int,
+        capacity: int,
+        payload: dict,
+        *,
+        venue_id: str | None = None,
+        source: str | None = None,
+        source_url: str | None = None,
+        evidence_scope: str = "screening-seat-map",
+    ) -> None:
+        """Persist a seat observation and its provenance as one transaction.
+
+        Seat data is time-varying evidence, not a venue inventory census. The
+        optional metadata is kept inside the snapshot payload for compatibility
+        with the original table and copied into the append-only venue ledger so
+        room profiles can show exactly what was observed and where.
+        """
+        captured_at = _now()
+        source = source or "provider:unknown"
+        payload = {
+            **payload,
+            "source": source,
+            "source_url": source_url,
+            "evidence_scope": evidence_scope,
+            "observed_at": captured_at,
+        }
         with self.tx() as c:
             c.execute(
                 "INSERT OR REPLACE INTO seat_snapshots VALUES (?,?,?,?,?)",
-                (screening_id, _now(), available, capacity, json.dumps(payload)),
+                (screening_id, captured_at, available, capacity, json.dumps(payload)),
             )
+            if venue_id:
+                room_id = str(payload.get("screen_id") or screening_id)
+                self._insert_venue_observation(
+                    c,
+                    venue_id=venue_id,
+                    kind="room_observation",
+                    subject_key=room_id,
+                    payload={
+                        **payload,
+                        "screening_id": screening_id,
+                        "available": available,
+                        "capacity": capacity,
+                    },
+                    source=source,
+                    source_url=source_url,
+                    observed_at=captured_at,
+                    evidence_scope=evidence_scope,
+                    # Source observation confidence is independent from the
+                    # geometry field: a count-only room is still a real
+                    # observed count even when its geometry confidence is 0.
+                    confidence=1.0,
+                )
 
     def seat_history(self, screening_id: str, limit: int = 20) -> list[dict]:
         rows = self._conn.execute(
-            "SELECT captured_at, available, capacity FROM seat_snapshots "
+            "SELECT captured_at, available, capacity, payload FROM seat_snapshots "
             "WHERE screening_id=? ORDER BY captured_at DESC LIMIT ?",
             (screening_id, limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for row in rows:
+            item = {
+                "captured_at": row["captured_at"],
+                "available": row["available"],
+                "capacity": row["capacity"],
+            }
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            for key in ("source", "source_url", "evidence_scope", "screen_id"):
+                if payload.get(key) is not None:
+                    item[key] = payload[key]
+            out.append(item)
+        return out
 
     # ------------------------------------------------------------ watches
     def create_watch(self, watch_id: str, label: str, spec_json: str, *,
@@ -889,8 +1027,9 @@ class Store:
             c.executemany(
                 """INSERT INTO directory_venues
                    (venue_id, name, chain, tz, lat, lon, market, city, state,
-                    ticketing_platform, url, venue_type, markup, notes, source, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ticketing_platform, url, venue_type, markup, notes, source,
+                    source_url, observed_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(venue_id) DO UPDATE SET
                      name=excluded.name, chain=excluded.chain, tz=excluded.tz,
                      lat=COALESCE(excluded.lat, directory_venues.lat),
@@ -904,7 +1043,10 @@ class Store:
                      venue_type=excluded.venue_type,
                      markup=COALESCE(excluded.markup, directory_venues.markup),
                      notes=COALESCE(excluded.notes, directory_venues.notes),
-                     source=excluded.source, updated_at=excluded.updated_at""",
+                     source=excluded.source,
+                     source_url=COALESCE(excluded.source_url, directory_venues.source_url),
+                     observed_at=excluded.observed_at,
+                     updated_at=excluded.updated_at""",
                 [
                     (
                         venue.venue_id,
@@ -922,17 +1064,247 @@ class Store:
                         venue.markup,
                         venue.notes,
                         venue.source,
+                        venue.source_url,
+                        venue.observed_at or now,
                         now,
                     )
                     for venue in venues
                 ],
             )
+            for venue in venues:
+                self._insert_venue_observation(
+                    c,
+                    venue_id=venue.venue_id,
+                    kind="directory",
+                    subject_key="directory",
+                    payload=venue.to_dict(),
+                    source=venue.source,
+                    source_url=venue.source_url,
+                    observed_at=venue.observed_at or now,
+                    evidence_scope=(
+                        "routing-config"
+                        if venue.source == "independent-registry"
+                        else "venue-directory"
+                    ),
+                    confidence=1.0,
+                )
 
     def directory_venues(self) -> list[dict]:
         rows = self._conn.execute(
             "SELECT * FROM directory_venues ORDER BY name COLLATE NOCASE"
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def record_venue_observation(
+        self,
+        venue_id: str,
+        *,
+        kind: str,
+        subject_key: str,
+        payload: dict,
+        source: str,
+        source_url: str | None = None,
+        observed_at: str | None = None,
+        evidence_scope: str,
+        confidence: float = 1.0,
+    ) -> None:
+        """Append one source-backed venue observation."""
+        self.record_venue_observations([{
+            "venue_id": venue_id,
+            "kind": kind,
+            "subject_key": subject_key,
+            "payload": payload,
+            "source": source,
+            "source_url": source_url,
+            "observed_at": observed_at,
+            "evidence_scope": evidence_scope,
+            "confidence": confidence,
+        }])
+
+    def record_venue_observations(self, observations: list[dict]) -> None:
+        """Append a batch of source-backed venue observations atomically."""
+        if not observations:
+            return
+        fallback_observed_at = _now()
+        with self.tx() as c:
+            for item in observations:
+                self._insert_venue_observation(
+                    c,
+                    venue_id=item["venue_id"],
+                    kind=item["kind"],
+                    subject_key=item["subject_key"],
+                    payload=item["payload"],
+                    source=item["source"],
+                    source_url=item.get("source_url"),
+                    observed_at=item.get("observed_at") or fallback_observed_at,
+                    evidence_scope=item["evidence_scope"],
+                    confidence=item.get("confidence", 1.0),
+                )
+
+    def venue_evidence(self, venue_id: str) -> dict:
+        """Return grouped, source-linked evidence for one venue.
+
+        Presentation claims are grouped by structured label but retain every
+        source and URL that observed them. This is intentionally not called a
+        hardware inventory: the evidence may be a single showing and has to be
+        read with its scope and freshness.
+        """
+        rows = self._conn.execute(
+            """SELECT * FROM venue_observations
+                WHERE venue_id=? ORDER BY observed_at DESC, observation_id DESC""",
+            (venue_id,),
+        ).fetchall()
+        by_kind: dict[str, dict] = {}
+        presentations: dict[str, dict] = {}
+        rooms: dict[str, dict] = {}
+        for row in rows:
+            item = dict(row)
+            try:
+                payload = json.loads(item["payload"])
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            kind = item["kind"]
+            summary = by_kind.setdefault(kind, {
+                "kind": kind,
+                "observations": 0,
+                "first_seen": item["observed_at"],
+                "last_seen": item["observed_at"],
+                "sources": set(),
+                "source_urls": set(),
+                "evidence_scopes": set(),
+            })
+            summary["observations"] += 1
+            summary["first_seen"] = min(summary["first_seen"], item["observed_at"])
+            summary["last_seen"] = max(summary["last_seen"], item["observed_at"])
+            summary["sources"].add(item["source"])
+            if item["source_url"]:
+                summary["source_urls"].add(item["source_url"])
+            summary["evidence_scopes"].add(item["evidence_scope"])
+
+            if kind == "screening_presentation":
+                key = item["subject_key"]
+                claim = presentations.setdefault(key, {
+                    **payload,
+                    "label": payload.get("label") or key,
+                    "observations": 0,
+                    "first_seen": item["observed_at"],
+                    "last_seen": item["observed_at"],
+                    "sources": set(),
+                    "source_urls": set(),
+                    "evidence_scope": item["evidence_scope"],
+                    "confidence": item["confidence"],
+                })
+                claim["observations"] += 1
+                claim["first_seen"] = min(claim["first_seen"], item["observed_at"])
+                claim["last_seen"] = max(claim["last_seen"], item["observed_at"])
+                claim["sources"].add(item["source"])
+                if item["source_url"]:
+                    claim["source_urls"].add(item["source_url"])
+                claim["confidence"] = max(claim["confidence"], item["confidence"])
+            elif kind == "room_observation":
+                key = item["subject_key"]
+                room = rooms.setdefault(key, {
+                    "room_id": key,
+                    "name": payload.get("screen_name"),
+                    "observations": 0,
+                    "first_seen": item["observed_at"],
+                    "last_seen": item["observed_at"],
+                    "capacities": [],
+                    "available": None,
+                    "capacity": None,
+                    "rows": payload.get("row_count"),
+                    "geometry_confidence": payload.get("geometry_confidence"),
+                    "sources": set(),
+                    "source_urls": set(),
+                    "evidence_scopes": set(),
+                })
+                room["observations"] += 1
+                room["first_seen"] = min(room["first_seen"], item["observed_at"])
+                if item["observed_at"] >= room["last_seen"]:
+                    room["last_seen"] = item["observed_at"]
+                    room["available"] = payload.get("available")
+                    room["capacity"] = payload.get("capacity")
+                    room["rows"] = payload.get("row_count") or room["rows"]
+                    if payload.get("geometry_confidence") is not None:
+                        room["geometry_confidence"] = payload["geometry_confidence"]
+                if payload.get("capacity") is not None:
+                    room["capacities"].append(int(payload["capacity"]))
+                room["sources"].add(item["source"])
+                if item["source_url"]:
+                    room["source_urls"].add(item["source_url"])
+                room["evidence_scopes"].add(item["evidence_scope"])
+
+        def clean(value):
+            if isinstance(value, set):
+                return sorted(value)
+            if isinstance(value, dict):
+                return {key: clean(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [clean(item) for item in value]
+            return value
+
+        kinds = [clean(value) for value in by_kind.values()]
+        clean_rooms = []
+        for room in rooms.values():
+            capacities = sorted(room.pop("capacities"))
+            room["capacity_min"] = capacities[0] if capacities else None
+            room["capacity_max"] = capacities[-1] if capacities else None
+            room["capacity_median"] = (
+                capacities[len(capacities) // 2]
+                if capacities and len(capacities) % 2
+                else (
+                    round((capacities[len(capacities) // 2 - 1]
+                           + capacities[len(capacities) // 2]) / 2, 1)
+                    if capacities else None
+                )
+            )
+            clean_rooms.append(clean(room))
+        return {
+            "venue_id": venue_id,
+            "observations": sum(item["observations"] for item in kinds),
+            "by_kind": sorted(kinds, key=lambda item: item["kind"]),
+            "presentations": sorted(
+                (clean(value) for value in presentations.values()),
+                key=lambda item: (-item["observations"], item["label"]),
+            ),
+            "rooms": sorted(
+                clean_rooms,
+                key=lambda item: (-item["observations"], item["room_id"]),
+            ),
+            "permanent_hardware_claims": 0,
+            "hardware_status": "observations-only",
+            "caveat": (
+                "Observed presentation and room data describe source-backed "
+                "showings. They are not a complete permanent room inventory."
+            ),
+        }
+
+    def evidence_overview(self) -> dict:
+        """Aggregate evidence coverage for the API, MCP, and local app."""
+        rows = self._conn.execute(
+            """SELECT kind, COUNT(*) AS observations,
+                       COUNT(DISTINCT venue_id) AS venues,
+                       MIN(observed_at) AS first_seen,
+                       MAX(observed_at) AS last_seen,
+                       COUNT(DISTINCT source) AS sources
+                FROM venue_observations GROUP BY kind ORDER BY kind"""
+        ).fetchall()
+        total = sum(row["observations"] for row in rows)
+        return {
+            "observations": total,
+            "venues": len({
+                row["venue_id"] for row in self._conn.execute(
+                    "SELECT DISTINCT venue_id FROM venue_observations"
+                ).fetchall()
+            }),
+            "by_kind": [dict(row) for row in rows],
+            "permanent_hardware_claims": 0,
+            "status": "observations-only",
+            "caveat": (
+                "Coverage is the set of source observations captured locally; "
+                "absence means unknown, not absent."
+            ),
+        }
 
     # -------------------------------------------------------------- prefs
     def set_pref(self, key: str, value, user_id: str = DEFAULT_USER) -> None:
@@ -1228,13 +1600,18 @@ class Store:
                 "room_id": room_id,
                 "name": payload.get("screen_name"),
                 "observed_showings": 0,
+                "observation_count": 0,
                 "capacities": [],
                 "available": None,
                 "rows": payload.get("row_count"),
                 "geometry_confidence": payload.get("geometry_confidence"),
                 "last_seen": row["captured_at"],
+                "sources": set(),
+                "source_urls": set(),
+                "evidence_scopes": set(),
             })
             profile["observed_showings"] += 1
+            profile["observation_count"] += 1
             profile["capacities"].append(int(row["capacity"]))
             if profile["available"] is None:
                 profile["available"] = int(row["available"])
@@ -1243,6 +1620,12 @@ class Store:
                 profile["rows"] = payload.get("row_count")
             if profile["geometry_confidence"] is None:
                 profile["geometry_confidence"] = payload.get("geometry_confidence")
+            if payload.get("source"):
+                profile["sources"].add(payload["source"])
+            if payload.get("source_url"):
+                profile["source_urls"].add(payload["source_url"])
+            if payload.get("evidence_scope"):
+                profile["evidence_scopes"].add(payload["evidence_scope"])
 
         out = []
         for profile in profiles.values():
@@ -1255,7 +1638,11 @@ class Store:
                 "capacity_min": capacities[0],
                 "capacity_max": capacities[-1],
                 "capacity_median": median,
-                "source": "latest seat observations",
+                "source": "source-linked seat observations",
+                "evidence_status": "observed",
+                "sources": sorted(profile["sources"]),
+                "source_urls": sorted(profile["source_urls"]),
+                "evidence_scopes": sorted(profile["evidence_scopes"]),
             })
             out.append(profile)
         return sorted(out, key=lambda item: (-item["capacity_max"], item["room_id"]))

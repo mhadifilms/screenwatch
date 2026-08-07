@@ -144,6 +144,9 @@ class C360Provider(ScopeReporting):
                     market=loc.location_id,       # the API key, not a market
                     city=loc.city,
                     state=loc.state,
+                    url=f"{BASE}/",
+                    source="c360:locations",
+                    source_url=f"{BASE}{LOCATIONS.format(company=self.company_id)}",
                 )
             )
         return out

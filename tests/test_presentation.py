@@ -111,42 +111,22 @@ class TestFreeText:
 
 
 class TestVenueMetadata:
-    def test_seed_hardware_does_not_fill_live_aspect(self):
-        """The shipped seven-row overlay is visible, but not trusted evidence."""
+    def test_missing_venue_hardware_does_not_fill_live_aspect(self):
+        """A live token stays honest when no source-backed room claim exists."""
         gt = pres.classify_token("amc", "imaxwithlaseratamc", "amc-metreon-16")
         std = pres.classify_token("amc", "imaxwithlaseratamc", "amc-empire-25")
         assert gt.aspect is None
         assert std.aspect is None
 
-    def test_fills_aspect_only_from_verified_hardware(self, monkeypatch):
-        """AMC's missing aspect can be refined once a record is actually verified."""
-        for venue_id in ("amc-metreon-16", "amc-empire-25"):
-            monkeypatch.setitem(
-                pres._VENUES,
-                venue_id,
-                {
-                    **pres._VENUES[venue_id],
-                    "source": "official-venue-page",
-                    "verified_at": "2026-08-06",
-                },
-            )
-        gt = pres.classify_token("amc", "imaxwithlaseratamc", "amc-metreon-16")
-        std = pres.classify_token("amc", "imaxwithlaseratamc", "amc-empire-25")
-        assert gt.aspect == "1.43"
-        assert std.aspect == "1.90"
+    def test_no_packaged_hardware_overlay_is_loaded(self):
+        assert not hasattr(pres, "_VENUES")
+        assert pres.venue_capabilities("coolidge-corner") == []
 
-    def test_hardware_summary_reports_real_coverage(self):
+    def test_hardware_summary_reports_observations_only(self):
         summary = pres.hardware_dataset_summary()
-        assert summary["path"] == "src/screenwatch/data/venue_hardware.json"
-        assert summary["records"] == 7
+        assert summary["status"] == "observations-only"
+        assert summary["records"] == 0
         assert summary["verified_records"] == 0
-        assert summary["unverified_records"] == 7
-        assert summary["status"] == "seed-unverified"
-
-    def test_never_contradicts_an_explicit_claim(self):
-        """A stale table must not overrule a source that says IMAX 70mm."""
-        p = pres.classify_token("amc", "imax70mm", "amc-empire-25")
-        assert p.projection is Projection.FILM_70MM_15PERF
 
     def test_ambiguous_venue_is_left_alone(self):
         """Lincoln Square has both a 15/70 IMAX screen and a plain 70mm screen.
@@ -155,17 +135,18 @@ class TestVenueMetadata:
         assert p.projection is Projection.FILM_70MM
         assert p.aspect is None
 
+    def test_never_contradicts_an_explicit_claim(self):
+        """A venue observation cannot overrule what a source explicitly says."""
+        p = pres.classify_token("amc", "imax70mm", "amc-empire-25")
+        assert p.projection is Projection.FILM_70MM_15PERF
+
     def test_unknown_venue_is_a_no_op(self):
         p = pres.classify_token("amc", "imaxwithlaseratamc", "amc-not-in-table-1")
         assert p.aspect is None
         assert p.brand is Brand.IMAX
 
-    def test_works_for_independents_too(self):
-        assert {c.projection for c in pres.venue_capabilities("coolidge-corner")} == {
-            Projection.FILM_70MM,
-            Projection.FILM_35MM,
-            Projection.DIGITAL,
-        }
+    def test_independent_capabilities_are_not_static_claims(self):
+        assert pres.venue_capabilities("coolidge-corner") == []
 
 
 class TestPreference:

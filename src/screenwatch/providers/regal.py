@@ -171,6 +171,9 @@ class RegalProvider(ScopeReporting):
                 market=t.path_name,          # the URL segment, not a real market
                 city=t.city,
                 state=t.state,
+                url=self.adapter.theatre_url(t.path_name),
+                source="regal:directory",
+                source_url=self.adapter.theatre_url(t.path_name),
             )
             for t in self.theatres()
         ]

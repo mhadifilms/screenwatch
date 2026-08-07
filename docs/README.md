@@ -2,9 +2,9 @@
 
 Start with the document that matches the question:
 
-- [Data trust and provenance](data-trust.md) — what is verified, observed,
-  estimated, curated, or unknown; includes the current seven-row hardware
-  audit.
+- [Data trust and provenance](data-trust.md) — how directory, screening, and
+  room observations are scoped, sourced, timestamped, and kept separate from
+  permanent hardware claims.
 - [HTTP API and MCP](api.md) — routes, request shapes, response semantics, and
   MCP tools.
 - [Watches](watches.md) — seeded monitors, release radar, state transitions,
@@ -17,4 +17,3 @@ Start with the document that matches the question:
 The root [README](../README.md) is the product overview and quickstart. The
 generated FastAPI reference at `/docs` is the authoritative live schema when
 the local app is running.
-

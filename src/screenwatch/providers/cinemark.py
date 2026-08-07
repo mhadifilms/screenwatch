@@ -100,7 +100,7 @@ class CinemarkProvider(ScopeReporting):
             self._slugs = self.adapter.theatre_slugs(self._get(SITEMAP))
         return self._slugs
 
-    def discover(self, spec: SearchSpec) -> list[Venue]:
+    def discover(self, spec: SearchSpec, *, full: bool = False) -> list[Venue]:
         """Slug-only venues; coordinates arrive as pages get visited.
 
         The sitemap has no geography, and fetching 308 theatre pages to build
@@ -109,8 +109,9 @@ class CinemarkProvider(ScopeReporting):
         same region gets progressively better distance ranking.
         """
         self._load_persisted_geo()
-        plausible = self._plausible_slugs(spec)
-        self._bootstrap_geo(plausible, spec)
+        plausible = self.slugs() if full else self._plausible_slugs(spec)
+        if not full:
+            self._bootstrap_geo(plausible, spec)
 
         out: list[Venue] = []
         for slug in plausible:
@@ -127,6 +128,16 @@ class CinemarkProvider(ScopeReporting):
                         if known and known.lat is not None else None
                     ),
                     market=slug,          # the full path, needed to build the URL
+                    tz=timezone_for(slug),
+                    url=self.adapter.theatre_url(
+                        slug, datetime.now(UTC).date().isoformat()
+                    ),
+                    source=(
+                        "cinemark:theatre-page" if known else "cinemark:sitemap"
+                    ),
+                    source_url=self.adapter.theatre_url(
+                        slug, datetime.now(UTC).date().isoformat()
+                    ),
                 )
             )
         return out

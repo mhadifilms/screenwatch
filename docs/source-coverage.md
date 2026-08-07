@@ -6,14 +6,20 @@ are part of the result and are reported to callers.
 
 ## Current providers
 
-| Provider | Showtimes | Seat surface | Important boundary |
-| --- | --- | --- | --- |
-| AMC | Sitemap and showtime surfaces | Exact GraphQL grid | Queue/interstitial traversal and source drift are guarded; seat maps are a read-only request |
-| Alamo Drafthouse | Open market schedule JSON | Availability only | Source exposes sellable/sold-out state but no public seat count or grid |
-| Regal | Theatre/showtime pages | Exact browser-rendered grid | Chromium is required for seat enrichment; provider caps national reads |
-| Cinemark | Sitemap and theatre pages | Exact seat grid | Seat page may require Chromium to clear a challenge; ticket routes are not guessed |
-| Apple Cinemas / C360 | Open JSON after session warm-up | Estimated | Sold count and room shape are available; contiguous seats remain an estimate |
-| Independents | Schema.org, Vista links, Agile links, or own-site listings | Availability or unknown | Registry is curated; source markup can be decorative or browser-only |
+| Provider | Directory discovery | Showtimes | Seat surface | Important boundary |
+| --- | --- | --- | --- | --- |
+| AMC | Official national theatre sitemap with ids, slugs, geography, and URLs | Sitemap and showtime surfaces | Exact GraphQL grid | Queue/interstitial traversal and source drift are guarded; seat maps are a read-only request |
+| Alamo Drafthouse | Open market schedule JSON for configured markets | Open market schedule JSON | Availability only | Source exposes sellable/sold-out state but no public seat count or grid |
+| Regal | Official national directory payload | Theatre/showtime pages | Exact browser-rendered grid | Chromium is required for seat enrichment; provider caps national reads |
+| Cinemark | Official sitemap; page coordinates hydrate lazily | Sitemap and theatre pages | Exact seat grid | Seat page may require Chromium to clear a challenge; ticket routes are not guessed |
+| Apple Cinemas / C360 | Official locations endpoint | Open JSON after session warm-up | Estimated | Sold count and room shape are available; contiguous seats remain an estimate |
+| Independents | Curated routing registry | Schema.org, Vista links, Agile links, or own-site listings | Availability or unknown | Registry is curated; source markup can be decorative or browser-only |
+
+Directory discovery is persisted separately from showtime search. A national
+directory row proves that the provider reported a venue; it does not prove that
+the venue has inventory in the requested date window. `GET /v1/venues/refresh`
+and `refresh_venues` expose per-provider discovery counts, errors, clipping,
+and elapsed time.
 
 ## What “complete” means
 
@@ -58,4 +64,3 @@ available to the internet at that moment.
 
 A confirmed grid always outranks an estimate. The system stops at a booking URL
 and never selects a seat or creates a hold.
-

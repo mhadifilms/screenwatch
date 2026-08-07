@@ -670,8 +670,21 @@ class TestWatches:
 
 # --------------------------------------------------------------------------
 class TestVenueDirectory:
+    @staticmethod
+    def _chain_directory():
+        return VenueDirectory({
+            "amc-metreon-16": {
+                "name": "AMC Metreon 16", "chain": "amc",
+                "lat": 37.7831, "lon": -122.4039,
+            },
+            "amc-lincoln-square-13": {
+                "name": "AMC Lincoln Square 13", "chain": "amc",
+                "lat": 40.7812, "lon": -73.9735,
+            },
+        })
+
     def test_radius_filters(self):
-        d = VenueDirectory()
+        d = self._chain_directory()
         sf = LocationSpec(origin=GeoPoint(37.78, -122.40), radius_km=30)
         ids = {v.venue_id for v in d.matching(sf)}
         assert "amc-metreon-16" in ids
@@ -680,13 +693,13 @@ class TestVenueDirectory:
     def test_explicit_allow_beats_the_radius(self):
         """Naming a venue means you want it even if it is a flight away -
         the 70mm pilgrimage case."""
-        d = VenueDirectory()
+        d = self._chain_directory()
         spec = LocationSpec(origin=GeoPoint(37.78, -122.40), radius_km=5,
                             allow=frozenset({"amc-lincoln-square-13"}))
         assert d.matching(spec)[0].venue_id == "amc-lincoln-square-13"
 
     def test_deny_wins_over_allow(self):
-        d = VenueDirectory()
+        d = self._chain_directory()
         spec = LocationSpec(allow=frozenset({"amc-metreon-16"}),
                             deny=frozenset({"amc-metreon-16"}))
         assert "amc-metreon-16" not in {v.venue_id for v in d.matching(spec)}
@@ -712,8 +725,8 @@ class TestVenueDirectory:
         d.register([Venue(venue_id="regal-new", name="Regal New", chain="regal")])
         assert d.get("regal-new").venue_type == "multiplex"
 
-    def test_independent_registry_wins_over_stale_hardware_routing_metadata(self):
-        """Venue routing belongs to the listing registry, not the hardware seed."""
+    def test_independent_registry_supplies_routing_metadata(self):
+        """Venue routing belongs to the listing registry, not room evidence."""
         venue = VenueDirectory().get("metrograph")
         assert venue.ticketing_platform == "vista"
         assert venue.markup == "vista-links"
@@ -857,7 +870,7 @@ class TestMcpTools:
             "resolve_title", "find_screenings", "get_seatmap", "explain_ranking",
             "create_watch", "list_watches", "cancel_watch", "poll_watches",
             "acknowledge_hits", "get_booking_link", "get_data_overview",
-            "list_venues", "get_venue", "refresh_venues", "get_inventory_analytics",
+            "list_venues", "get_venue", "get_venue_evidence", "refresh_venues", "get_inventory_analytics",
             "find_release_signals", "get_watch_history",
         }
 

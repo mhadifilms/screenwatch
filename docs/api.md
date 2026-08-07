@@ -25,12 +25,14 @@ user.
 | Route | Purpose |
 | --- | --- |
 | `GET /v1/health` | Process and provider health |
-| `GET /v1/analytics/overview` | Inventory, directory, provider surfaces, hardware provenance, and alert backlog |
+| `GET /v1/analytics/overview` | Inventory, directory, provider surfaces, evidence coverage, and alert backlog |
+| `GET /v1/evidence/overview` | Counts and freshness for locally captured source observations |
 | `GET /v1/analytics/providers` | Persisted freshness, latency, clipping, and error health |
 | `GET /v1/analytics/inventory?group_by=...` | Evidence cube grouped by `chain`, `venue`, `venue_type`, `city`, `format`, or `availability` |
 | `GET /v1/venues` | Filter the local venue graph by chain, type, city, radius, or query |
-| `GET /v1/venues/{venue_id}` | Venue detail, seat surface, observed room profiles, and hardware provenance |
-| `POST /v1/venues/refresh` | Discover bounded provider venue metadata without fetching showtimes |
+| `GET /v1/venues/{venue_id}` | Venue detail, observed presentations, room profiles, and provenance |
+| `GET /v1/venues/{venue_id}/evidence` | Source-linked evidence grouped by kind, scope, source, and freshness |
+| `POST /v1/venues/refresh` | Run a full configured national-directory refresh without fetching film showtimes; returns `scope`, `full_refresh`, `complete`, per-provider counts, errors, clipping, and duration |
 | `GET /v1/resolve?query=...` | Inspect title normalization and canonical identity |
 | `GET /v1/releases/signals?query=...` | Read the AMC catalog tripwire; not ticket-sale proof |
 | `POST /v1/search` | Run a ranked, source-backed screening search |
@@ -114,10 +116,13 @@ curl -s 'http://127.0.0.1:8787/v1/venues?city=San%20Francisco&type=multiplex'
 curl -s 'http://127.0.0.1:8787/v1/venues/amc-metreon-16'
 ```
 
-Venue detail includes `hardware.status`, `hardware.source`,
-`hardware.verified_at`, and `hardware.usable_for_inference`. The current seed
-overlay therefore appears as candidate information without being presented as
-a verified fact. See [Data trust and provenance](data-trust.md).
+Venue detail includes `evidence`, `capabilities`, and (on the detailed route)
+`observed_rooms`. The evidence route also returns room rollups with the latest
+observed capacity and availability. These are source-backed observations, not a
+permanent room inventory. The compatibility `hardware` object reports
+`status: "observations-only"`, `permanent_claims: 0`, and
+`usable_for_inference: false` until a future narrowly scoped hardware claim
+workflow exists. See [Data trust and provenance](data-trust.md).
 
 ## MCP setup and tools
 
@@ -129,7 +134,7 @@ The MCP server exposes the same major operations:
 
 - `resolve_title`, `find_screenings`, `get_seatmap`, `explain_ranking`;
 - `get_data_overview`, `get_inventory_analytics`;
-- `list_venues`, `get_venue`, `refresh_venues`;
+- `list_venues`, `get_venue`, `get_venue_evidence`, `refresh_venues`;
 - `find_release_signals`;
 - `create_watch`, `list_watches`, `cancel_watch`, `poll_watches`,
   `acknowledge_hits`, `get_watch_history`;
@@ -137,4 +142,3 @@ The MCP server exposes the same major operations:
 
 The Pydantic input descriptions in `src/screenwatch/mcp/schemas.py` are part
 of the MCP contract. Update them whenever a search field's meaning changes.
-

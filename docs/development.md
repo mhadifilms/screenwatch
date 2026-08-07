@@ -61,21 +61,18 @@ Transports should remain thin.
 
 ## Adding or changing metadata
 
-### Hardware overlay
+### Venue and room evidence
 
-The packaged hardware file is not a scratchpad for guesses. Every row must
-carry:
+Do not add a static hardware guess to make a venue look complete. Provider
+discovery belongs in an adapter/provider and must persist the source URL,
+observed timestamp, and directory scope. A screening format belongs in a
+`screening_presentation` observation. A seat map or auditorium shape belongs in
+a `room_observation`. Keep the evidence scoped to the source event; do not
+promote it to a building-wide hardware fact without a separate, reviewable
+claim workflow. See [Data trust and provenance](data-trust.md).
 
-- a stable `venue_id`;
-- a narrowly scoped `screens` claim;
-- `source`;
-- `verified_at` (or an explicit null while unverified);
-- a note that describes uncertainty and scope.
-
-Until a row has a non-seed source and a verification date, it is displayed as
-`unverified` and is excluded from presentation refinement and seat-model
-calibration. Update the data-quality tests when intentionally promoting a
-row. See [Data trust and provenance](data-trust.md).
+Tests for new evidence must cover source identity, source URL, freshness, scope,
+and the negative case where missing evidence remains unknown.
 
 ### Independent venues
 
@@ -98,4 +95,3 @@ Add parser tests against a fixture, service tests for identity and provenance,
 and at least one transport assertion when a new field is public. Test the
 negative case for any inference: an unknown or unverified input must remain
 unknown rather than becoming a confident-looking claim.
-

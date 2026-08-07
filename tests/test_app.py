@@ -65,6 +65,7 @@ def test_local_app_and_data_endpoints_are_available():
     assert client.get("/").status_code == 200
     assert "theater intelligence" in client.get("/").text
     openapi = client.get("/openapi.json").json()
+    assert openapi["info"]["version"] == "1.0.0"
     assert openapi["paths"]["/v1/search"]["post"]["requestBody"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/SearchSpecInput"
     }
@@ -72,10 +73,18 @@ def test_local_app_and_data_endpoints_are_available():
     overview = client.get("/v1/analytics/overview").json()
     assert overview["directory"]["venues"] >= 1
     assert overview["providers"][0]["seat_data"] == "exact"
-    assert overview["hardware"]["records"] == 7
-    assert overview["hardware"]["verified_records"] == 0
-    assert overview["hardware"]["status"] == "seed-unverified"
-    assert client.get("/v1/analytics/inventory?group_by=chain").json()["groups"] == []
+    assert overview["hardware"]["permanent_claims"] == 0
+    assert overview["hardware"]["status"] == "observations-only"
+
+    searched = client.post(
+        "/v1/search",
+        json={
+            "work": {"query": WORK.title},
+            "date_window": {"start": "2026-08-02", "end": "2026-08-03"},
+        },
+    )
+    assert searched.status_code == 200
+    assert client.get("/v1/analytics/inventory?group_by=chain").json()["groups"]
 
     venues = client.get("/v1/venues?sort=name").json()
     assert venues["venues"]
@@ -83,16 +92,14 @@ def test_local_app_and_data_endpoints_are_available():
     scoped = client.get("/v1/venues?chain=amc&type=multiplex").json()
     assert scoped["venues"]
     assert {venue["chain"] for venue in scoped["venues"]} == {"amc"}
-    city_scoped = client.get("/v1/venues?city=San%20Francisco").json()
-    assert city_scoped["venues"]
-    assert all("san-francisco" in (venue["market"] or "") for venue in city_scoped["venues"])
     refreshed = client.post("/v1/venues/refresh", json={"chains": ["amc"]})
     assert refreshed.status_code == 200
     assert refreshed.json()["provider_stats"][0]["status"] == "unsupported"
     venue_detail = client.get("/v1/venues/amc-metreon-16").json()
-    assert venue_detail["hardware"]["status"] == "unverified"
+    assert venue_detail["hardware"]["status"] == "observations-only"
     assert venue_detail["hardware"]["usable_for_inference"] is False
-    assert venue_detail["capabilities"][0]["evidence_status"] == "unverified"
+    assert venue_detail["capabilities"][0]["label"]
+    assert venue_detail["evidence"]["presentations"]
     store.close()
 
 
@@ -249,6 +256,10 @@ async def test_mcp_exposes_data_and_venue_intelligence():
     overview = json.loads(overview_result.content[0].text)
     assert overview["providers"][0]["seat_data"] == "exact"
 
+    await server.call_tool("find_screenings", {"spec": {
+        "work": {"query": WORK.title},
+        "date_window": {"start": "2026-08-02", "end": "2026-08-02"},
+    }})
     venues_result = await server.call_tool("list_venues", {"query": "Metreon"})
     venues = json.loads(venues_result.content[0].text)
     assert venues["venues"][0]["id"] == "amc-metreon-16"
@@ -259,7 +270,7 @@ async def test_mcp_exposes_data_and_venue_intelligence():
 
     analytics_result = await server.call_tool("get_inventory_analytics", {"group_by": "chain"})
     analytics = json.loads(analytics_result.content[0].text)
-    assert analytics["groups"] == []
+    assert analytics["groups"]
 
     history_result = await server.call_tool("get_watch_history", {"watch_id": "missing"})
     assert json.loads(history_result.content[0].text)["error"] == "unknown watch_id"

@@ -1,9 +1,9 @@
 """Venue directory: the join between a SearchSpec's geography and adapters.
 
-Reads the same packaged venue metadata overlay that the presentation parser
-uses. The overlay is candidate metadata, not a national registry: its
-provenance is returned with every public venue record, and unverified hardware
-never becomes an inference about a live screening.
+The directory is a source-backed graph. It starts empty (apart from the
+explicit independent routing registry) and is populated by provider discovery,
+then persisted locally with the source and source URL that supplied each row.
+There is deliberately no packaged hardware overlay hiding inside it.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ..presentation import _VENUES, hardware_provenance  # shared metadata source
 from ..ranking.spec import GeoPoint, LocationSpec
 
 
@@ -35,6 +34,8 @@ class Venue:
     markup: str | None = None
     notes: str | None = None
     source: str = "directory"
+    source_url: str | None = None
+    observed_at: str | None = None
 
     def distance_km(self, origin: GeoPoint | None) -> float | None:
         if origin is None or self.point is None:
@@ -55,6 +56,7 @@ class Venue:
 
     def to_dict(self, *, origin: GeoPoint | None = None) -> dict:
         """JSON-safe directory record used by HTTP, MCP, and the local app."""
+        curated = self.source == "independent-registry"
         return {
             "id": self.venue_id,
             "name": self.name,
@@ -70,7 +72,15 @@ class Venue:
             "markup": self.markup,
             "notes": self.notes,
             "source": self.source,
-            "hardware": hardware_provenance(self.venue_id),
+            "source_url": self.source_url,
+            "observed_at": self.observed_at,
+            "provenance": {
+                "status": "curated" if curated else "observed",
+                "scope": "routing-config" if curated else "directory",
+                "source": self.source,
+                "source_url": self.source_url,
+                "observed_at": self.observed_at,
+            },
             "coordinates": (
                 {"lat": self.point.lat, "lon": self.point.lon}
                 if self.point else None
@@ -120,7 +130,9 @@ def _to_venue(venue_id: str, info: dict) -> Venue:
         ),
         markup=info.get("markup"),
         notes=info.get("notes"),
-        source=info.get("source", "hardware"),
+        source=info.get("source", "directory"),
+        source_url=info.get("source_url"),
+        observed_at=info.get("observed_at"),
     )
 
 
@@ -172,6 +184,7 @@ def _independent_seed() -> dict[str, dict]:
             "chain": "independent",
             "venue_type": _venue_type("independent", item.get("name", ""), item),
             "source": "independent-registry",
+            "source_url": item.get("url"),
         }
         for item in payload.get("venues", [])
         if item.get("venue_id")
@@ -181,13 +194,10 @@ def _independent_seed() -> dict[str, dict]:
 class VenueDirectory:
     def __init__(self, venues: dict[str, dict] | None = None) -> None:
         if venues is None:
-            source = dict(_VENUES)
-            # The independent registry contains routing and listing metadata
-            # that the hardware overlay does not. It wins for those shared
-            # fields (e.g. Metrograph is Vista, not Elevent), while hardware-
-            # only candidate fields such as screens are retained.
-            for venue_id, info in _independent_seed().items():
-                source[venue_id] = {**source.get(venue_id, {}), **info}
+            # Independent venues are routing/configuration entries, not
+            # hardware claims. National chains are discovered from their own
+            # official directories and hydrated into the store by SearchService.
+            source = _independent_seed()
         else:
             source = venues
         self._venues = {vid: _to_venue(vid, info) for vid, info in source.items()}
@@ -198,9 +208,8 @@ class VenueDirectory:
     def register(self, venues: list[Venue]) -> None:
         """Merge provider-discovered venues in.
 
-        Directory seed entries retain candidate context on conflict, while
-        provider discovery supplies fresher routing and coordinates. Candidate
-        hardware is never promoted to verified evidence by this merge.
+        Provider discovery supplies the freshest routing, geography, and
+        provenance. A directory record never implies room hardware.
         """
         for venue in venues:
             current = self._venues.get(venue.venue_id)
@@ -215,17 +224,22 @@ class VenueDirectory:
                 continue
             # Discovery has fresher coordinates and routing identifiers; the
             # curated directory has better type/format context. Merge both.
+            source = venue.source
+            source_url = venue.source_url
+            if source in {None, "", "directory"} and current.source:
+                source = current.source
+                source_url = source_url or current.source_url
             self._venues[venue.venue_id] = Venue(
                 venue_id=current.venue_id,
-                name=current.name if current.name != current.venue_id else venue.name,
+                name=venue.name if venue.name != venue.venue_id else current.name,
                 chain=current.chain if current.chain != "unknown" else venue.chain,
-                tz=current.tz or venue.tz,
+                tz=venue.tz or current.tz,
                 point=venue.point or current.point,
                 market=venue.market or current.market,
-                city=current.city or venue.city,
-                state=current.state or venue.state,
+                city=venue.city or current.city,
+                state=venue.state or current.state,
                 ticketing_platform=current.ticketing_platform or venue.ticketing_platform,
-                url=current.url or venue.url,
+                url=venue.url or current.url,
                 venue_type=(
                     current.venue_type
                     if current.venue_type != "cinema"
@@ -233,7 +247,9 @@ class VenueDirectory:
                 ),
                 markup=current.markup or venue.markup,
                 notes=current.notes or venue.notes,
-                source="merged",
+                source=source or current.source,
+                source_url=source_url or current.source_url,
+                observed_at=venue.observed_at or current.observed_at,
             )
 
     def all(self) -> list[Venue]:

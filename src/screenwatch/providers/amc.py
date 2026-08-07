@@ -12,12 +12,14 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ..adapters.amc.showtimes import AmcShowtimesDom, AmcShowtimesRsc
+from ..adapters.amc.sitemap import AmcSitemap
 from ..adapters.base import ParseError
+from ..adapters.cinemark.showtimes import STATE_TZ
 from ..identity.resolve import WorkResolver
 from ..models import Observation
 from ..presentation import UnknownFormatError, assume_digital
 from ..ranking.candidate import Option, Screening
-from ..ranking.spec import SearchSpec
+from ..ranking.spec import GeoPoint, SearchSpec
 from ..resolver import Resolver
 from ..seating.model import Auditorium
 from ..seating.sources.amc import AmcSeatSource
@@ -35,10 +37,55 @@ class AmcProvider(ScopeReporting):
         self.seats = seats or AmcSeatSource()
         self.rsc = AmcShowtimesRsc()
         self.dom = AmcShowtimesDom()
+        self.sitemap = AmcSitemap()
         self.fuser = Resolver()
         self.work_resolver = work_resolver or WorkResolver()
         self.max_days = max_days
         self.max_venues = max_venues
+
+    def discover(self, spec: SearchSpec) -> list[Venue]:
+        """Discover the national AMC directory from AMC's official sitemap.
+
+        This is intentionally cheap compared with showtime discovery: one
+        sitemap request returns venue existence, stable theatre ids, routing
+        slugs, and coordinates for the whole chain. Geography is filtered by
+        ``VenueDirectory`` after this method returns, so the source-backed
+        graph is national even when an individual search is local.
+        """
+        entries = self.sitemap.parse_theatres(
+            self.sitemap.fetch(self._transport_for_discovery(), which="theatres")
+        )
+        return [
+            Venue(
+                venue_id=entry.venue_id,
+                name=entry.name,
+                chain=self.chain,
+                tz=STATE_TZ.get((entry.state or "").lower(), "America/Chicago"),
+                point=(
+                    GeoPoint(entry.latitude, entry.longitude)
+                    if entry.latitude is not None and entry.longitude is not None
+                    else None
+                ),
+                market=entry.market,
+                city=entry.city,
+                state=entry.state,
+                url=entry.url,
+                source="amc:sitemap-theatres",
+                source_url=entry.url,
+            )
+            for entry in entries
+        ]
+
+    def _transport_for_discovery(self) -> Transport:
+        """Use the service transport when one has been injected.
+
+        ``discover`` is called without a transport argument by the service;
+        keeping this tiny lazy accessor preserves the provider protocol and
+        avoids constructing a Queue-it session for fixture-only callers.
+        """
+        if not hasattr(self, "_discovery_transport"):
+            self._discovery_transport = Transport()
+        return self._discovery_transport
 
     # ------------------------------------------------------------------
     def screenings(
