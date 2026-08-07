@@ -118,7 +118,10 @@ class IndependentProvider(ScopeReporting):
                 continue
             try:
                 html = self._fetch(row, transport)
-            except Exception:                                   # noqa: BLE001
+            except Exception as exc:                            # noqa: BLE001
+                self._note_error(
+                    f"venue {venue.venue_id} fetch failed: {type(exc).__name__}: {exc}"
+                )
                 continue
 
             # "Today" is the venue's today, not UTC's.
@@ -140,10 +143,15 @@ class IndependentProvider(ScopeReporting):
                 # Named, not swallowed: decorative markup needs a fallback,
                 # which is a different problem from a quiet night.
                 self.incomplete[venue.venue_id] = str(exc)
+                self._note_error(
+                    f"venue {venue.venue_id} incomplete structured data: {exc}"
+                )
             except ParseError:
-                pass
-            except Exception:                                   # noqa: BLE001
-                pass
+                self._note_error(f"venue {venue.venue_id} structured data parse failed")
+            except Exception as exc:                            # noqa: BLE001
+                self._note_error(
+                    f"venue {venue.venue_id} parser failed: {type(exc).__name__}: {exc}"
+                )
 
             if not observations and has_vista_links(html):
                 out.extend(self._from_vista(spec, venue, html, tz, window, today))

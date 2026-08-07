@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,6 +104,12 @@ def test_search_id_persists_and_scopes_seat_map():
     provider_health = client.get("/v1/analytics/providers").json()["providers"]
     assert provider_health[0]["chain"] == "amc"
     assert provider_health[0]["health"] == "healthy"
+    assert body["options"][0]["starts_at_local_offset"] == "+00:00"
+    venue_inventory = client.get(
+        "/v1/venues?chain=amc&q=Metreon"
+    ).json()["venues"][0]["inventory"]
+    assert venue_inventory["seat_screenings"] == 1
+    assert venue_inventory["seats_capacity"] == 12
     option_id = body["options"][0]["option_id"]
 
     session = client.get(f"/v1/search/{body['search_id']}").json()
@@ -113,6 +120,12 @@ def test_search_id_persists_and_scopes_seat_map():
     assert seatmap.status_code == 200
     assert seatmap.json()["seat_data"] == "grid"
     assert store.recent_search_runs()[0]["run_id"] == body["search_id"]
+    assert client.get(
+        f"/v1/search/{body['search_id']}", headers={"x-user-id": "another-user"}
+    ).status_code == 404
+    assert client.get(
+        f"/v1/search/{body['search_id']}", headers={"x-user-id": "local"}
+    ).status_code == 200
     store.close()
 
 
@@ -134,6 +147,42 @@ def test_watch_replay_anchor_is_preserved_for_a_manual_run():
     row = store.get_watch(watch_id)
     assert "date_window" in row["spec"]
     assert watches.run(watch_id)  # the run uses the persisted replay window
+    store.close()
+
+
+def test_release_radar_persists_catalog_signals_until_the_source_changes():
+    class SitemapTransport:
+        def __init__(self):
+            self.raw = (
+                '<url><loc>https://www.amctheatres.com/movies/the-odyssey-76238</loc>'
+                '<lastmod>2026-08-01T00:00:00Z</lastmod></url>'
+            )
+
+        def get(self, _url, **_kwargs):
+            return SimpleNamespace(text=self.raw)
+
+    store = Store.memory()
+    transport = SitemapTransport()
+    service = SearchService(
+        [Provider()], store=store, directory=VenueDirectory(), transport=transport
+    )
+    watches = WatchService(service, store)
+    watch_id = watches.create(
+        SearchSpec(
+            work=WorkRef(query="The Odyssey"),
+            release_radar=True,
+            date_window=DateWindow(datetime(2026, 8, 2).date(), datetime(2026, 8, 3).date()),
+        ),
+        "catalog radar",
+        today=datetime(2026, 8, 2).date(),
+    )
+    assert watches.run(watch_id, today=datetime(2026, 8, 2).date()) == []
+
+    transport.raw = transport.raw.replace("2026-08-01", "2026-08-02")
+    [hit] = watches.run(watch_id, today=datetime(2026, 8, 2).date())
+    assert hit.alert_type == "release_signal_updated"
+    assert hit.payload()["release_signal"]["movie_id"] == "76238"
+    assert watches.run(watch_id, today=datetime(2026, 8, 2).date()) == []
     store.close()
 
 

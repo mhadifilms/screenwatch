@@ -603,6 +603,43 @@ class Store:
                 out[canonical_id] = json.loads(row["state"])
         return out
 
+    def watch_state_observed_at_for(
+        self, watch_id: str, canonical_ids: list[str]
+    ) -> dict[str, str]:
+        """Return the observation timestamp for each current watch state.
+
+        A state alert is keyed to the previous observation as well as the new
+        state. That makes a sold-out -> available transition alert again after
+        a later available -> sold-out -> available cycle, while repeated polls
+        of the same state remain idempotent.
+        """
+        if not canonical_ids:
+            return {}
+        marks = ",".join("?" * len(canonical_ids))
+        rows = self._conn.execute(
+            f"""SELECT ws.screening_id, ws.observed_at,
+                       a.canonical_id AS alias_canonical_id
+                FROM watch_states ws
+                LEFT JOIN screening_aliases a
+                  ON a.source_screening_id=ws.screening_id
+                WHERE ws.watch_id=?
+                  AND (ws.screening_id IN ({marks})
+                       OR a.canonical_id IN ({marks}))
+                ORDER BY ws.observed_at DESC""",
+            (watch_id, *canonical_ids, *canonical_ids),
+        ).fetchall()
+        wanted = set(canonical_ids)
+        out: dict[str, str] = {}
+        for row in rows:
+            canonical_id = (
+                row["screening_id"]
+                if row["screening_id"] in wanted
+                else row["alias_canonical_id"]
+            )
+            if canonical_id in wanted and canonical_id not in out:
+                out[canonical_id] = row["observed_at"]
+        return out
+
     def observe_watch(self, watch_id: str, states: dict[str, dict]) -> None:
         """Persist the latest state while advancing the legacy seen-set."""
         if not states:
@@ -962,12 +999,14 @@ class Store:
                     "runs": 0,
                     "ok_runs": 0,
                     "error_runs": 0,
+                    "degraded_runs": 0,
                     "not_in_scope_runs": 0,
                     "clipped_runs": 0,
                     "screenings": 0,
                     "last_run": row["finished_at"],
                     "last_status": stat.get("status"),
-                    "last_error": stat.get("error"),
+                    "last_error": stat.get("error") or (stat.get("errors") or [None])[0],
+                    "last_clipped": list(stat.get("clipped") or []),
                     "duration_ms_total": 0.0,
                 })
                 item["runs"] += 1
@@ -976,6 +1015,8 @@ class Store:
                     item["ok_runs"] += 1
                 elif status == "error":
                     item["error_runs"] += 1
+                elif status == "degraded":
+                    item["degraded_runs"] += 1
                 elif status == "not_in_scope":
                     item["not_in_scope_runs"] += 1
                 if stat.get("clipped"):
@@ -987,17 +1028,19 @@ class Store:
             runs = item.pop("runs")
             total = item.pop("duration_ms_total")
             item["runs"] = runs
+            item["recent_error_runs"] = item["error_runs"] + item["degraded_runs"]
+            item["recent_clipped_runs"] = item["clipped_runs"]
             item["average_duration_ms"] = round(total / runs, 2) if runs else 0.0
             item["health"] = (
-                "error" if item["error_runs"]
-                else "degraded" if item["clipped_runs"]
-                else "healthy" if item["ok_runs"]
+                "error" if item["last_status"] == "error"
+                else "degraded" if item["last_status"] == "degraded"
+                else "healthy" if item["last_status"] == "ok"
                 else "not_observed"
             )
             out.append(item)
         return sorted(out, key=lambda item: item["chain"])
 
-    def inventory_overview(self) -> dict:
+    def inventory_overview(self, *, user_id: str | None = None) -> dict:
         """Aggregate the local evidence store without touching the network."""
         totals = self._conn.execute(
             """SELECT COUNT(*) AS screenings,
@@ -1023,16 +1066,31 @@ class Store:
                  FROM screenings GROUP BY presentation ORDER BY screenings DESC
                  LIMIT 30"""
         ).fetchall()
-        watches = self._conn.execute(
-            """SELECT COUNT(*) AS total,
-                      SUM(CASE WHEN active=1 THEN 1 ELSE 0 END) AS active
-                 FROM watches"""
-        ).fetchone()
-        hits = self._conn.execute(
-            """SELECT COUNT(*) AS total,
-                      SUM(CASE WHEN delivered=0 THEN 1 ELSE 0 END) AS pending
-                 FROM watch_hits"""
-        ).fetchone()
+        if user_id is None:
+            watches = self._conn.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN active=1 THEN 1 ELSE 0 END) AS active
+                     FROM watches"""
+            ).fetchone()
+            hits = self._conn.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN delivered=0 THEN 1 ELSE 0 END) AS pending
+                     FROM watch_hits"""
+            ).fetchone()
+        else:
+            watches = self._conn.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN active=1 THEN 1 ELSE 0 END) AS active
+                     FROM watches WHERE user_id=?""",
+                (user_id,),
+            ).fetchone()
+            hits = self._conn.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN h.delivered=0 THEN 1 ELSE 0 END) AS pending
+                     FROM watch_hits h JOIN watches w USING (watch_id)
+                    WHERE w.user_id=?""",
+                (user_id,),
+            ).fetchone()
         return {
             "screenings": totals["screenings"] or 0,
             "works": totals["works"] or 0,
@@ -1055,15 +1113,30 @@ class Store:
 
     def inventory_by_venue(self, venue_id: str) -> dict:
         row = self._conn.execute(
-            """SELECT venue_id, chain, COUNT(*) AS screenings,
-                      COUNT(DISTINCT work_id) AS works,
-                      MIN(starts_at_utc) AS earliest,
-                      MAX(starts_at_utc) AS latest,
-                      SUM(CASE WHEN availability IN ('sellable','almost_full')
+            """WITH latest_seats AS (
+                       SELECT screening_id, available, capacity, captured_at,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY screening_id
+                                  ORDER BY captured_at DESC
+                              ) AS position
+                         FROM seat_snapshots
+                   )
+                   SELECT s.venue_id, s.chain, COUNT(*) AS screenings,
+                      COUNT(DISTINCT s.work_id) AS works,
+                      MIN(s.starts_at_utc) AS earliest,
+                      MAX(s.starts_at_utc) AS latest,
+                      SUM(CASE WHEN s.availability IN ('sellable','almost_full')
                                THEN 1 ELSE 0 END) AS sellable,
-                      SUM(CASE WHEN availability='sold_out' THEN 1 ELSE 0 END) AS sold_out,
-                      MAX(last_seen) AS last_seen
-                 FROM screenings WHERE venue_id=? GROUP BY venue_id, chain""",
+                      SUM(CASE WHEN s.availability='sold_out' THEN 1 ELSE 0 END) AS sold_out,
+                      COUNT(ls.screening_id) AS seat_screenings,
+                      COALESCE(SUM(ls.available), 0) AS seats_available,
+                      COALESCE(SUM(ls.capacity), 0) AS seats_capacity,
+                      MAX(ls.captured_at) AS seat_data_last_seen,
+                      MAX(s.last_seen) AS last_seen
+                 FROM screenings s
+                 LEFT JOIN latest_seats ls
+                   ON ls.screening_id=s.screening_id AND ls.position=1
+                WHERE s.venue_id=? GROUP BY s.venue_id, s.chain""",
             (venue_id,),
         ).fetchone()
         return dict(row) if row else {
@@ -1072,6 +1145,9 @@ class Store:
             "works": 0,
             "sellable": 0,
             "sold_out": 0,
+            "seat_screenings": 0,
+            "seats_available": 0,
+            "seats_capacity": 0,
         }
 
     def recent_seat_snapshots(self, *, limit: int = 100) -> list[dict]:

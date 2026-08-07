@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Protocol
 
+from ..adapters.amc.sitemap import AmcSitemap
 from ..identity.resolve import WorkResolver, title_rank
 from ..models import Availability
 from ..ranking.candidate import Option, Screening
@@ -151,8 +152,12 @@ class SearchService:
         started = time.perf_counter()
         stats: list[dict] = []
         errors: list[str] = []
+        clipped: list[str] = []
         discovered_total = 0
         for provider in self.providers:
+            reset_scope = getattr(provider, "_reset_scope", None)
+            if reset_scope is not None:
+                reset_scope()
             if spec.location.chains and provider.chain not in spec.location.chains:
                 stats.append({
                     "chain": provider.chain,
@@ -169,29 +174,66 @@ class SearchService:
                 discovered = discover(spec)
                 self._register_discovered(discovered)
                 discovered_total += len(discovered)
+                provider_errors = list(getattr(provider, "errors", ()))
+                provider_clipped = list(getattr(provider, "clipped", ()))
+                errors.extend(item for item in provider_errors if item not in errors)
+                clipped.extend(item for item in provider_clipped if item not in clipped)
                 stats.append({
                     "chain": provider.chain,
-                    "status": "ok",
+                    "status": "degraded" if provider_errors or provider_clipped else "ok",
                     "discovered": len(discovered),
                     "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
+                    "errors": provider_errors,
+                    "clipped": provider_clipped,
                 })
             except Exception as exc:                       # noqa: BLE001
                 message = f"{provider.chain} discovery: {type(exc).__name__}: {exc}"
                 errors.append(message)
+                provider_errors = [message, *getattr(provider, "errors", ())]
+                provider_clipped = list(getattr(provider, "clipped", ()))
+                clipped.extend(item for item in provider_clipped if item not in clipped)
                 stats.append({
                     "chain": provider.chain,
                     "status": "error",
                     "discovered": 0,
                     "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
                     "error": f"{type(exc).__name__}: {exc}",
+                    "errors": list(dict.fromkeys(provider_errors)),
+                    "clipped": provider_clipped,
                 })
         return {
             "discovered": discovered_total,
             "directory_total": len(self.directory.all()),
             "provider_stats": stats,
             "errors": errors,
+            "clipped": clipped,
             "duration_ms": round((time.perf_counter() - started) * 1000, 2),
         }
+
+    def release_signals(self, spec: SearchSpec) -> list[dict]:
+        """Read cheap catalog signals for a future release watch.
+
+        AMC's movie sitemap is outside the Queue-it showtime surface and is
+        useful before any theatre has published tickets. The result is a
+        source-backed signal, not a claim that tickets are on sale; the normal
+        showtime watch remains responsible for the actual bookable alert.
+        """
+        query = spec.work.query or ""
+        if not query:
+            return []
+        sitemap = AmcSitemap()
+        entries = sitemap.parse(sitemap.fetch(self.transport))
+        return [
+            {
+                "source": sitemap.source,
+                "entry_key": entry.key,
+                "slug": entry.slug,
+                "movie_id": entry.movie_id,
+                "url": entry.url,
+                "lastmod": entry.lastmod,
+            }
+            for entry in AmcSitemap.find(entries, title_contains=query)
+        ]
 
     @property
     def transport(self) -> Transport:
@@ -218,6 +260,12 @@ class SearchService:
         for provider in self.providers:
             provider_started = time.perf_counter()
             discovery_count = 0
+            discovered: list[Venue] = []
+            discovery_errors: list[str] = []
+            discovery_clipped: list[str] = []
+            reset_scope = getattr(provider, "_reset_scope", None)
+            if reset_scope is not None:
+                reset_scope()
             if spec.location.chains and provider.chain not in spec.location.chains:
                 provider_stats.append({
                     "chain": provider.chain,
@@ -235,36 +283,90 @@ class SearchService:
                     discovery_count = len(discovered)
                     self._register_discovered(discovered)
                 except Exception as exc:                       # noqa: BLE001
-                    errors.append(f"{provider.chain} discovery: {type(exc).__name__}: {exc}")
+                    discovery_errors.append(
+                        f"{provider.chain} discovery: {type(exc).__name__}: {exc}"
+                    )
+                discovery_errors.extend(getattr(provider, "errors", ()))
+                discovery_clipped.extend(getattr(provider, "clipped", ()))
+
+            unlocated = []
+            if spec.location.origin is not None and spec.location.city is None:
+                unlocated = [
+                    venue for venue in discovered
+                    if venue.point is None and venue.venue_id not in spec.location.allow
+                ]
+            if unlocated:
+                discovery_clipped.append(
+                    f"{provider.chain}: {len(unlocated)} discovered venues have no "
+                    "coordinates; add a city or explicitly allow a venue id to "
+                    "include them in an origin-based search"
+                )
+
             venues = self.directory.matching(spec.location, chain=provider.chain)
+            provider_clipped = list(discovery_clipped)
             if not venues:
+                for message in discovery_errors:
+                    if message not in errors:
+                        errors.append(message)
+                for message in provider_clipped:
+                    if message not in clipped:
+                        clipped.append(message)
+                status = "error" if discovery_errors else (
+                    "degraded" if provider_clipped else "not_in_scope"
+                )
                 provider_stats.append({
                     "chain": provider.chain,
-                    "status": "not_in_scope",
+                    "status": status,
                     "venues": 0,
                     "discovered": discovery_count,
                     "screenings": 0,
                     "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
-                    "clipped": [],
+                    "errors": discovery_errors,
+                    "clipped": provider_clipped,
                 })
                 continue
             try:
                 found = provider.screenings(spec, venues, self.transport)
                 screenings.extend(found)
+                screening_errors = list(getattr(provider, "errors", ()))
+                provider_errors = [*discovery_errors, *screening_errors]
+                provider_errors = list(dict.fromkeys(provider_errors))
+                provider_clipped.extend(getattr(provider, "clipped", ()))
+                provider_clipped = list(dict.fromkeys(provider_clipped))
+                for message in provider_errors:
+                    if message not in errors:
+                        errors.append(message)
+                for message in provider_clipped:
+                    if message not in clipped:
+                        clipped.append(message)
                 provider_stats.append({
                     "chain": provider.chain,
-                    "status": "ok",
+                    "status": "degraded" if provider_errors or provider_clipped else "ok",
                     "venues": len(venues),
                     "discovered": discovery_count,
                     "screenings": len(found),
                     "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
-                    "clipped": list(getattr(provider, "clipped", ())),
+                    "errors": provider_errors,
+                    "clipped": provider_clipped,
                 })
             except Exception as exc:                       # noqa: BLE001
                 # One dead provider must not empty the whole search - but it
                 # must be visible, because a silently missing chain looks
                 # exactly like a chain with nothing on.
-                errors.append(f"{provider.chain}: {type(exc).__name__}: {exc}")
+                provider_errors = [
+                    *discovery_errors,
+                    *getattr(provider, "errors", ()),
+                    f"{provider.chain}: {type(exc).__name__}: {exc}",
+                ]
+                provider_errors = list(dict.fromkeys(provider_errors))
+                provider_clipped.extend(getattr(provider, "clipped", ()))
+                provider_clipped = list(dict.fromkeys(provider_clipped))
+                for message in provider_errors:
+                    if message not in errors:
+                        errors.append(message)
+                for message in provider_clipped:
+                    if message not in clipped:
+                        clipped.append(message)
                 provider_stats.append({
                     "chain": provider.chain,
                     "status": "error",
@@ -273,9 +375,9 @@ class SearchService:
                     "screenings": 0,
                     "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
                     "error": f"{type(exc).__name__}: {exc}",
-                    "clipped": list(getattr(provider, "clipped", ())),
+                    "errors": provider_errors,
+                    "clipped": provider_clipped,
                 })
-            clipped.extend(getattr(provider, "clipped", ()))
 
         self._last_provider_stats = tuple(provider_stats)
 

@@ -86,8 +86,9 @@
             <label class="check-chip"><input type="checkbox" value="laser" /><span>Laser</span></label>
           </div>
           <details class="location-details">
-            <summary>Use a location pin</summary>
+            <summary>Use a city or location pin</summary>
             <div class="location-inputs">
+              <label class="field"><span>City</span><input id="city" type="text" placeholder="San Francisco" autocomplete="address-level2" /></label>
               <label class="field"><span>Latitude</span><input id="lat" type="number" step="any" placeholder="37.78" /></label>
               <label class="field"><span>Longitude</span><input id="lon" type="number" step="any" placeholder="-122.40" /></label>
               <button id="locate-button" class="button button-quiet locate-button" type="button">Use my location</button>
@@ -142,6 +143,7 @@
               <input id="watch-label" placeholder="e.g. Dune 3 / IMAX 70mm / Bay Area" required />
               <div class="watch-actions">
                 <label class="seed-toggle"><input id="watch-seed" type="checkbox" checked /><span>Only alert on new drops</span></label>
+                <label class="seed-toggle"><input id="release-radar" type="checkbox" /><span>Watch catalog entry</span></label>
                 <button class="button button-secondary" type="submit">Create watch</button>
               </div>
             </form>

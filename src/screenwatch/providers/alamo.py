@@ -77,13 +77,21 @@ class AlamoProvider(ScopeReporting):
         """
         origin = spec.location.origin
         if origin is None:
-            return list(self.markets[: self.max_markets])
+            selected = list(self.markets)
+            if self.max_markets is not None and len(selected) > self.max_markets:
+                self._note_clip(
+                    f"read {self.max_markets} of {len(selected)} Alamo markets; "
+                    f"skipped {len(selected) - self.max_markets} markets"
+                )
+                selected = selected[: self.max_markets]
+            return selected
 
         scored: list[tuple[float, str]] = []
         for market in self.markets:
             try:
                 cinemas, _ = self._market(market)
-            except Exception:                                   # noqa: BLE001
+            except Exception as exc:                            # noqa: BLE001
+                self._note_error(f"market {market} unavailable: {type(exc).__name__}: {exc}")
                 continue
             distances = [
                 origin.km_to(GeoPoint(c.lat, c.lon))
@@ -92,6 +100,11 @@ class AlamoProvider(ScopeReporting):
             if distances:
                 scored.append((min(distances), market))
         scored.sort()
+        if self.max_markets is not None and len(scored) > self.max_markets:
+            self._note_clip(
+                f"read {self.max_markets} of {len(scored)} nearby Alamo markets; "
+                f"skipped {len(scored) - self.max_markets} farther markets"
+            )
         return [m for _, m in scored[: self.max_markets]]
 
     def discover(self, spec: SearchSpec) -> list[Venue]:
@@ -100,7 +113,8 @@ class AlamoProvider(ScopeReporting):
         for market in self._relevant_markets(spec):
             try:
                 cinemas, _ = self._market(market)
-            except Exception:                                   # noqa: BLE001
+            except Exception as exc:                            # noqa: BLE001
+                self._note_error(f"market {market} unavailable: {type(exc).__name__}: {exc}")
                 continue
             out.extend(
                 Venue(
@@ -128,7 +142,8 @@ class AlamoProvider(ScopeReporting):
         for market in {v.market for v in venues if v.market}:
             try:
                 cinemas, sessions = self._market(market)
-            except Exception:                                   # noqa: BLE001
+            except Exception as exc:                            # noqa: BLE001
+                self._note_error(f"market {market} unavailable: {type(exc).__name__}: {exc}")
                 continue
             by_id = {c.cinema_id: c for c in cinemas}
 

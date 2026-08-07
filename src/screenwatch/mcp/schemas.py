@@ -87,6 +87,10 @@ class PresentationInput(BaseModel):
 
 
 class SeatingInput(BaseModel):
+    together: bool = Field(
+        True,
+        description="Prefer a contiguous group; false allows independent seat ranking",
+    )
     allow_split: bool = Field(True, description="Accept a split rather than nothing")
     avoid_front_rows: int = Field(2, description="Treat the first N rows as a last resort")
     ideal_depth: float | None = Field(
@@ -136,6 +140,13 @@ class SearchSpecInput(BaseModel):
                     "more about format than sitting together",
     )
     include_sold_out: bool = False
+    release_radar: bool = Field(
+        False,
+        description=(
+            "Also watch the low-cost AMC movie sitemap for the title entering "
+            "or changing in the catalog before showtimes exist"
+        ),
+    )
     max_seatmap_fetches: int = Field(
         10, description="Seat maps cost one guarded request each; this caps them"
     )

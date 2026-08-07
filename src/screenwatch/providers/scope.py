@@ -25,12 +25,20 @@ class ScopeReporting:
     """
 
     _clipped: tuple[str, ...] = ()
+    _errors: tuple[str, ...] = ()
 
     def _reset_scope(self) -> None:
         self._clipped = ()
+        self._errors = ()
 
     def _note_clip(self, message: str) -> None:
         self._clipped = (*self._clipped, f"{self.chain}: {message}")
+
+    def _note_error(self, message: str) -> None:
+        """Record a partial-source failure without aborting other providers."""
+        formatted = f"{self.chain}: {message}"
+        if formatted not in self._errors:
+            self._errors = (*self._errors, formatted)
 
     def _clip_venues(self, venues: list) -> list:
         """Apply `max_venues`, recording the ones dropped."""
@@ -59,3 +67,7 @@ class ScopeReporting:
     @property
     def clipped(self) -> tuple[str, ...]:
         return self._clipped
+
+    @property
+    def errors(self) -> tuple[str, ...]:
+        return self._errors

@@ -79,22 +79,43 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
     )
     observatory = Observatory(search, store=search.store, directory=search.directory)
     sessions: OrderedDict[str, SearchResult] = OrderedDict()
+    session_users: dict[str, str] = {}
 
     def user(x_user_id: str = Header(default=DEFAULT_USER)) -> str:
         return x_user_id
 
-    def remember(result: SearchResult) -> None:
+    def remember(result: SearchResult, user_id: str = DEFAULT_USER) -> None:
         sessions[result.search_id] = result
+        session_users[result.search_id] = user_id
         sessions.move_to_end(result.search_id)
         while len(sessions) > MAX_SEARCH_SESSIONS:
-            sessions.popitem(last=False)
+            expired, _ = sessions.popitem(last=False)
+            session_users.pop(expired, None)
 
-    def find_option(option_id: str, search_id: str | None = None):
+    def latest_session_id(user_id: str) -> str | None:
+        return next(
+            (
+                candidate_id
+                for candidate_id in reversed(sessions)
+                if session_users.get(candidate_id) == user_id
+            ),
+            None,
+        )
+
+    def find_option(
+        option_id: str,
+        search_id: str | None = None,
+        user_id: str = DEFAULT_USER,
+    ):
         result = sessions.get(search_id) if search_id else None
+        if result is not None and session_users.get(search_id) != user_id:
+            result = None
+            raise HTTPException(404, "unknown search_id")
         if result is None and search_id:
             raise HTTPException(410, "search session expired; run the search again")
         if result is None and sessions:
-            result = next(reversed(sessions.values()))
+            session_id = latest_session_id(user_id)
+            result = sessions.get(session_id) if session_id else None
         if result is None:
             raise HTTPException(409, "no search has been run in this process")
         option = next((item for item in result.options if item.option_id == option_id), None)
@@ -119,21 +140,21 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
         return FileResponse(UI_DIR / "favicon.svg", media_type="image/svg+xml")
 
     @app.get("/v1/health")
-    def health() -> dict:
+    def health(uid: str = Depends(user)) -> dict:
         return {
             "ok": True,
             "service": "screenwatch",
             "providers": [p.chain for p in search.providers],
-            "active_watches": len(watches.list()),
+            "active_watches": len(watches.list(uid)),
         }
 
     @app.get("/v1/meta")
-    def meta() -> dict:
-        return observatory.overview()
+    def meta(uid: str = Depends(user)) -> dict:
+        return observatory.overview(user_id=uid)
 
     @app.get("/v1/analytics/overview")
-    def overview() -> dict:
-        return observatory.overview()
+    def overview(uid: str = Depends(user)) -> dict:
+        return observatory.overview(user_id=uid)
 
     @app.get("/v1/analytics/searches")
     def recent_searches(
@@ -208,30 +229,36 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
             result = search.search(spec_from_dict(spec.to_dict()), user_id=uid)
         except (TypeError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
-        remember(result)
+        remember(result, uid)
         return _result_payload(result)
 
     @app.get("/v1/search/{search_id}")
-    def get_search(search_id: str) -> dict:
+    def get_search(search_id: str, uid: str = Depends(user)) -> dict:
         result = sessions.get(search_id)
+        if result is not None and session_users.get(search_id) != uid:
+            raise HTTPException(404, "unknown search_id")
         if result is None:
-            persisted = search.store.get_search_run(search_id)
+            persisted = search.store.get_search_run(search_id, user_id=uid)
             if persisted is None:
                 raise HTTPException(404, "unknown search_id")
             return {"search_id": search_id, "persisted": persisted, "options": []}
         return _result_payload(result)
 
     @app.get("/v1/search/{search_id}/seatmap/{option_id}.svg")
-    def search_seatmap_svg(search_id: str, option_id: str) -> Response:
-        option = find_option(option_id, search_id)
+    def search_seatmap_svg(
+        search_id: str, option_id: str, uid: str = Depends(user)
+    ) -> Response:
+        option = find_option(option_id, search_id, uid)
         if option.auditorium is None:
             raise HTTPException(404, f"no seat map ({option.seat_data})")
         picked = {seat.id for seat in option.seats.seats} if option.seats else set()
         return Response(to_svg(option.auditorium, picked), media_type="image/svg+xml")
 
     @app.get("/v1/search/{search_id}/seatmap/{option_id}")
-    def search_seatmap(search_id: str, option_id: str) -> dict:
-        option = find_option(option_id, search_id)
+    def search_seatmap(
+        search_id: str, option_id: str, uid: str = Depends(user)
+    ) -> dict:
+        option = find_option(option_id, search_id, uid)
         if option.auditorium is None:
             raise HTTPException(404, f"no seat map ({option.seat_data})")
         picked = {seat.id for seat in option.seats.seats} if option.seats else set()
@@ -245,21 +272,29 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
     # Legacy seat-map routes. They now accept an optional search_id query
     # parameter and remain useful for simple scripts.
     @app.get("/v1/seatmap/{option_id}.svg")
-    def seatmap_svg(option_id: str, search_id: str | None = Query(None)) -> Response:
-        option = find_option(option_id, search_id)
+    def seatmap_svg(
+        option_id: str,
+        search_id: str | None = Query(None),
+        uid: str = Depends(user),
+    ) -> Response:
+        option = find_option(option_id, search_id, uid)
         if option.auditorium is None:
             raise HTTPException(404, f"no seat map ({option.seat_data})")
         picked = {seat.id for seat in option.seats.seats} if option.seats else set()
         return Response(to_svg(option.auditorium, picked), media_type="image/svg+xml")
 
     @app.get("/v1/seatmap/{option_id}")
-    def seatmap(option_id: str, search_id: str | None = Query(None)) -> dict:
-        option = find_option(option_id, search_id)
+    def seatmap(
+        option_id: str,
+        search_id: str | None = Query(None),
+        uid: str = Depends(user),
+    ) -> dict:
+        option = find_option(option_id, search_id, uid)
         if option.auditorium is None:
             raise HTTPException(404, f"no seat map ({option.seat_data})")
         picked = {seat.id for seat in option.seats.seats} if option.seats else set()
         return {
-            "search_id": search_id or (next(reversed(sessions)) if sessions else None),
+            "search_id": search_id or latest_session_id(uid),
             "option_id": option_id,
             "grid": to_unicode_grid(option.auditorium, picked),
             "seat_data": option.seat_data,
@@ -338,7 +373,12 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
         return {"new_hits": len(fresh), "hits": [hit["payload"] for hit in pending]}
 
     @app.get("/v1/booking-link/{option_id}")
-    def booking_link(option_id: str) -> dict:
+    def booking_link(
+        option_id: str,
+        search_id: str | None = Query(None),
+        uid: str = Depends(user),
+    ) -> dict:
+        find_option(option_id, search_id, uid)
         link = search.booking_link(option_id)
         if not link:
             raise HTTPException(404, "no booking link for that option")

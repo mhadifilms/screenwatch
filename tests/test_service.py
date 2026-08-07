@@ -501,6 +501,22 @@ class TestWatches:
             "from": "sold_out", "to": "sellable"
         }
 
+    def test_tickets_return_again_after_a_second_sellout_cycle(self):
+        sold = replace(screening("amc:1"), availability=Availability.SOLD_OUT)
+        service, watches, _ = self.build([sold])
+        watch_id = watches.create(self.spec(), "x", today=date(2026, 8, 2))
+
+        service.providers[0]._screenings = [screening("amc:1")]
+        [first] = watches.run(watch_id, today=date(2026, 8, 2))
+        assert first.alert_type == "tickets_returned"
+
+        service.providers[0]._screenings = [sold]
+        assert watches.run(watch_id, today=date(2026, 8, 2)) == []
+
+        service.providers[0]._screenings = [screening("amc:1")]
+        [second] = watches.run(watch_id, today=date(2026, 8, 2))
+        assert second.alert_type == "tickets_returned"
+
     def test_state_calls_out_nearly_sold_out_inventory(self):
         nearly = replace(
             screening("amc:1"), seats_available=5, seats_capacity=100

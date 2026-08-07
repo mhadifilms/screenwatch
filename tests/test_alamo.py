@@ -168,6 +168,15 @@ class TestProvider:
                                                radius_km=50))
         assert provider._relevant_markets(spec) == ["nyc"]
 
+    def test_market_cap_is_reported_instead_of_looking_complete(self, payload):
+        provider = AlamoProvider(
+            markets=("nyc", "austin"), max_markets=1, session=FakeSession(payload)
+        )
+        spec = self.spec()
+        assert provider._relevant_markets(spec) == ["nyc"]
+        assert provider.clipped
+        assert "read 1 of 2" in provider.clipped[0]
+
     def test_seats_are_unavailable_and_say_why(self, payload):
         provider = self.provider(payload)
         spec = self.spec()

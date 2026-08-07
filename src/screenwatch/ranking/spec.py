@@ -227,6 +227,7 @@ class SearchSpec:
     budget: Budget = field(default_factory=Budget)
     weights: Weights = field(default_factory=Weights)
     include_sold_out: bool = False                 # True for watches
+    release_radar: bool = False                   # cheap catalog/sitemap signal
     max_seatmap_fetches: int = 10                  # phase B budget, in requests
     diversify_per_group: int = 2                   # same venue+format runs before others
 

@@ -27,7 +27,7 @@ from ..ranking.candidate import Option
 from ..ranking.spec import DateWindow, SearchSpec
 from ..seating.quality import QualityModel
 from .search import SearchService
-from .serde import spec_from_json, spec_to_json
+from .serde import local_offset, spec_from_json, spec_to_json
 from .store import DEFAULT_USER, Store
 
 _NEARLY_SOLD_OUT_RATIO = 0.10
@@ -41,6 +41,8 @@ _ALERT_PRIORITY = {
     "more_seats": 75,
     "seat_map_available": 70,
     "better_option": 60,
+    "release_signal": 65,
+    "release_signal_updated": 64,
     "new_screening": 50,
 }
 
@@ -219,17 +221,62 @@ def _best_options(options: list[Option]) -> dict[str, Option]:
     return best
 
 
+def _release_state_id(signal: dict) -> str:
+    return f"release:{signal.get('source', 'catalog')}:{signal['entry_key']}"
+
+
+def _release_state(signal: dict) -> dict:
+    return {
+        "source": signal.get("source"),
+        "entry_key": signal.get("entry_key"),
+        "slug": signal.get("slug"),
+        "movie_id": signal.get("movie_id"),
+        "url": signal.get("url"),
+        "lastmod": signal.get("lastmod"),
+    }
+
+
 @dataclass
 class WatchHit:
     watch_id: str
-    option: Option
+    option: Option | None = None
     alert_type: str = "new_screening"
     changes: tuple[str, ...] = ()
     previous: dict | None = None
     observed_at: str | None = None
     hit_id: int | None = None
+    release_signal: dict | None = None
 
     def payload(self) -> dict:
+        if self.option is None:
+            signal = self.release_signal or {}
+            return {
+                "watch_id": self.watch_id,
+                "screening_id": None,
+                "canonical_screening_id": signal.get("entry_key"),
+                "option_id": None,
+                "alert_type": self.alert_type,
+                "priority": _ALERT_PRIORITY.get(self.alert_type, 0),
+                "changes": list(self.changes),
+                "delta": None,
+                "observed_at": self.observed_at,
+                "title": signal.get("title") or signal.get("slug") or "Release signal",
+                "venue": "AMC catalog",
+                "starts_at_local": None,
+                "starts_at_local_offset": None,
+                "presentation": "catalog signal",
+                "availability": "catalogued",
+                "inventory_status": "catalogued",
+                "seat_position": "unknown",
+                "score": None,
+                "seats": None,
+                "reasons": ["The title appeared or changed in the AMC movie sitemap."],
+                "tradeoffs": ["This is an early catalog signal; tickets may not be on sale yet."],
+                "booking_link": signal.get("url"),
+                "release_signal": signal,
+                "previous": self.previous,
+                "current": signal,
+            }
         o, s = self.option, self.option.screening
         current = _state_for(o)
         alert_type = self.alert_type
@@ -246,6 +293,7 @@ class WatchHit:
             "title": s.work.title,
             "venue": s.venue_name,
             "starts_at_local": s.starts_at_local.isoformat(),
+            "starts_at_local_offset": local_offset(s),
             "presentation": s.presentation.describe(),
             "availability": s.availability.value,
             "inventory_status": current["availability_status"],
@@ -336,6 +384,22 @@ class WatchService:
         )
 
         if seed:
+            if spec.release_radar:
+                try:
+                    signals = self.search.release_signals(spec)
+                except Exception as exc:                       # noqa: BLE001
+                    signals = []
+                    self.store.touch_watch(
+                        watch_id,
+                        error=f"release radar seed: {type(exc).__name__}: {exc}",
+                    )
+                self.store.observe_watch(
+                    watch_id,
+                    {
+                        _release_state_id(signal): _release_state(signal)
+                        for signal in signals
+                    },
+                )
             existing = self._search(spec, today=today, user_id=user_id)
             states = {
                 sid: _state_for(option)
@@ -359,6 +423,23 @@ class WatchService:
 
         try:
             spec = spec_from_json(row["spec"])
+        except Exception as exc:
+            self.store.touch_watch(
+                watch_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+
+        release_hits: list[WatchHit] = []
+        release_warning: str | None = None
+        if spec.release_radar:
+            try:
+                release_hits = self._run_release_watch(watch_id, row, spec)
+            except Exception as exc:                           # noqa: BLE001
+                release_warning = f"release radar: {type(exc).__name__}: {exc}"
+                self.store.touch_watch(watch_id, error=release_warning)
+
+        try:
             result = self._search(spec, today=today, user_id=row["user_id"])
         except Exception as exc:
             self.store.touch_watch(
@@ -377,6 +458,8 @@ class WatchService:
             for field in ("provider_errors", "clipped")
         )
         warning_text = "; ".join(item for group in warnings for item in group) or None
+        if release_warning:
+            warning_text = "; ".join(filter(None, (warning_text, release_warning)))
         hits: list[WatchHit] = []
         states: dict[str, dict] = {}
 
@@ -418,7 +501,15 @@ class WatchService:
             event_key = (
                 f"{hit.alert_type}:{canonical_id}"
                 if hit.alert_type == "new_screening"
-                else f"state:{canonical_id}:{json.dumps(current, sort_keys=True)}"
+                else (
+                    "state:{canonical}:{previous_at}:{current}".format(
+                        canonical=canonical_id,
+                        previous_at=self.store.watch_state_observed_at_for(
+                            watch_id, [canonical_id]
+                        ).get(canonical_id, "unknown"),
+                        current=json.dumps(current, sort_keys=True),
+                    )
+                )
             )
             hit_id, inserted = self.store.record_hit_status(
                 watch_id,
@@ -437,6 +528,52 @@ class WatchService:
             hit=bool(durable_hits),
             success=True,
             warning=warning_text,
+        )
+        self._deliver_webhook(row)
+        return [*release_hits, *durable_hits]
+
+    def _run_release_watch(
+        self, watch_id: str, row: dict, spec: SearchSpec
+    ) -> list[WatchHit]:
+        """Poll the cheap catalog signal and persist it as normal alert data."""
+        signals = self.search.release_signals(spec)
+        state_ids = [_release_state_id(signal) for signal in signals]
+        previous = self.store.watch_states_for(watch_id, state_ids)
+        observed_at = self._clock().isoformat()
+        durable_hits: list[WatchHit] = []
+        states = {}
+        for signal in signals:
+            state_id = _release_state_id(signal)
+            current = _release_state(signal)
+            states[state_id] = current
+            old = previous.get(state_id)
+            if old is not None and old == current:
+                continue
+            hit = WatchHit(
+                watch_id,
+                None,
+                alert_type="release_signal" if old is None else "release_signal_updated",
+                changes=() if old is None else ("release_signal_updated",),
+                previous=old,
+                observed_at=observed_at,
+                release_signal={**signal, "title": spec.work.query},
+            )
+            hit_id, inserted = self.store.record_hit_status(
+                watch_id,
+                state_id,
+                hit.payload(),
+                event_key=f"release:{state_id}:{json.dumps(current, sort_keys=True)}",
+            )
+            if inserted:
+                hit.hit_id = hit_id
+                self.store.queue_delivery(hit_id)
+                durable_hits.append(hit)
+        self.store.observe_watch(watch_id, states)
+        self.store.touch_watch(
+            watch_id,
+            hit=bool(durable_hits),
+            success=True,
+            warning=None,
         )
         self._deliver_webhook(row)
         return durable_hits

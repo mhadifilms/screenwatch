@@ -64,7 +64,11 @@ class AmcProvider(ScopeReporting):
                 transport, venue_id=venue.venue_id, market=venue.market,
                 date=day.isoformat(),
             )
-        except Exception:                                   # noqa: BLE001
+        except Exception as exc:                            # noqa: BLE001
+            self._note_error(
+                f"venue {venue.venue_id} {day.isoformat()} fetch failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
             return []
 
         observations: list[Observation] = []

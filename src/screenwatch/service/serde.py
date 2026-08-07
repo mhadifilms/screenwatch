@@ -10,7 +10,7 @@ something different from the search that created it.
 from __future__ import annotations
 
 import json
-from datetime import date, time
+from datetime import UTC, date, time
 
 from ..identity.work import WorkRef
 from ..models import Attribute, Brand, Preference, PresentationSpec, Projection
@@ -97,6 +97,7 @@ def spec_to_dict(spec: SearchSpec) -> dict:
                    "max_per_ticket_usd": spec.budget.max_per_ticket_usd},
         "weights": spec.weights.as_dict(),
         "include_sold_out": spec.include_sold_out,
+        "release_radar": spec.release_radar,
         "max_seatmap_fetches": spec.max_seatmap_fetches,
         "diversify_per_group": spec.diversify_per_group,
     }
@@ -152,6 +153,7 @@ def spec_from_dict(data: dict) -> SearchSpec:
         budget=Budget(budget.get("max_total_usd"), budget.get("max_per_ticket_usd")),
         weights=Weights(**(data.get("weights") or {})),
         include_sold_out=data.get("include_sold_out", False),
+        release_radar=data.get("release_radar", False),
         max_seatmap_fetches=data.get("max_seatmap_fetches", 10),
         diversify_per_group=data.get("diversify_per_group", 2),
     )
@@ -163,6 +165,24 @@ def spec_to_json(spec: SearchSpec) -> str:
 
 def spec_from_json(raw: str) -> SearchSpec:
     return spec_from_dict(json.loads(raw))
+
+
+def local_offset(screening) -> str:
+    """Return the source venue's wall-clock offset as ``+/-HH:MM``.
+
+    Screening models intentionally keep local showtimes naive because every
+    provider supplies them as venue wall-clock values. The UTC instant is the
+    authoritative companion, so their difference gives clients an explicit
+    offset without forcing them to guess from the browser's timezone.
+    """
+    utc = screening.starts_at_utc
+    if utc.tzinfo is None:
+        utc = utc.replace(tzinfo=UTC)
+    delta = screening.starts_at_local - utc.astimezone(UTC).replace(tzinfo=None)
+    minutes = round(delta.total_seconds() / 60)
+    sign = "+" if minutes >= 0 else "-"
+    minutes = abs(minutes)
+    return f"{sign}{minutes // 60:02d}:{minutes % 60:02d}"
 
 
 def option_to_dict(option, *, include_seatmap: bool = False) -> dict:
@@ -180,6 +200,7 @@ def option_to_dict(option, *, include_seatmap: bool = False) -> dict:
         "venue": {"id": s.venue_id, "name": s.venue_name, "chain": s.chain,
                   "distance_km": s.distance_km},
         "starts_at_local": s.starts_at_local.isoformat(),
+        "starts_at_local_offset": local_offset(s),
         "starts_at_utc": s.starts_at_utc.isoformat(),
         "presentation": s.presentation.describe(),
         "availability": s.availability.value,

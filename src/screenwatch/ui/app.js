@@ -19,7 +19,8 @@
   function isoToday(offset = 0) {
     const date = new Date();
     date.setDate(date.getDate() + offset);
-    return date.toISOString().slice(0, 10);
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
   }
 
   function showToast(message, kind = "success") {
@@ -46,6 +47,7 @@
   function buildLocation() {
     const location = {
       radius_km: Number($("#radius").value || 40),
+      city: $("#city").value.trim() || null,
       allow: [],
       deny: [],
       chains: $("#chain-filter").value ? [$("#chain-filter").value] : [],
@@ -67,14 +69,29 @@
       strict_presentations: strict,
       seating: { together: true, allow_split: true },
       include_sold_out: false,
+      release_radar: $("#release-radar").checked,
       max_seatmap_fetches: 10,
     };
     return spec;
   }
 
-  function formatTime(iso) {
-    try { return new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(iso)); }
-    catch { return iso; }
+  function formatTime(localIso, offset) {
+    try {
+      const match = String(localIso || "").match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+      if (!match) return localIso;
+      // `starts_at_local` is a venue wall-clock value, not a browser-local
+      // instant. Render it on a UTC calendar so a Bay Area show does not move
+      // to the viewer's timezone; the explicit offset keeps the source zone
+      // visible without needing a browser timezone database lookup.
+      const date = new Date(Date.UTC(
+        Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+        Number(match[4]), Number(match[5]), Number(match[6] || 0),
+      ));
+      const label = new Intl.DateTimeFormat(undefined, {
+        weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC",
+      }).format(date);
+      return offset ? `${label} · UTC${offset}` : label;
+    } catch { return localIso; }
   }
 
   function formatDistance(distance) {
@@ -98,7 +115,7 @@
     return `<article class="result-card">
       <div class="result-rank">${index + 1}</div>
       <div class="result-main">
-        <div class="result-title-row"><span class="result-time">${escapeHtml(formatTime(option.starts_at_local))}</span><span class="result-format">${escapeHtml(option.presentation)}</span></div>
+        <div class="result-title-row"><span class="result-time">${escapeHtml(formatTime(option.starts_at_local, option.starts_at_local_offset))}</span><span class="result-format">${escapeHtml(option.presentation)}</span></div>
         <div class="result-venue">${escapeHtml(option.venue.name)} <span class="tag">${escapeHtml(option.venue.chain)}</span></div>
         <div class="result-subline"><span class="tag ${seatClass}">${escapeHtml(seatTag)}</span><span class="tag">${escapeHtml(formatDistance(option.venue.distance_km))}</span><span class="tag">${escapeHtml(option.availability)}</span>${seatmap ? `<span class="tag">${seatmap}</span>` : ""}</div>
         <div class="result-reasons"><strong>Why this is here:</strong> ${escapeHtml(reasons)}</div>
@@ -190,8 +207,19 @@
 
   async function pollWatches() {
     try {
-      const payload = await api("/v1/watches/poll?acknowledge=true", { method: "POST" });
-      announceHits(payload.hits || []);
+      const payload = await api("/v1/watches/poll", { method: "POST" });
+      const hits = payload.hits || [];
+      announceHits(hits);
+      const hitIds = hits.map((hit) => hit.hit_id).filter((hitId) => Number.isInteger(hitId));
+      if (hitIds.length) {
+        // Keep the durable queue pending until the toast/notification has
+        // actually been emitted. A failed acknowledgement leaves the alert
+        // available for the next poll instead of losing it before display.
+        await api("/v1/watches/acknowledge", {
+          method: "POST",
+          body: JSON.stringify({ hit_ids: hitIds }),
+        });
+      }
       await loadWatches();
       await loadOverview();
     } catch (error) { showToast(error.message, "error"); }
@@ -221,7 +249,10 @@
     $("#venues-table").innerHTML = rows.map((venue) => {
       const inventory = venue.inventory || {};
       const capabilities = venue.capabilities?.slice(0, 2).map((cap) => cap.label).join(" · ") || "No hardware profile yet";
-      return `<tr><td><span class="venue-name">${escapeHtml(venue.name)}</span><span class="venue-chain">${escapeHtml(venue.chain)}${venue.distance_km != null ? ` · ${Number(venue.distance_km).toFixed(1)} km` : ""}</span></td><td><span class="venue-type">${escapeHtml(venue.type_label)}</span></td><td><span class="seat-surface">${escapeHtml(venue.seat_surface)}</span><span class="venue-chain">${escapeHtml(venue.seat_detail)}</span></td><td>${Number(inventory.screenings || 0).toLocaleString()} screenings<span class="venue-chain">${Number(inventory.works || 0).toLocaleString()} works · ${Number(inventory.sellable || 0).toLocaleString()} sellable</span></td><td>${escapeHtml(capabilities)}</td></tr>`;
+      const seatRollup = Number(inventory.seat_screenings || 0) > 0
+        ? `${Number(inventory.seats_available || 0).toLocaleString()} / ${Number(inventory.seats_capacity || 0).toLocaleString()} seats open`
+        : "No live seat count yet";
+      return `<tr><td><span class="venue-name">${escapeHtml(venue.name)}</span><span class="venue-chain">${escapeHtml(venue.chain)}${venue.distance_km != null ? ` · ${Number(venue.distance_km).toFixed(1)} km` : ""}</span></td><td><span class="venue-type">${escapeHtml(venue.type_label)}</span></td><td><span class="seat-surface">${escapeHtml(venue.seat_surface)}</span><span class="venue-chain">${escapeHtml(venue.seat_detail)}</span></td><td>${Number(inventory.screenings || 0).toLocaleString()} screenings<span class="venue-chain">${Number(inventory.works || 0).toLocaleString()} works · ${Number(inventory.sellable || 0).toLocaleString()} sellable</span><span class="venue-chain">${escapeHtml(seatRollup)}</span></td><td>${escapeHtml(capabilities)}</td></tr>`;
     }).join("") || `<tr><td colspan="5" class="table-empty">No venues match that filter.</td></tr>`;
   }
 
@@ -235,6 +266,10 @@
         lat: $("#lat").value || "",
         lon: $("#lon").value || "",
       });
+      if (!$("#lat").value || !$("#lon").value) {
+        params.delete("lat");
+        params.delete("lon");
+      }
       const payload = await api(`/v1/venues?${params}`);
       renderVenues(payload.venues || []);
     } catch (error) { showToast(error.message, "error"); }

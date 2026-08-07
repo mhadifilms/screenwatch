@@ -14,7 +14,7 @@ from collections import Counter
 from ..presentation import venue_capabilities
 from ..ranking.spec import GeoPoint
 from .search import SearchService
-from .store import Store
+from .store import DEFAULT_USER, Store
 from .venues import Venue, VenueDirectory
 
 _SEAT_SURFACES = {
@@ -41,8 +41,8 @@ class Observatory:
         self.store = store or search.store
         self.directory = directory or search.directory
 
-    def overview(self) -> dict:
-        inventory = self.store.inventory_overview()
+    def overview(self, *, user_id: str = DEFAULT_USER) -> dict:
+        inventory = self.store.inventory_overview(user_id=user_id)
         venues = self.directory.all()
         chains = Counter(venue.chain for venue in venues)
         types = Counter(venue.venue_type for venue in venues)
@@ -74,7 +74,7 @@ class Observatory:
                 "types": self.directory.types(),
             },
             "providers": providers,
-            "provider_health": self.store.provider_health(),
+            "provider_health": self.store.provider_health(user_id=user_id),
             "principles": [
                 "A confirmed seat grid outranks an estimate.",
                 "Unknown coverage is reported instead of being presented as empty.",

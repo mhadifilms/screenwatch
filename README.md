@@ -205,7 +205,7 @@ API's own vocabulary instead of waiting to meet a surprise in production.
 
 ```bash
 uv venv && uv pip install -e '.[dev,api]'
-python -m pytest                      # 606 tests, offline
+python -m pytest                      # 609 tests, offline
 ruff check src tests                  # ruleset pinned in pyproject.toml
 ```
 
@@ -226,8 +226,8 @@ appears, seats return, or a party-sized group becomes possible. The local
 default binds to `127.0.0.1`; pass `--host` only when you intentionally want
 another machine to reach it.
 
-Searches and watches share the same location model: enter coordinates or use
-the browser's **Use my location** button, set a radius, and optionally restrict
+Searches and watches share the same location model: enter a city or coordinates,
+use the browser's **Use my location** button, set a radius, and optionally restrict
 the scope to one or more exhibitors or venue types (`multiplex`, `art_house`,
 `dine_in`, `drive_in`, or `independent`). Those filters are also available in
 the MCP `LocationInput` and the HTTP venue graph.
@@ -401,6 +401,12 @@ seat position (`middle_area` / `no_middle_seats` when a grid is known), the
 recommended seats, and a booking link. Ticket watches keep a warm five-minute
 cadence before their release date so future drops are not treated as dormant
 searches.
+
+Set `release_radar: true` on a watch to add the low-cost AMC movie-sitemap
+tripwire. It reports when a watched title first enters or changes in the catalog
+before showtimes exist; this is an early release signal, not a claim that tickets
+are already on sale. The same watch can also keep its normal showtime and seat
+monitor active.
 
 Polling is non-destructive by default: `poll_watches` and `POST
 /v1/watches/poll` leave alerts pending until the client explicitly calls
