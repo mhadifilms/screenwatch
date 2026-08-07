@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "Per-venue screen hardware - the oracle that listings cannot give you.",
+    "Per-venue screen hardware - a candidate metadata overlay, not an oracle.",
     "",
     "Chains advertise one brand string for hardware that differs materially:",
     "'IMAX with Laser at AMC' covers both 1.43:1 GT houses and standard 1.90:1",
@@ -11,12 +11,17 @@
     "worldwide can project nitrate, which is exactly the kind of fact that",
     "belongs here and nowhere else.",
     "",
-    "SEED DATA - every row says source:seed-unverified. Verify against the",
-    "venue and set verified_at. Rooms get converted with no announcement.",
-    "An absent venue is not an error; refine() is simply a no-op.",
-    "lat/lon are approximate venue coordinates used for distance ranking; market is the chain's own URL segment."
+    "SEED DATA - every row currently says source:seed-unverified and has",
+    "verified_at:null. It is seven candidate rows, not a national registry.",
+    "The runtime exposes the rows for inspection but will not use them to",
+    "infer a live screening's missing presentation details until verified.",
+    "Verify each row against a named source, record the source and date, then",
+    "change source and set verified_at. An absent venue is unknown, not false.",
+    "lat/lon are approximate seed coordinates; do not treat them as authoritative."
   ],
   "schema_version": 2,
+  "dataset_status": "seed-unverified",
+  "provenance_policy": "A row is eligible for inference only when source is not seed-unverified and verified_at is non-null.",
   "venues": {
     "amc-lincoln-square-13": {
       "chain": "amc",
@@ -36,7 +41,7 @@
           "projection": "DIGITAL_LASER"
         }
       ],
-      "notes": "Listings show only 'IMAX with Laser at AMC'. Has both a 15/70 IMAX screen and a separate standard 70mm screen - verified live 2026-08-02, imax70mm and 70mm showtimes appeared for the same film on the same day.",
+      "notes": "Candidate note from an earlier live observation: listings show only 'IMAX with Laser at AMC', and both 15/70 IMAX and standard 70mm may be present. This has not been accepted as verified evidence; recheck before relying on it.",
       "verified_at": null,
       "source": "seed-unverified",
       "lat": 40.7754,
@@ -137,7 +142,6 @@
       "chain": "independent",
       "name": "Metrograph",
       "tz": "America/New_York",
-      "ticketing_platform": "elevent",
       "screens": [
         {
           "projection": "FILM_35MM"

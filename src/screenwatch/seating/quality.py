@@ -10,7 +10,7 @@ normalized depth and gives that band a shallow preference for the exact
 centre. The band is made from the rows that actually exist, so gaps,
 cross-aisles, short rooms and irregular layouts do not need venue-specific
 row numbers. Venues with unusually steep or shallow rakes can still override
-`ideal_depth` in the hardware oracle.
+`ideal_depth` in the verified hardware metadata overlay.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 
-from ..presentation import venue as venue_info
+from ..presentation import trusted_venue_info
 from .model import Auditorium, Seat
 
 DEFAULT_IDEAL_DEPTH = 0.50
@@ -42,11 +42,11 @@ class QualityModel:
 
     @classmethod
     def for_venue(cls, venue_id: str | None, **overrides) -> QualityModel:
-        """Per-venue tuning from the hardware oracle, then caller overrides."""
+        """Per-venue tuning from verified metadata, then caller overrides."""
         base: dict[str, object] = {}
         if (
             venue_id
-            and (info := venue_info(venue_id))
+            and (info := trusted_venue_info(venue_id))
             and (depth := info.get("ideal_depth")) is not None
         ):
             base["ideal_depth"] = float(depth)

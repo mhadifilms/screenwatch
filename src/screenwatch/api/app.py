@@ -74,7 +74,8 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
         version="0.2.0",
         description=(
             "US theater and release intelligence: ranked showtimes, seat-aware "
-            "options, durable watches, venue coverage, and a hard stop at booking."
+            "options, durable watches, venue coverage, explicit data provenance, "
+            "and a hard stop at booking."
         ),
     )
     observatory = Observatory(search, store=search.store, directory=search.directory)

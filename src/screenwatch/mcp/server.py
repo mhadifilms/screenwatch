@@ -37,7 +37,8 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
         instructions=(
             "US theater and release intelligence across chains and independents. "
             "Use list_venues and get_data_overview to understand coverage before "
-            "searching. "
+            "searching; hardware metadata includes an explicit provenance status "
+            "and unverified seed rows are not live evidence. "
             "Call resolve_title first if a title is ambiguous or a re-release. "
             "find_screenings returns bookable options - a showing plus the "
             "actual seats you would get - each with reasons and tradeoffs. "
@@ -165,7 +166,9 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
 
     @server.tool(
         description="List known US venues with type, chain, coordinates, seat-data "
-                    "surface, current local inventory, and curated room capabilities. "
+                    "surface, current local inventory, and candidate hardware "
+                    "capabilities with provenance. Unverified seed capabilities "
+                    "are labeled and are not used as live screening evidence. "
                     "Use this to find art houses, multiplexes, or exact-seat providers."
     )
     def list_venues(
@@ -195,8 +198,9 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
         }
 
     @server.tool(
-        description="Get a single venue's detailed record, including known screen "
-                    "hardware, ticketing platform, inventory, and seat-data limits."
+        description="Get a single venue's detailed record, including candidate "
+                    "screen hardware and its provenance, ticketing platform, "
+                    "inventory, and seat-data limits."
     )
     def get_venue(venue_id: str) -> dict:
         record = observatory.get_venue(venue_id)

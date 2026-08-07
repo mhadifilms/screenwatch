@@ -38,6 +38,7 @@
       "lon": -74.0027,
       "tz": "America/New_York",
       "markup": "agile-links",
+      "ticketing_platform": "agile",
       "notes": "Agile WebSales at tickets.ifccenter.com. 140 showtimes across 5+ dates. Bare anchors, plain <h3> titles, textual 'Sun Aug 2' day headings."
     },
     {
@@ -79,6 +80,7 @@
       "lon": -73.9899,
       "tz": "America/New_York",
       "markup": "vista-links",
+      "ticketing_platform": "vista",
       "notes": "Vista ticketing at t.metrograph.com, cinemacode 9999. 183 showtimes across 20 dates via embedded ticket links."
     },
     {
@@ -89,6 +91,7 @@
       "lon": -71.1211,
       "tz": "America/New_York",
       "markup": "agile-links",
+      "ticketing_platform": "agile",
       "notes": "Agile WebSales at store.coolidge.org. 24 showtimes incl. 'The Odyssey in 70mm' on screen MH1; sales-state gives real availability."
     }
   ]

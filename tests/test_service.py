@@ -712,6 +712,12 @@ class TestVenueDirectory:
         d.register([Venue(venue_id="regal-new", name="Regal New", chain="regal")])
         assert d.get("regal-new").venue_type == "multiplex"
 
+    def test_independent_registry_wins_over_stale_hardware_routing_metadata(self):
+        """Venue routing belongs to the listing registry, not the hardware seed."""
+        venue = VenueDirectory().get("metrograph")
+        assert venue.ticketing_platform == "vista"
+        assert venue.markup == "vista-links"
+
     def test_city_filter_admits_coordinate_less_city_records(self):
         d = VenueDirectory({
             "c360-cambridge": {

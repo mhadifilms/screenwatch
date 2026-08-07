@@ -72,6 +72,9 @@ def test_local_app_and_data_endpoints_are_available():
     overview = client.get("/v1/analytics/overview").json()
     assert overview["directory"]["venues"] >= 1
     assert overview["providers"][0]["seat_data"] == "exact"
+    assert overview["hardware"]["records"] == 7
+    assert overview["hardware"]["verified_records"] == 0
+    assert overview["hardware"]["status"] == "seed-unverified"
     assert client.get("/v1/analytics/inventory?group_by=chain").json()["groups"] == []
 
     venues = client.get("/v1/venues?sort=name").json()
@@ -86,7 +89,10 @@ def test_local_app_and_data_endpoints_are_available():
     refreshed = client.post("/v1/venues/refresh", json={"chains": ["amc"]})
     assert refreshed.status_code == 200
     assert refreshed.json()["provider_stats"][0]["status"] == "unsupported"
-    assert client.get("/v1/venues/amc-metreon-16").status_code == 200
+    venue_detail = client.get("/v1/venues/amc-metreon-16").json()
+    assert venue_detail["hardware"]["status"] == "unverified"
+    assert venue_detail["hardware"]["usable_for_inference"] is False
+    assert venue_detail["capabilities"][0]["evidence_status"] == "unverified"
     store.close()
 
 

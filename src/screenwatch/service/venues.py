@@ -1,10 +1,9 @@
 """Venue directory: the join between a SearchSpec's geography and adapters.
 
-Reads the same `data/venue_hardware.json` that the presentation oracle uses,
-so screen hardware, coordinates and chain membership stay in one file. A venue
-missing from it is not an error - it just cannot be distance-filtered, and
-`LocationSpec.admits` is written to let those through rather than silently
-drop them.
+Reads the same packaged venue metadata overlay that the presentation parser
+uses. The overlay is candidate metadata, not a national registry: its
+provenance is returned with every public venue record, and unverified hardware
+never becomes an inference about a live screening.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ..presentation import _VENUES  # single source of venue truth
+from ..presentation import _VENUES, hardware_provenance  # shared metadata source
 from ..ranking.spec import GeoPoint, LocationSpec
 
 
@@ -71,6 +70,7 @@ class Venue:
             "markup": self.markup,
             "notes": self.notes,
             "source": self.source,
+            "hardware": hardware_provenance(self.venue_id),
             "coordinates": (
                 {"lat": self.point.lat, "lon": self.point.lon}
                 if self.point else None
@@ -181,15 +181,13 @@ def _independent_seed() -> dict[str, dict]:
 class VenueDirectory:
     def __init__(self, venues: dict[str, dict] | None = None) -> None:
         if venues is None:
-            source = {**_independent_seed(), **_VENUES}
-            # The independent registry contains URLs and markup details that
-            # hardware data does not. Merge them without letting the thinner
-            # hardware record erase the richer directory metadata.
+            source = dict(_VENUES)
+            # The independent registry contains routing and listing metadata
+            # that the hardware overlay does not. It wins for those shared
+            # fields (e.g. Metrograph is Vista, not Elevent), while hardware-
+            # only candidate fields such as screens are retained.
             for venue_id, info in _independent_seed().items():
-                source[venue_id] = {**info, **source.get(venue_id, {})}
-                for key in ("url", "markup", "notes", "ticketing_platform"):
-                    if not source[venue_id].get(key) and info.get(key):
-                        source[venue_id][key] = info[key]
+                source[venue_id] = {**source.get(venue_id, {}), **info}
         else:
             source = venues
         self._venues = {vid: _to_venue(vid, info) for vid, info in source.items()}
@@ -200,9 +198,9 @@ class VenueDirectory:
     def register(self, venues: list[Venue]) -> None:
         """Merge provider-discovered venues in.
 
-        Seed-table entries win on conflict: the shipped file carries screen
-        hardware an API will not tell you (which IMAX house is 1.43:1), and a
-        discovery pass must not overwrite that with a thinner record.
+        Directory seed entries retain candidate context on conflict, while
+        provider discovery supplies fresher routing and coordinates. Candidate
+        hardware is never promoted to verified evidence by this merge.
         """
         for venue in venues:
             current = self._venues.get(venue.venue_id)

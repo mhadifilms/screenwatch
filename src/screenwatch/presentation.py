@@ -11,7 +11,8 @@ Three paths, because venues describe themselves in three different ways:
      titles carry the format. No token table can ever cover this, so it is
      pattern matching over free text, with a confidence score.
 
-  3. `refine` - the venue capability oracle. Fills in what the listing hides.
+  3. `refine` - a verified venue metadata overlay. Fills in what the listing hides
+     only when the overlay has explicit provenance.
      AMC Lincoln Square 13 is a 1.43:1 house but advertises only "IMAX with
      Laser at AMC"; the Coolidge's 70mm is a different screen from its
      digital rooms. Neither fact is in any listing.
@@ -271,7 +272,7 @@ def classify_text(text: str, venue_id: str | None = None) -> tuple[Presentation,
     return (refine(out, venue_id) if venue_id else out), confidence
 
 
-# ------------------------------------------------------- venue oracle -----
+# ------------------------------------------------ venue metadata overlay ---
 
 def _load_venues() -> dict[str, dict]:
     path = _DATA / "venue_hardware.json"
@@ -283,12 +284,89 @@ def _load_venues() -> dict[str, dict]:
 _VENUES: dict[str, dict] = _load_venues()
 
 
+def hardware_provenance(venue_id: str) -> dict:
+    """Return the trust boundary for a curated hardware record.
+
+    The shipped file is intentionally useful as a set of hypotheses while it
+    is still explicitly marked ``seed-unverified``.  It must not silently turn
+    a listing's missing aspect ratio or a seat-scoring prior into a fact.  A
+    record becomes usable for inference only after both a non-seed source and
+    ``verified_at`` are present.
+    """
+    info = _VENUES.get(venue_id)
+    if info is None:
+        return {
+            "status": "unknown",
+            "source": None,
+            "verified_at": None,
+            "usable_for_inference": False,
+            "recorded": False,
+            "note": "No curated hardware record is loaded for this venue.",
+        }
+
+    source = info.get("source")
+    verified_at = info.get("verified_at")
+    usable = bool(verified_at) and source not in {None, "", "seed-unverified"}
+    return {
+        "status": "verified" if usable else "unverified",
+        "source": source,
+        "verified_at": verified_at,
+        "usable_for_inference": usable,
+        "recorded": True,
+        "note": (
+            "Hardware metadata may be shown as a candidate, but it is not used "
+            "to infer a screening's presentation until verified."
+            if not usable else
+            "Hardware metadata is eligible for narrowly scoped inference."
+        ),
+    }
+
+
+def hardware_dataset_summary() -> dict:
+    """Summarize the shipped hardware overlay without overstating coverage."""
+    records = list(_VENUES.items())
+    verified = [
+        venue_id for venue_id, _info in records
+        if hardware_provenance(venue_id)["usable_for_inference"]
+    ]
+    unverified = [
+        venue_id for venue_id, _info in records
+        if hardware_provenance(venue_id)["status"] == "unverified"
+    ]
+    return {
+        "path": "src/screenwatch/data/venue_hardware.json",
+        "schema_version": _load_venue_schema_version(),
+        "status": "verified" if verified and not unverified else "seed-unverified",
+        "records": len(records),
+        "verified_records": len(verified),
+        "unverified_records": len(unverified),
+        "verified_venue_ids": verified,
+        "unverified_venue_ids": unverified,
+        "coverage_note": (
+            "This is a seven-venue candidate overlay, not a national hardware "
+            "registry. Missing venues and missing capabilities are unknown."
+        ),
+    }
+
+
+def _load_venue_schema_version() -> int | None:
+    path = _DATA / "venue_hardware.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("schema_version")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+
+
 def venue(venue_id: str) -> dict | None:
     return _VENUES.get(venue_id)
 
 
 def venue_capabilities(venue_id: str) -> list[Presentation]:
-    """Every screen a venue is known to have, as Presentations."""
+    """Candidate screen profiles from the overlay, including unverified rows.
+
+    This low-level accessor preserves the raw candidate data for inspection.
+    Callers making an inference should use :func:`trusted_venue_capabilities`.
+    """
     info = _VENUES.get(venue_id)
     if not info:
         return []
@@ -302,8 +380,22 @@ def venue_capabilities(venue_id: str) -> list[Presentation]:
     ]
 
 
+def trusted_venue_capabilities(venue_id: str) -> list[Presentation]:
+    """Screen profiles eligible to refine a live screening presentation."""
+    if not hardware_provenance(venue_id)["usable_for_inference"]:
+        return []
+    return venue_capabilities(venue_id)
+
+
+def trusted_venue_info(venue_id: str) -> dict | None:
+    """Return hardware metadata only when its provenance is explicit."""
+    if not hardware_provenance(venue_id)["usable_for_inference"]:
+        return None
+    return venue(venue_id)
+
+
 def refine(p: Presentation, venue_id: str | None) -> Presentation:
-    """Fill in the *aspect* a listing omitted, using known venue hardware.
+    """Fill in the *aspect* a listing omitted, using verified venue metadata.
 
     Deliberately narrow. It fills aspect and nothing else.
 
@@ -323,7 +415,7 @@ def refine(p: Presentation, venue_id: str | None) -> Presentation:
         return p
 
     candidates = [
-        c for c in venue_capabilities(venue_id)
+        c for c in trusted_venue_capabilities(venue_id)
         if c.brand is p.brand and c.aspect
     ]
     if p.brand is Brand.NONE or len({c.aspect for c in candidates}) != 1:

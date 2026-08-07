@@ -268,6 +268,10 @@
     $("#provider-health").innerHTML = health.length
       ? health.map((provider) => `<span class="health-pill ${escapeHtml(provider.health)}"><span></span>${escapeHtml(provider.chain)} · ${escapeHtml(provider.health)}${provider.last_status === "error" ? " · needs attention" : ""}</span>`).join("")
       : `<span class="health-empty">Source health appears after the first search.</span>`;
+    const hardware = meta.hardware || {};
+    $("#data-trust-note").textContent = hardware.records != null
+      ? `Data trust: ${Number(hardware.records).toLocaleString()} candidate hardware rows · ${Number(hardware.verified_records || 0).toLocaleString()} verified. Unverified rows are visible for review, not used to infer live formats.`
+      : "";
   }
 
   async function loadOverview() {
@@ -304,10 +308,15 @@
     $("#venues-table").innerHTML = rows.map((venue) => {
       const inventory = venue.inventory || {};
       const capabilities = venue.capabilities?.slice(0, 2).map((cap) => cap.label).join(" · ") || "No hardware profile yet";
+      const hardwareStatus = venue.hardware?.status === "verified"
+        ? "verified hardware"
+        : venue.hardware?.status === "unverified"
+          ? "unverified seed"
+          : "no verified hardware record";
       const seatRollup = Number(inventory.seat_screenings || 0) > 0
         ? `${Number(inventory.seats_available || 0).toLocaleString()} / ${Number(inventory.seats_capacity || 0).toLocaleString()} seats open`
         : "No live seat count yet";
-      return `<tr><td><span class="venue-name">${escapeHtml(venue.name)}</span><span class="venue-chain">${escapeHtml(venue.chain)}${venue.distance_km != null ? ` · ${Number(venue.distance_km).toFixed(1)} km` : ""}</span></td><td><span class="venue-type">${escapeHtml(venue.type_label)}</span></td><td><span class="seat-surface">${escapeHtml(venue.seat_surface)}</span><span class="venue-chain">${escapeHtml(venue.seat_detail)}</span></td><td>${Number(inventory.screenings || 0).toLocaleString()} screenings<span class="venue-chain">${Number(inventory.works || 0).toLocaleString()} works · ${Number(inventory.sellable || 0).toLocaleString()} sellable</span><span class="venue-chain">${escapeHtml(seatRollup)}</span></td><td>${escapeHtml(capabilities)}</td></tr>`;
+      return `<tr><td><span class="venue-name">${escapeHtml(venue.name)}</span><span class="venue-chain">${escapeHtml(venue.chain)}${venue.distance_km != null ? ` · ${Number(venue.distance_km).toFixed(1)} km` : ""}</span></td><td><span class="venue-type">${escapeHtml(venue.type_label)}</span></td><td><span class="seat-surface">${escapeHtml(venue.seat_surface)}</span><span class="venue-chain">${escapeHtml(venue.seat_detail)}</span></td><td>${Number(inventory.screenings || 0).toLocaleString()} screenings<span class="venue-chain">${Number(inventory.works || 0).toLocaleString()} works · ${Number(inventory.sellable || 0).toLocaleString()} sellable</span><span class="venue-chain">${escapeHtml(seatRollup)}</span></td><td>${escapeHtml(capabilities)}<span class="venue-chain">${escapeHtml(hardwareStatus)}</span></td></tr>`;
     }).join("") || `<tr><td colspan="5" class="table-empty">No venues match that filter.</td></tr>`;
   }
 

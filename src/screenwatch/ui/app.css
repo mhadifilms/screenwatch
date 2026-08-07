@@ -166,6 +166,7 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 .summary-pill { padding: 6px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 10px; }
 .summary-pill strong { color: var(--soft); }
 .provider-health { display: flex; flex-wrap: wrap; gap: 7px; margin: -5px 0 17px; }
+.data-trust-note { color: var(--muted); font-size: 10px; line-height: 1.5; margin: -7px 0 17px; }
 .health-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 10px; text-transform: capitalize; }
 .health-pill > span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
 .health-pill.healthy { color: var(--green); border-color: rgba(136,225,186,.25); }

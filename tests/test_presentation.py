@@ -110,13 +110,38 @@ class TestFreeText:
         assert p.projection is Projection.UNKNOWN and confidence == 0.0
 
 
-class TestVenueOracle:
-    def test_fills_aspect_the_listing_hides(self):
-        """AMC advertises plain 'IMAX with Laser at AMC' at 1.43:1 houses."""
+class TestVenueMetadata:
+    def test_seed_hardware_does_not_fill_live_aspect(self):
+        """The shipped seven-row overlay is visible, but not trusted evidence."""
+        gt = pres.classify_token("amc", "imaxwithlaseratamc", "amc-metreon-16")
+        std = pres.classify_token("amc", "imaxwithlaseratamc", "amc-empire-25")
+        assert gt.aspect is None
+        assert std.aspect is None
+
+    def test_fills_aspect_only_from_verified_hardware(self, monkeypatch):
+        """AMC's missing aspect can be refined once a record is actually verified."""
+        for venue_id in ("amc-metreon-16", "amc-empire-25"):
+            monkeypatch.setitem(
+                pres._VENUES,
+                venue_id,
+                {
+                    **pres._VENUES[venue_id],
+                    "source": "official-venue-page",
+                    "verified_at": "2026-08-06",
+                },
+            )
         gt = pres.classify_token("amc", "imaxwithlaseratamc", "amc-metreon-16")
         std = pres.classify_token("amc", "imaxwithlaseratamc", "amc-empire-25")
         assert gt.aspect == "1.43"
         assert std.aspect == "1.90"
+
+    def test_hardware_summary_reports_real_coverage(self):
+        summary = pres.hardware_dataset_summary()
+        assert summary["path"] == "src/screenwatch/data/venue_hardware.json"
+        assert summary["records"] == 7
+        assert summary["verified_records"] == 0
+        assert summary["unverified_records"] == 7
+        assert summary["status"] == "seed-unverified"
 
     def test_never_contradicts_an_explicit_claim(self):
         """A stale table must not overrule a source that says IMAX 70mm."""
@@ -155,7 +180,7 @@ class TestPreference:
             PresentationSpec(brand=Brand.DOLBY_CINEMA, label="Dolby"),
         ])
         imax70 = pres.classify_token("amc", "imax70mm", "amc-lincoln-square-13")
-        gt = pres.classify_token("amc", "imaxwithlaseratamc", "amc-metreon-16")
+        gt = Presentation(Projection.DIGITAL_LASER, Brand.IMAX, "1.43")
         dolby = pres.classify_token("amc", "dolbycinemaatamcprime")
 
         assert prefs.rank(imax70) == 0

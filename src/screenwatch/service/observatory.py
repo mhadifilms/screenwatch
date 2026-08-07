@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from collections import Counter
 
-from ..presentation import venue_capabilities
+from ..presentation import (
+    hardware_dataset_summary,
+    hardware_provenance,
+    venue_capabilities,
+)
 from ..ranking.spec import GeoPoint
 from .search import SearchService
 from .store import DEFAULT_USER, Store
@@ -74,10 +78,12 @@ class Observatory:
                 "types": self.directory.types(),
             },
             "providers": providers,
+            "hardware": hardware_dataset_summary(),
             "provider_health": self.store.provider_health(user_id=user_id),
             "principles": [
                 "A confirmed seat grid outranks an estimate.",
                 "Unknown coverage is reported instead of being presented as empty.",
+                "Unverified hardware metadata is visible but never used as live evidence.",
                 "A booking link is the hard stop; Screenwatch never creates a hold.",
             ],
         }
@@ -146,12 +152,17 @@ class Observatory:
         record["seat_detail"] = _SEAT_SURFACES.get(
             venue.chain, ("unknown", "provider-specific")
         )[1]
+        record["hardware"] = hardware_provenance(venue.venue_id)
         record["capabilities"] = [
             {
                 "projection": capability.projection.value,
                 "brand": capability.brand.value,
                 "aspect": capability.aspect,
                 "label": capability.describe(),
+                "evidence_status": record["hardware"]["status"],
+                "source": record["hardware"]["source"],
+                "verified_at": record["hardware"]["verified_at"],
+                "usable_for_inference": record["hardware"]["usable_for_inference"],
             }
             for capability in venue_capabilities(venue.venue_id)
         ]
