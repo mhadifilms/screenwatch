@@ -37,6 +37,20 @@ class LocationInput(BaseModel):
                     "worth travelling to (a 70mm house, say)",
     )
     deny: list[str] = Field(default_factory=list)
+    chains: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Restrict discovery to exhibitor ids such as amc, regal, cinemark, "
+            "alamo, independent"
+        ),
+    )
+    venue_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Restrict venues to directory types such as multiplex, art_house, "
+            "dine_in, drive_in"
+        ),
+    )
 
 
 class DateWindowInput(BaseModel):

@@ -62,6 +62,10 @@ def test_local_app_and_data_endpoints_are_available():
     client, store = _client()
     assert client.get("/").status_code == 200
     assert "theater intelligence" in client.get("/").text
+    openapi = client.get("/openapi.json").json()
+    assert openapi["paths"]["/v1/search"]["post"]["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/SearchSpecInput"
+    }
 
     overview = client.get("/v1/analytics/overview").json()
     assert overview["directory"]["venues"] >= 1
@@ -70,6 +74,9 @@ def test_local_app_and_data_endpoints_are_available():
     venues = client.get("/v1/venues?sort=name").json()
     assert venues["venues"]
     assert {venue["type"] for venue in venues["venues"]}
+    scoped = client.get("/v1/venues?chain=amc&type=multiplex").json()
+    assert scoped["venues"]
+    assert {venue["chain"] for venue in scoped["venues"]} == {"amc"}
     assert client.get("/v1/venues/amc-metreon-16").status_code == 200
     store.close()
 

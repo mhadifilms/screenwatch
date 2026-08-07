@@ -270,6 +270,8 @@ class VenueDirectory:
         out = [
             v for v in self._venues.values()
             if (chain is None or v.chain == chain)
+            and (not location.chains or v.chain in location.chains)
+            and (not location.venue_types or v.venue_type in location.venue_types)
             and location.admits(v.venue_id, v.point)
         ]
         out.sort(

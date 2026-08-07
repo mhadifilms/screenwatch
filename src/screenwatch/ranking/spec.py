@@ -65,6 +65,11 @@ class LocationSpec:
 
     `allow` is not filtered by radius - naming a venue means you want it even
     if it is a two-hour drive, which is exactly the 70mm-pilgrimage case.
+
+    `chains` and `venue_types` are shared search/watch filters. They are
+    applied by the venue directory before a provider is asked for inventory,
+    so an "independent art house only" watch does not waste requests on
+    multiplexes and does not silently broaden later.
     """
 
     origin: GeoPoint | None = None
@@ -72,6 +77,8 @@ class LocationSpec:
     city: str | None = None
     allow: frozenset[str] = field(default_factory=frozenset)
     deny: frozenset[str] = field(default_factory=frozenset)
+    chains: frozenset[str] = field(default_factory=frozenset)
+    venue_types: frozenset[str] = field(default_factory=frozenset)
 
     def admits(self, venue_id: str, venue_point: GeoPoint | None) -> bool:
         if venue_id in self.deny:

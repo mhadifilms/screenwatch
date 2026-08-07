@@ -44,6 +44,8 @@ def spec_to_dict(spec: SearchSpec) -> dict:
             "city": spec.location.city,
             "allow": sorted(spec.location.allow),
             "deny": sorted(spec.location.deny),
+            "chains": sorted(spec.location.chains),
+            "venue_types": sorted(spec.location.venue_types),
         },
         "date_window": ({"start": spec.date_window.start.isoformat(),
                          "end": spec.date_window.end.isoformat()}
@@ -113,6 +115,8 @@ def spec_from_dict(data: dict) -> SearchSpec:
             city=loc.get("city"),
             allow=frozenset(loc.get("allow") or ()),
             deny=frozenset(loc.get("deny") or ()),
+            chains=frozenset(loc.get("chains") or ()),
+            venue_types=frozenset(loc.get("venue_types") or ()),
         ),
         date_window=(
             DateWindow(date.fromisoformat(dw["start"]), date.fromisoformat(dw["end"]))

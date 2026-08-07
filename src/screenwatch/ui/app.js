@@ -47,7 +47,13 @@
     const spec = {
       work: { query: $("#title").value.trim() },
       party_size: Math.max(1, Number($("#party").value || 1)),
-      location: { radius_km: Number($("#radius").value || 40), allow: [], deny: [] },
+      location: {
+        radius_km: Number($("#radius").value || 40),
+        allow: [],
+        deny: [],
+        chains: $("#chain-filter").value ? [$("#chain-filter").value] : [],
+        venue_types: $("#type-filter").value ? [$("#type-filter").value] : [],
+      },
       date_window: { start: $("#from-date").value, end: $("#through-date").value },
       presentations: buildPresentations(),
       strict_presentations: strict,
@@ -153,6 +159,11 @@
 
   async function createWatch(event) {
     event.preventDefault();
+    if (!$("#title").value.trim()) {
+      showToast("Enter a film or event before creating a watch.", "error");
+      $("#title").focus();
+      return;
+    }
     if (!state.spec) state.spec = buildSpec({ strict: true });
     const label = $("#watch-label").value.trim() || `${state.spec.work.query} watch`;
     const spec = { ...state.spec, strict_presentations: state.spec.presentations?.length > 0, include_sold_out: true };
@@ -207,7 +218,14 @@
 
   async function loadVenues() {
     try {
-      const params = new URLSearchParams({ sort: $("#venue-sort").value || "distance", q: $("#venue-filter").value || "" });
+      const params = new URLSearchParams({
+        sort: $("#venue-sort").value || "distance",
+        q: $("#venue-filter").value || "",
+        chain: $("#venue-chain").value || "",
+        type: $("#venue-type").value || "",
+        lat: $("#lat").value || "",
+        lon: $("#lon").value || "",
+      });
       const payload = await api(`/v1/venues?${params}`);
       renderVenues(payload.venues || []);
     } catch (error) { showToast(error.message, "error"); }
@@ -224,7 +242,31 @@
     $("#watch-form").addEventListener("submit", createWatch);
     $("#poll-button").addEventListener("click", pollWatches);
     $("#venue-filter").addEventListener("input", () => { clearTimeout(state.venueTimer); state.venueTimer = setTimeout(loadVenues, 180); });
+    $("#venue-chain").addEventListener("change", loadVenues);
+    $("#venue-type").addEventListener("change", loadVenues);
     $("#venue-sort").addEventListener("change", loadVenues);
+    $("#locate-button").addEventListener("click", () => {
+      if (!("geolocation" in navigator)) { showToast("This browser does not expose geolocation.", "error"); return; }
+      const button = $("#locate-button");
+      button.disabled = true;
+      button.textContent = "Locating…";
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          $("#lat").value = position.coords.latitude.toFixed(5);
+          $("#lon").value = position.coords.longitude.toFixed(5);
+          button.disabled = false;
+          button.textContent = "Location set";
+          showToast("Location set — searches will rank nearby venues first.");
+          loadVenues();
+        },
+        (error) => {
+          button.disabled = false;
+          button.textContent = "Use my location";
+          showToast(error.code === 1 ? "Location permission was denied." : "Could not determine your location.", "error");
+        },
+        { enableHighAccuracy: false, maximumAge: 300000, timeout: 10000 },
+      );
+    });
     $("#notify-button").addEventListener("click", async () => {
       if (!("Notification" in window)) { showToast("Browser notifications are not available here.", "error"); return; }
       const permission = await Notification.requestPermission();

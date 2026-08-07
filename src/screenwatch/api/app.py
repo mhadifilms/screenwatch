@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ..identity.normalize import analyze
+from ..mcp.schemas import SearchSpecInput
 from ..ranking.spec import GeoPoint
 from ..seating.render import to_svg, to_unicode_grid
 from ..service.observatory import Observatory
@@ -30,7 +31,7 @@ MAX_SEARCH_SESSIONS = 32
 
 class WatchCreate(BaseModel):
     label: str = Field(min_length=1, max_length=200)
-    spec: dict
+    spec: SearchSpecInput
     cadence_s: int = Field(300, ge=30, le=31 * 24 * 60 * 60)
     webhook: str | None = None
     seed: bool = True
@@ -180,9 +181,9 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
         }
 
     @app.post("/v1/search")
-    def do_search(spec: dict, uid: str = Depends(user)) -> dict:
+    def do_search(spec: SearchSpecInput, uid: str = Depends(user)) -> dict:
         try:
-            result = search.search(spec_from_dict(spec), user_id=uid)
+            result = search.search(spec_from_dict(spec.to_dict()), user_id=uid)
         except (TypeError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
         remember(result)
@@ -246,7 +247,7 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
     def create_watch(body: WatchCreate, uid: str = Depends(user)) -> dict:
         try:
             watch_id = watches.create(
-                spec_from_dict(body.spec), body.label, user_id=uid,
+                spec_from_dict(body.spec.to_dict()), body.label, user_id=uid,
                 cadence_s=body.cadence_s, webhook=body.webhook, seed=body.seed,
             )
         except (TypeError, ValueError) as exc:

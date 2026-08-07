@@ -97,6 +97,8 @@ class TestSpecRoundTrip:
             location=LocationSpec(
                 origin=GeoPoint(37.78, -122.40), radius_km=65,
                 allow=frozenset({"amc-metreon-16"}), deny=frozenset({"amc-empire-25"}),
+                chains=frozenset({"amc", "independent"}),
+                venue_types=frozenset({"multiplex", "art_house"}),
             ),
             date_window=DateWindow(date(2026, 8, 2), date(2026, 8, 9)),
             time_windows=(TimeWindow(start=time(18), end=time(2)),),
@@ -617,6 +619,17 @@ class TestVenueDirectory:
         d = VenueDirectory()
         chains = {v.chain for v in d.matching(LocationSpec(), chain="independent")}
         assert chains == {"independent"}
+
+    def test_search_location_filters_by_chain_and_type(self):
+        d = VenueDirectory()
+        spec = LocationSpec(
+            chains=frozenset({"independent"}),
+            venue_types=frozenset({"independent"}),
+        )
+        rows = d.matching(spec)
+        assert rows
+        assert {venue.chain for venue in rows} == {"independent"}
+        assert {venue.venue_type for venue in rows} == {"independent"}
 
 
 # --------------------------------------------------------------------------

@@ -205,7 +205,7 @@ API's own vocabulary instead of waiting to meet a surprise in production.
 
 ```bash
 uv venv && uv pip install -e '.[dev,api]'
-python -m pytest                      # 600 tests, offline
+python -m pytest                      # 601 tests, offline
 ruff check src tests                  # ruleset pinned in pyproject.toml
 ```
 
@@ -225,6 +225,12 @@ The app polls durable watch alerts once a minute while it is open. Click
 appears, seats return, or a party-sized group becomes possible. The local
 default binds to `127.0.0.1`; pass `--host` only when you intentionally want
 another machine to reach it.
+
+Searches and watches share the same location model: enter coordinates or use
+the browser's **Use my location** button, set a radius, and optionally restrict
+the scope to one or more exhibitors or venue types (`multiplex`, `art_house`,
+`dine_in`, `drive_in`, or `independent`). Those filters are also available in
+the MCP `LocationInput` and the HTTP venue graph.
 
 MCP server (stdio):
 

@@ -82,6 +82,10 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 .location-details[open] summary { color: var(--accent-hot); }
 .location-inputs { display: flex; gap: 8px; margin-top: 10px; }
 .location-inputs input { width: 110px; min-height: 34px; padding: 7px 8px; }
+.locate-button { align-self: end; min-height: 34px; }
+.locate-button:disabled { cursor: wait; opacity: .65; }
+.scope-pickers { display: flex; gap: 8px; margin-top: 12px; }
+.scope-pickers .field { min-width: 140px; }
 
 .intelligence-strip { max-width: 1170px; margin: 12px auto 30px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 13px; overflow: hidden; }
 .metric { min-height: 76px; display: flex; flex-direction: column; justify-content: center; padding: 0 20px; background: rgba(15,22,38,.82); }
@@ -146,7 +150,7 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 .principle small { color: var(--muted); line-height: 1.45; margin-top: 3px; font-size: 10px; }
 
 .venues-panel { margin-top: 18px; padding: 25px; }
-.venue-tools { display: flex; gap: 8px; }
+.venue-tools { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .compact-input, .compact-select { min-height: 34px; padding: 7px 9px; font-size: 11px; }
 .compact-input { width: 180px; }
 .venue-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }

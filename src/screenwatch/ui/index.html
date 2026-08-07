@@ -90,8 +90,13 @@
             <div class="location-inputs">
               <label class="field"><span>Latitude</span><input id="lat" type="number" step="any" placeholder="37.78" /></label>
               <label class="field"><span>Longitude</span><input id="lon" type="number" step="any" placeholder="-122.40" /></label>
+              <button id="locate-button" class="button button-quiet locate-button" type="button">Use my location</button>
             </div>
           </details>
+          <div class="scope-pickers">
+            <label class="field"><span>Chains</span><select id="chain-filter"><option value="">All exhibitors</option><option value="amc">AMC</option><option value="regal">Regal</option><option value="cinemark">Cinemark</option><option value="alamo">Alamo Drafthouse</option><option value="independent">Independent</option></select></label>
+            <label class="field"><span>Venue type</span><select id="type-filter"><option value="">All types</option><option value="multiplex">Multiplex</option><option value="art_house">Art house</option><option value="dine_in">Dine-in</option><option value="drive_in">Drive-in</option><option value="independent">Independent</option></select></label>
+          </div>
         </div>
       </section>
 
@@ -160,6 +165,8 @@
           </div>
           <div class="venue-tools">
             <input id="venue-filter" class="compact-input" placeholder="Filter venues" />
+            <select id="venue-chain" class="compact-select"><option value="">All exhibitors</option><option value="amc">AMC</option><option value="regal">Regal</option><option value="cinemark">Cinemark</option><option value="alamo">Alamo</option><option value="independent">Independent</option></select>
+            <select id="venue-type" class="compact-select"><option value="">All types</option><option value="multiplex">Multiplex</option><option value="art_house">Art house</option><option value="dine_in">Dine-in</option><option value="drive_in">Drive-in</option><option value="independent">Independent</option></select>
             <select id="venue-sort" class="compact-select"><option value="distance">Nearest first</option><option value="name">Name</option><option value="type">Type</option><option value="chain">Chain</option></select>
           </div>
         </div>
