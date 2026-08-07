@@ -175,8 +175,38 @@
     }));
   }
 
+  function renderAlertHistory(entries) {
+    const target = $("#alert-history");
+    if (!entries.length) {
+      target.innerHTML = `<div class="mini-empty">Alerts you acknowledge will remain visible here.</div>`;
+      return;
+    }
+    target.innerHTML = entries.map((entry) => {
+      const payload = entry.payload || {};
+      const detail = [payload.title, payload.venue, payload.presentation].filter(Boolean).join(" · ");
+      const when = entry.created_at ? new Date(entry.created_at).toLocaleString() : "recently";
+      return `<div class="alert-row"><div class="alert-row-top"><span class="alert-kind">${escapeHtml(payload.alert_type || "alert")}</span><span class="alert-time">${escapeHtml(when)}</span></div><div class="alert-detail">${escapeHtml(detail || "Screenwatch observed a change")}</div><div class="alert-watch">${escapeHtml(entry.watch_label || "watch")}${entry.delivered ? " · acknowledged" : " · pending"}</div></div>`;
+    }).join("");
+  }
+
+  async function loadAlertHistory(watches) {
+    if (!watches.length) { renderAlertHistory([]); return; }
+    try {
+      const histories = await Promise.all(watches.slice(0, 10).map(async (watch) => {
+        const history = await api(`/v1/watches/${encodeURIComponent(watch.watch_id)}/history?limit=8`);
+        return (history.hits || []).map((hit) => ({ ...hit, watch_label: watch.label }));
+      }));
+      const entries = histories.flat().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 8);
+      renderAlertHistory(entries);
+    } catch (error) { showToast(error.message, "error"); }
+  }
+
   async function loadWatches() {
-    try { renderWatches(await api("/v1/watches")); } catch (error) { showToast(error.message, "error"); }
+    try {
+      const watches = await api("/v1/watches");
+      renderWatches(watches);
+      await loadAlertHistory(watches);
+    } catch (error) { showToast(error.message, "error"); }
   }
 
   async function createWatch(event) {
