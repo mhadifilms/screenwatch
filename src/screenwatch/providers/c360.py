@@ -38,7 +38,7 @@ from ..ranking.spec import GeoPoint, SearchSpec
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..service.venues import Venue, local_today
 from ..transport import Transport
-from .scope import ScopeReporting
+from .scope import WATCH_MAX_DAYS, ScopeReporting
 
 API_HEADERS = {
     "accept": "application/json, text/plain, */*",
@@ -162,10 +162,14 @@ class C360Provider(ScopeReporting):
             # The location's own zone is better than the venue record's here,
             # and the window has to be anchored on its date - see `local_today`.
             window = spec.window(local_today(loc.tz))
-            days = self._clip_days([
-                window.start + timedelta(days=i)
-                for i in range((window.end - window.start).days + 1)
-            ])
+            days = self._clip_days(
+                [
+                    window.start + timedelta(days=i)
+                    for i in range((window.end - window.start).days + 1)
+                ],
+                cap=(max(self.max_days, WATCH_MAX_DAYS)
+                     if spec.include_sold_out else None),
+            )
             for day in days:
                 payload = self._json(
                     ADVANCE_SHOWS.format(location=loc.location_id, date=day.isoformat())
@@ -256,5 +260,4 @@ class C360Provider(ScopeReporting):
             row_lengths=tuple(count for _, count in shape.rows),
             name=shape.name,
         )
-
 

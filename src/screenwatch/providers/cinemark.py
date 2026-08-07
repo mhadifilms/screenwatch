@@ -47,7 +47,7 @@ from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.sources.cinemark import CinemarkSeatSource
 from ..service.venues import Venue
 from ..transport import Transport
-from .scope import ScopeReporting
+from .scope import WATCH_MAX_DAYS, ScopeReporting
 
 
 class CinemarkProvider(ScopeReporting):
@@ -227,10 +227,14 @@ class CinemarkProvider(ScopeReporting):
             # falls back to UTC on the first pass and sharpens once the theatre
             # is known - see `local_today`.
             window = spec.window(venue.today())
-            days = self._clip_days([
-                window.start + timedelta(days=i)
-                for i in range((window.end - window.start).days + 1)
-            ])
+            days = self._clip_days(
+                [
+                    window.start + timedelta(days=i)
+                    for i in range((window.end - window.start).days + 1)
+                ],
+                cap=(max(self.max_days, WATCH_MAX_DAYS)
+                     if spec.include_sold_out else None),
+            )
             for day in days:
                 html = self._get(self.adapter.theatre_url(venue.market, day.isoformat()))
                 theatre = self.adapter.parse_theatre(html, venue.market)

@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from ..identity.show import canonical_show_id
 from ..identity.work import Work
 from ..models import Availability, Presentation
 from ..seating.groups import SeatGroup
@@ -41,6 +42,23 @@ class Screening:
     seats_available: int | None = None
     seats_capacity: int | None = None
     seats_sold: int | None = None
+
+    @property
+    def canonical_screening_id(self) -> str:
+        """Identity of the real-world showing, independent of its provider.
+
+        ``screening_id`` remains the provider-scoped handle because seat-map
+        adapters and booking links need the original value.  Persistence and
+        watches use this canonical id so a provider id changing does not look
+        like a brand-new showing.
+        """
+        return canonical_show_id(
+            work_id=self.work.work_id,
+            venue_id=self.venue_id,
+            starts_at_utc=self.starts_at_utc,
+            presentation=self.presentation,
+            screen_id=self.screen_id,
+        )
 
     @property
     def bookable(self) -> bool:

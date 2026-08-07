@@ -4,22 +4,28 @@ Everything here reads `x`/`y` only, never row counts or seat numbers, so a
 score means the same thing in a 500-seat IMAX and a 40-seat microcinema.
 That is the whole point of normalizing geometry first: one tuning, all rooms.
 
-Defaults put the sweet spot at 60% of the way back and on the centreline,
-with a soft falloff. Venues with unusually steep or shallow rakes override
-`ideal_depth` in `data/venue_hardware.json`.
+The default is a middle *area*, not one magic row. Once a layout is known,
+`for_auditorium()` selects the rows in the central half of the room's
+normalized depth and gives that band a shallow preference for the exact
+centre. The band is made from the rows that actually exist, so gaps,
+cross-aisles, short rooms and irregular layouts do not need venue-specific
+row numbers. Venues with unusually steep or shallow rakes can still override
+`ideal_depth` in the hardware oracle.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..presentation import venue as venue_info
 from .model import Auditorium, Seat
 
-DEFAULT_IDEAL_DEPTH = 0.60
+DEFAULT_IDEAL_DEPTH = 0.50
 DEPTH_SIGMA = 0.24
 LATERAL_SIGMA = 0.55
+MIDDLE_DEPTH_START = 0.25
+MIDDLE_DEPTH_END = 0.75
 
 
 @dataclass(frozen=True)
@@ -31,21 +37,78 @@ class QualityModel:
     front_row_penalty: float = 0.55      # multiplier, not a subtraction
     aisle_penalty: float = 0.0           # set >0 only if the user dislikes aisles
     max_lateral: float = 1.0
+    adaptive_middle: bool = True
+    middle_band: tuple[float, float] | None = None
 
     @classmethod
     def for_venue(cls, venue_id: str | None, **overrides) -> QualityModel:
         """Per-venue tuning from the hardware oracle, then caller overrides."""
-        base: dict[str, float] = {}
+        base: dict[str, object] = {}
         if (
             venue_id
             and (info := venue_info(venue_id))
             and (depth := info.get("ideal_depth")) is not None
         ):
             base["ideal_depth"] = float(depth)
+            # An explicit hardware calibration is more authoritative than
+            # the generic middle-band prior. The caller can override this.
+            base["adaptive_middle"] = False
+        if overrides.get("ideal_depth") is not None and "adaptive_middle" not in overrides:
+            base["adaptive_middle"] = False
         base.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**base)
 
     # ------------------------------------------------------------------
+    def for_auditorium(self, auditorium: Auditorium) -> QualityModel:
+        """Adapt the depth prior to the rows present in one auditorium.
+
+        `y` is already physical-ish normalized depth: skipped row numbers
+        retain their gap. We therefore choose the actual rows falling in the
+        central half of that depth, rather than assuming every room has the
+        same number of evenly spaced rows. A one- or two-row room has no
+        meaningful front/back choice, so depth is neutral and lateral
+        position decides.
+        """
+        if not self.adaptive_middle:
+            return self
+
+        depths = sorted({
+            seat.y for seat in auditorium.seats if seat.kind.is_bookable
+        })
+        if not depths:
+            return replace(self, middle_band=None)
+        if len(depths) <= 2:
+            return replace(self, middle_band=(0.0, 1.0))
+
+        middle = [
+            depth for depth in depths
+            if MIDDLE_DEPTH_START <= depth <= MIDDLE_DEPTH_END
+        ]
+        if not middle:
+            # Sparse or unusual geometry: choose the observed row(s) closest
+            # to the perceptual midpoint so the recommendation is never
+            # forced to an arbitrary edge row.
+            ordered = sorted(depths, key=lambda depth: abs(depth - 0.5))
+            middle = ordered[:2] if len(ordered) > 3 else ordered[:1]
+        return replace(self, middle_band=(min(middle), max(middle)))
+
+    def _depth_score(self, y: float) -> float:
+        sigma = max(abs(self.depth_sigma), 1e-6)
+        if self.middle_band is not None:
+            low, high = sorted(self.middle_band)
+            if low == 0.0 and high == 1.0:
+                return 1.0
+            if low <= y <= high:
+                # Keep the whole middle area desirable, with only a gentle
+                # nudge toward the exact centre of the band.
+                band_sigma = max((high - low) / 2, sigma / 2, 0.01)
+                centre_bias = math.exp(-(((y - self.ideal_depth) / band_sigma) ** 2) / 2)
+                return 0.95 + 0.05 * centre_bias
+            distance = low - y if y < low else y - high
+            return math.exp(-((distance / sigma) ** 2) / 2)
+
+        return math.exp(-(((y - self.ideal_depth) / sigma) ** 2) / 2)
+
     def score(self, seat: Seat, *, row_count: int | None = None) -> float:
         """0..1 desirability for a single seat.
 
@@ -53,7 +116,7 @@ class QualityModel:
         still a front-row seat, and adding a centred bonus to it would let it
         outrank a genuinely good seat slightly off axis.
         """
-        depth = math.exp(-(((seat.y - self.ideal_depth) / self.depth_sigma) ** 2) / 2)
+        depth = self._depth_score(seat.y)
         lateral = math.exp(-((seat.x / self.lateral_sigma) ** 2) / 2)
 
         value = depth * lateral
@@ -63,7 +126,9 @@ class QualityModel:
 
         # Front-row penalty is expressed in normalized depth so it survives
         # any auditorium size; row_count converts the user's "first N rows".
-        if row_count and self.avoid_front_rows:
+        # In a tiny room there may be no non-front alternative. Penalizing
+        # the first two rows of a two-row room would penalize every seat.
+        if row_count and row_count > self.avoid_front_rows and self.avoid_front_rows:
             cutoff = (self.avoid_front_rows - 0.5) / max(row_count - 1, 1)
             if seat.y <= cutoff:
                 value *= self.front_row_penalty
@@ -74,14 +139,16 @@ class QualityModel:
         return round(max(0.0, min(1.0, value)), 4)
 
     def score_all(self, auditorium: Auditorium) -> dict[str, float]:
+        model = self.for_auditorium(auditorium)
         rows = auditorium.row_count
-        return {s.id: self.score(s, row_count=rows) for s in auditorium.seats}
+        return {s.id: model.score(s, row_count=rows) for s in auditorium.seats}
 
     def describe(self, seat: Seat, *, row_count: int | None = None) -> str:
         """Human phrasing for rationale strings, derived from geometry only."""
+        low, high = self.middle_band or (MIDDLE_DEPTH_START, MIDDLE_DEPTH_END)
         depth = (
-            "front" if seat.y < 0.25
-            else "back" if seat.y > 0.8
+            "front" if seat.y < low
+            else "back" if seat.y > high
             else "middle"
         )
         lateral = "centre" if abs(seat.x) < 0.25 else ("left" if seat.x < 0 else "right")

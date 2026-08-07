@@ -13,7 +13,7 @@ import json
 import pathlib
 import sqlite3
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ..identity.work import TitleLink, Work
 
@@ -46,6 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_links_work ON title_links(work_id);
 
 CREATE TABLE IF NOT EXISTS screenings (
     screening_id  TEXT PRIMARY KEY,
+    canonical_id  TEXT,
     work_id       TEXT,
     venue_id      TEXT NOT NULL,
     chain         TEXT NOT NULL,
@@ -58,6 +59,19 @@ CREATE TABLE IF NOT EXISTS screenings (
 );
 CREATE INDEX IF NOT EXISTS idx_screenings_work ON screenings(work_id, starts_at_utc);
 
+-- Provider ids are aliases, not identities.  A chain can rotate or recycle
+-- its showtime handle; this table keeps the durable mapping to the
+-- source-independent showing id used by watches and cross-provider joins.
+CREATE TABLE IF NOT EXISTS screening_aliases (
+    source_screening_id TEXT PRIMARY KEY,
+    canonical_id        TEXT NOT NULL,
+    source              TEXT NOT NULL,
+    first_seen          TEXT NOT NULL,
+    last_seen           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_screening_aliases_canonical
+    ON screening_aliases(canonical_id);
+
 CREATE TABLE IF NOT EXISTS seat_snapshots (
     screening_id TEXT NOT NULL,
     captured_at  TEXT NOT NULL,
@@ -68,21 +82,26 @@ CREATE TABLE IF NOT EXISTS seat_snapshots (
 );
 
 CREATE TABLE IF NOT EXISTS watches (
-    watch_id   TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL,
-    label      TEXT NOT NULL,
-    spec       TEXT NOT NULL,
-    cadence_s  INTEGER NOT NULL DEFAULT 300,
-    active     INTEGER NOT NULL DEFAULT 1,
-    webhook    TEXT,
-    created_at TEXT NOT NULL,
-    last_run   TEXT,
-    last_hit   TEXT
+    watch_id       TEXT PRIMARY KEY,
+    user_id        TEXT NOT NULL,
+    label          TEXT NOT NULL,
+    spec           TEXT NOT NULL,
+    cadence_s      INTEGER NOT NULL DEFAULT 300,
+    active         INTEGER NOT NULL DEFAULT 1,
+    webhook        TEXT,
+    created_at     TEXT NOT NULL,
+    last_run       TEXT,
+    last_hit       TEXT,
+    last_success   TEXT,
+    last_error     TEXT,
+    last_warning   TEXT,
+    error_count    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_watches_user ON watches(user_id, active);
 
 -- The seen-set. This is what makes "tell me about NEW 70mm tickets" work
--- when some tickets already dropped: a screening only fires once, ever.
+-- when some tickets already dropped. Positive changes are tracked separately
+-- in watch_states, so an existing screening can alert again when it improves.
 CREATE TABLE IF NOT EXISTS watch_seen (
     watch_id     TEXT NOT NULL,
     screening_id TEXT NOT NULL,
@@ -94,11 +113,36 @@ CREATE TABLE IF NOT EXISTS watch_hits (
     hit_id       INTEGER PRIMARY KEY AUTOINCREMENT,
     watch_id     TEXT NOT NULL,
     screening_id TEXT NOT NULL,
+    event_key    TEXT NOT NULL DEFAULT '',
     payload      TEXT NOT NULL,
     created_at   TEXT NOT NULL,
     delivered    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_hits_undelivered ON watch_hits(watch_id, delivered);
+
+-- Latest observation per watch and screening. Unlike `watch_seen`, this keeps
+-- enough state to alert when an existing showing improves (seats return,
+-- sold-out flips to sellable, or a contiguous group appears).
+CREATE TABLE IF NOT EXISTS watch_states (
+    watch_id     TEXT NOT NULL,
+    screening_id TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    observed_at  TEXT NOT NULL,
+    PRIMARY KEY (watch_id, screening_id)
+);
+
+-- Delivery is channel-specific. A webhook succeeding must not make a poll
+-- client lose the same alert, and a failed webhook needs durable retry state.
+CREATE TABLE IF NOT EXISTS watch_deliveries (
+    hit_id          INTEGER NOT NULL,
+    channel         TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    last_attempt_at TEXT,
+    delivered_at    TEXT,
+    last_error      TEXT,
+    PRIMARY KEY (hit_id, channel)
+);
 
 -- Coordinates learned by visiting a venue page. Some chains (Cinemark) put
 -- geography only on the theatre page itself, so discovering it costs a fetch;
@@ -118,6 +162,26 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     value   TEXT NOT NULL,
     PRIMARY KEY (user_id, key)
 );
+
+-- Search runs are the product's audit trail. A result can be great and still
+-- be incomplete because one provider was clipped or challenged; keeping the
+-- run summary makes that visible after the HTTP response is gone.
+CREATE TABLE IF NOT EXISTS search_runs (
+    run_id          TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    spec            TEXT NOT NULL,
+    started_at      TEXT NOT NULL,
+    finished_at     TEXT NOT NULL,
+    duration_ms     REAL NOT NULL,
+    considered      INTEGER NOT NULL DEFAULT 0,
+    result_count    INTEGER NOT NULL DEFAULT 0,
+    seatmaps_fetched INTEGER NOT NULL DEFAULT 0,
+    complete        INTEGER NOT NULL DEFAULT 0,
+    provider_stats  TEXT NOT NULL DEFAULT '[]',
+    errors          TEXT NOT NULL DEFAULT '[]',
+    clipped         TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_search_runs_user ON search_runs(user_id, started_at DESC);
 """
 
 
@@ -133,6 +197,7 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
 
     @classmethod
@@ -141,6 +206,50 @@ class Store:
 
     def close(self) -> None:
         self._conn.close()
+
+    def _migrate(self) -> None:
+        """Add alert and canonical-identity columns to older databases."""
+        screening_columns = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(screenings)")
+        }
+        if "canonical_id" not in screening_columns:
+            self._conn.execute(
+                "ALTER TABLE screenings ADD COLUMN canonical_id TEXT"
+            )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_screenings_canonical "
+            "ON screenings(canonical_id)"
+        )
+
+        columns = {
+            "last_success": "TEXT",
+            "last_error": "TEXT",
+            "last_warning": "TEXT",
+            "error_count": "INTEGER NOT NULL DEFAULT 0",
+        }
+        existing = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(watches)")
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                self._conn.execute(
+                    f"ALTER TABLE watches ADD COLUMN {name} {definition}"
+                )
+
+        hit_columns = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(watch_hits)")
+        }
+        if "event_key" not in hit_columns:
+            self._conn.execute(
+                "ALTER TABLE watch_hits ADD COLUMN event_key TEXT NOT NULL DEFAULT ''"
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_hits_event "
+            "ON watch_hits(watch_id, event_key) WHERE event_key <> ''"
+        )
 
     @contextmanager
     def tx(self):
@@ -209,21 +318,81 @@ class Store:
         return [dict(r) for r in rows]
 
     # ---------------------------------------------------------- screenings
-    def upsert_screening(self, screening_id: str, *, work_id: str | None,
-                         venue_id: str, chain: str, starts_at_utc: datetime,
-                         presentation: str, availability: str,
-                         deeplink: str | None) -> None:
+    @staticmethod
+    def _register_alias(c, canonical_id: str, source_screening_id: str,
+                         source: str, now: str) -> None:
+        c.execute(
+            """INSERT INTO screening_aliases
+               (source_screening_id, canonical_id, source, first_seen, last_seen)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(source_screening_id) DO UPDATE SET
+                 canonical_id=excluded.canonical_id,
+                 source=excluded.source,
+                 last_seen=excluded.last_seen""",
+            (source_screening_id, canonical_id, source, now, now),
+        )
+
+    def register_screening_alias(self, canonical_id: str,
+                                 source_screening_id: str,
+                                 *, source: str) -> None:
+        """Remember a provider handle even when its row is not ranked.
+
+        Search registers every adapter result before collapsing equivalent
+        showings, so a losing duplicate remains available as an alias for
+        migration and auditing.
+        """
+        now = _now()
+        with self.tx() as c:
+            self._register_alias(c, canonical_id, source_screening_id, source, now)
+
+    def register_screening_aliases(
+        self, aliases: list[tuple[str, str, str]]
+    ) -> None:
+        """Register a batch of ``(canonical_id, source_id, source)`` aliases."""
+        if not aliases:
+            return
+        now = _now()
+        with self.tx() as c:
+            for canonical_id, source_screening_id, source in aliases:
+                self._register_alias(
+                    c, canonical_id, source_screening_id, source, now
+                )
+
+    def aliases_for_screening(self, canonical_id: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT source_screening_id FROM screening_aliases "
+            "WHERE canonical_id=? ORDER BY source_screening_id",
+            (canonical_id,),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def upsert_screening(self, screening_id: str, *, canonical_id: str | None = None,
+                         work_id: str | None, venue_id: str, chain: str,
+                         starts_at_utc: datetime, presentation: str,
+                         availability: str, deeplink: str | None) -> None:
+        canonical_id = canonical_id or screening_id
+        now = _now()
         with self.tx() as c:
             c.execute(
                 """INSERT INTO screenings
-                   (screening_id, work_id, venue_id, chain, starts_at_utc,
+                   (screening_id, canonical_id, work_id, venue_id, chain, starts_at_utc,
                     presentation, availability, deeplink, first_seen, last_seen)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(screening_id) DO UPDATE SET
-                     availability=excluded.availability, last_seen=excluded.last_seen""",
-                (screening_id, work_id, venue_id, chain, starts_at_utc.isoformat(),
-                 presentation, availability, deeplink, _now(), _now()),
+                     canonical_id=excluded.canonical_id,
+                     work_id=excluded.work_id,
+                     venue_id=excluded.venue_id,
+                     chain=excluded.chain,
+                     starts_at_utc=excluded.starts_at_utc,
+                     presentation=excluded.presentation,
+                     availability=excluded.availability,
+                     deeplink=excluded.deeplink,
+                     last_seen=excluded.last_seen""",
+                (screening_id, canonical_id, work_id, venue_id, chain,
+                 starts_at_utc.isoformat(), presentation, availability, deeplink,
+                 now, now),
             )
+            self._register_alias(c, canonical_id, screening_id, chain, now)
 
     # -------------------------------------------------------------- seats
     def put_seat_snapshot(self, screening_id: str, available: int, capacity: int,
@@ -265,27 +434,53 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
-    def cancel_watch(self, watch_id: str) -> bool:
+    def cancel_watch(self, watch_id: str, *, user_id: str = DEFAULT_USER) -> bool:
         with self.tx() as c:
             return c.execute(
-                "UPDATE watches SET active=0 WHERE watch_id=?", (watch_id,)
+                "UPDATE watches SET active=0 WHERE watch_id=? AND user_id=?",
+                (watch_id, user_id),
             ).rowcount > 0
 
-    def touch_watch(self, watch_id: str, *, hit: bool = False) -> None:
+    def touch_watch(
+        self,
+        watch_id: str,
+        *,
+        hit: bool = False,
+        success: bool = False,
+        error: str | None = None,
+        warning: str | None = None,
+    ) -> None:
+        now = _now()
+        fields = ["last_run=?"]
+        values: list[object] = [now]
+        if hit:
+            fields.append("last_hit=?")
+            values.append(now)
+        if success:
+            fields.extend([
+                "last_success=?",
+                "last_error=NULL",
+                "last_warning=?",
+                "error_count=0",
+            ])
+            values.append(now)
+            values.append(warning)
+        elif error:
+            fields.extend(["last_error=?", "error_count=error_count+1"])
+            values.append(error)
+        values.append(watch_id)
         with self.tx() as c:
             c.execute(
-                "UPDATE watches SET last_run=?" + (", last_hit=?" if hit else "")
-                + " WHERE watch_id=?",
-                (_now(), _now(), watch_id) if hit else (_now(), watch_id),
+                f"UPDATE watches SET {', '.join(fields)} WHERE watch_id=?",
+                values,
             )
 
     # ----------------------------------------------------------- seen-set
     def unseen(self, watch_id: str, screening_ids: list[str]) -> list[str]:
         """Which of these has this watch never reported before.
 
-        The whole point of a watch is that it fires on *new* screenings. If
-        some 70mm tickets already dropped before the watch was created, those
-        are not news; the ones that appear afterwards are.
+        This is the baseline for *new* screening alerts. Positive changes to
+        an existing screening are compared through `watch_states` instead.
         """
         if not screening_ids:
             return []
@@ -308,6 +503,104 @@ class Store:
                 [(watch_id, s, _now()) for s in screening_ids],
             )
 
+    def seen_ids(self, watch_id: str, screening_ids: list[str]) -> set[str]:
+        """Return the subset already observed by this watch."""
+        if not screening_ids:
+            return set()
+        marks = ",".join("?" * len(screening_ids))
+        return {
+            row[0]
+            for row in self._conn.execute(
+                f"SELECT screening_id FROM watch_seen WHERE watch_id=? "
+                f"AND screening_id IN ({marks})",
+                (watch_id, *screening_ids),
+            )
+        }
+
+    def seen_canonical_ids(self, watch_id: str,
+                           canonical_ids: list[str]) -> set[str]:
+        """Return canonical show ids already seen, including old aliases.
+
+        Existing databases predate canonical ids and contain provider handles
+        in ``watch_seen``.  Joining through ``screening_aliases`` lets the
+        identity upgrade happen without replaying every currently listed
+        showing as a new alert.
+        """
+        if not canonical_ids:
+            return set()
+        marks = ",".join("?" * len(canonical_ids))
+        rows = self._conn.execute(
+            f"""SELECT DISTINCT
+                   CASE WHEN ws.screening_id IN ({marks})
+                        THEN ws.screening_id ELSE a.canonical_id END AS canonical_id
+                FROM watch_seen ws
+                LEFT JOIN screening_aliases a
+                  ON a.source_screening_id=ws.screening_id
+                WHERE ws.watch_id=?
+                  AND (ws.screening_id IN ({marks})
+                       OR a.canonical_id IN ({marks}))""",
+            (*canonical_ids, watch_id, *canonical_ids, *canonical_ids),
+        ).fetchall()
+        return {row["canonical_id"] for row in rows if row["canonical_id"]}
+
+    def watch_states(self, watch_id: str) -> dict[str, dict]:
+        rows = self._conn.execute(
+            "SELECT screening_id, state FROM watch_states WHERE watch_id=?",
+            (watch_id,),
+        ).fetchall()
+        return {row["screening_id"]: json.loads(row["state"]) for row in rows}
+
+    def watch_states_for(self, watch_id: str,
+                         canonical_ids: list[str]) -> dict[str, dict]:
+        """Load latest state by canonical id, resolving legacy aliases."""
+        if not canonical_ids:
+            return {}
+        wanted = set(canonical_ids)
+        marks = ",".join("?" * len(canonical_ids))
+        rows = self._conn.execute(
+            f"""SELECT ws.screening_id, ws.state, ws.observed_at,
+                       a.canonical_id AS alias_canonical_id
+                FROM watch_states ws
+                LEFT JOIN screening_aliases a
+                  ON a.source_screening_id=ws.screening_id
+                WHERE ws.watch_id=?
+                  AND (ws.screening_id IN ({marks})
+                       OR a.canonical_id IN ({marks}))
+                ORDER BY ws.observed_at DESC""",
+            (watch_id, *canonical_ids, *canonical_ids),
+        ).fetchall()
+        out: dict[str, dict] = {}
+        for row in rows:
+            canonical_id = (
+                row["screening_id"]
+                if row["screening_id"] in wanted
+                else row["alias_canonical_id"]
+            )
+            if canonical_id in wanted and canonical_id not in out:
+                out[canonical_id] = json.loads(row["state"])
+        return out
+
+    def observe_watch(self, watch_id: str, states: dict[str, dict]) -> None:
+        """Persist the latest state while advancing the legacy seen-set."""
+        if not states:
+            return
+        now = _now()
+        with self.tx() as c:
+            c.executemany(
+                """INSERT INTO watch_states (watch_id, screening_id, state, observed_at)
+                   VALUES (?,?,?,?)
+                   ON CONFLICT(watch_id, screening_id) DO UPDATE SET
+                     state=excluded.state, observed_at=excluded.observed_at""",
+                [
+                    (watch_id, screening_id, json.dumps(state, sort_keys=True), now)
+                    for screening_id, state in states.items()
+                ],
+            )
+            c.executemany(
+                "INSERT OR IGNORE INTO watch_seen VALUES (?,?,?)",
+                [(watch_id, screening_id, now) for screening_id in states],
+            )
+
     def seed_seen(self, watch_id: str, screening_ids: list[str]) -> None:
         """Record what already existed when a watch was created.
 
@@ -317,14 +610,134 @@ class Store:
         self.mark_seen(watch_id, screening_ids)
 
     # --------------------------------------------------------------- hits
-    def record_hit(self, watch_id: str, screening_id: str, payload: dict) -> int:
+    def record_hit(
+        self,
+        watch_id: str,
+        screening_id: str,
+        payload: dict,
+        *,
+        event_key: str = "",
+    ) -> int:
+        """Persist a hit and return its id (legacy-compatible API)."""
+        hit_id, _inserted = self.record_hit_status(
+            watch_id, screening_id, payload, event_key=event_key
+        )
+        return hit_id
+
+    def record_hit_status(
+        self,
+        watch_id: str,
+        screening_id: str,
+        payload: dict,
+        *,
+        event_key: str = "",
+    ) -> tuple[int, bool]:
         with self.tx() as c:
-            cur = c.execute(
-                "INSERT INTO watch_hits (watch_id, screening_id, payload, created_at) "
-                "VALUES (?,?,?,?)",
-                (watch_id, screening_id, json.dumps(payload), _now()),
+            if event_key:
+                c.execute(
+                    "INSERT OR IGNORE INTO watch_hits "
+                    "(watch_id, screening_id, event_key, payload, created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (watch_id, screening_id, event_key, json.dumps(payload), _now()),
+                )
+                row = c.execute(
+                    "SELECT hit_id FROM watch_hits WHERE watch_id=? AND event_key=?",
+                    (watch_id, event_key),
+                ).fetchone()
+                inserted = c.execute("SELECT changes()").fetchone()[0] == 1
+            else:
+                cur = c.execute(
+                    "INSERT INTO watch_hits "
+                    "(watch_id, screening_id, payload, created_at) VALUES (?,?,?,?)",
+                    (watch_id, screening_id, json.dumps(payload), _now()),
+                )
+                row = (cur.lastrowid,)
+                inserted = True
+            return row[0], inserted
+
+    def queue_delivery(self, hit_id: int, channel: str = "webhook") -> None:
+        with self.tx() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO watch_deliveries (hit_id, channel) VALUES (?,?)",
+                (hit_id, channel),
             )
-            return cur.lastrowid
+
+    def backfill_deliveries(self, watch_id: str, channel: str = "webhook") -> None:
+        """Make pre-overhaul hits eligible for the new channel ledger."""
+        with self.tx() as c:
+            c.execute(
+                """INSERT OR IGNORE INTO watch_deliveries (hit_id, channel)
+                   SELECT hit_id, ? FROM watch_hits WHERE watch_id=?""",
+                (channel, watch_id),
+            )
+
+    def pending_webhook_hits(
+        self,
+        watch_id: str,
+        *,
+        now: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        now = now or _now()
+        rows = self._conn.execute(
+            """SELECT h.hit_id, h.screening_id, h.payload, h.created_at,
+                      d.attempts, d.last_error, w.webhook, w.label
+                 FROM watch_hits h
+                 JOIN watch_deliveries d ON d.hit_id=h.hit_id
+                 JOIN watches w ON w.watch_id=h.watch_id
+                WHERE h.watch_id=? AND d.channel='webhook'
+                  AND d.delivered_at IS NULL
+                  AND (d.next_attempt_at IS NULL OR d.next_attempt_at<=?)
+                ORDER BY h.created_at, h.hit_id
+                LIMIT ?""",
+            (watch_id, now, limit),
+        ).fetchall()
+        return [
+            {**dict(row), "payload": json.loads(row["payload"])}
+            for row in rows
+        ]
+
+    def record_delivery_result(
+        self,
+        hit_ids: list[int],
+        *,
+        channel: str = "webhook",
+        success: bool,
+        error: str | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        if not hit_ids:
+            return
+        now = now or datetime.now(UTC)
+        with self.tx() as c:
+            for hit_id in hit_ids:
+                row = c.execute(
+                    "SELECT attempts FROM watch_deliveries "
+                    "WHERE hit_id=? AND channel=?",
+                    (hit_id, channel),
+                ).fetchone()
+                if row is None:
+                    continue
+                attempts = row[0] + 1
+                if success:
+                    c.execute(
+                        """UPDATE watch_deliveries
+                              SET attempts=?, last_attempt_at=?, delivered_at=?,
+                                  next_attempt_at=NULL, last_error=NULL
+                            WHERE hit_id=? AND channel=?""",
+                        (attempts, now.isoformat(), now.isoformat(), hit_id, channel),
+                    )
+                else:
+                    delay = min(3600, 60 * (2 ** min(attempts - 1, 5)))
+                    retry_at = now + timedelta(seconds=delay)
+                    c.execute(
+                        """UPDATE watch_deliveries
+                              SET attempts=?, last_attempt_at=?,
+                                  next_attempt_at=?, last_error=?
+                            WHERE hit_id=? AND channel=?""",
+                        (attempts, now.isoformat(), retry_at.isoformat(), error,
+                         hit_id, channel),
+                    )
 
     def pending_hits(self, user_id: str = DEFAULT_USER, limit: int = 50) -> list[dict]:
         rows = self._conn.execute(
@@ -334,13 +747,20 @@ class Store:
         ).fetchall()
         return [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
 
-    def mark_delivered(self, hit_ids: list[int]) -> None:
+    def mark_delivered(
+        self, hit_ids: list[int], *, user_id: str = DEFAULT_USER
+    ) -> None:
         if not hit_ids:
             return
         with self.tx() as c:
             c.executemany(
-                "UPDATE watch_hits SET delivered=1 WHERE hit_id=?",
-                [(h,) for h in hit_ids],
+                """UPDATE watch_hits SET delivered=1
+                     WHERE hit_id=? AND EXISTS (
+                       SELECT 1 FROM watches
+                        WHERE watches.watch_id=watch_hits.watch_id
+                          AND watches.user_id=?
+                     )""",
+                [(h, user_id) for h in hit_ids],
             )
 
     # ---------------------------------------------------------- venue geo
@@ -371,3 +791,159 @@ class Store:
             "SELECT value FROM user_prefs WHERE user_id=? AND key=?", (user_id, key)
         ).fetchone()
         return json.loads(row["value"]) if row else default
+
+    # ---------------------------------------------------------- search runs
+    def record_search_run(
+        self,
+        run_id: str,
+        *,
+        spec: str,
+        started_at: str,
+        finished_at: str,
+        duration_ms: float,
+        considered: int,
+        result_count: int,
+        seatmaps_fetched: int,
+        complete: bool,
+        provider_stats: list[dict] | tuple[dict, ...] = (),
+        errors: list[str] | tuple[str, ...] = (),
+        clipped: list[str] | tuple[str, ...] = (),
+        user_id: str = DEFAULT_USER,
+    ) -> None:
+        with self.tx() as c:
+            c.execute(
+                """INSERT OR REPLACE INTO search_runs
+                   (run_id, user_id, spec, started_at, finished_at, duration_ms,
+                    considered, result_count, seatmaps_fetched, complete,
+                    provider_stats, errors, clipped)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    run_id,
+                    user_id,
+                    spec,
+                    started_at,
+                    finished_at,
+                    round(duration_ms, 3),
+                    considered,
+                    result_count,
+                    seatmaps_fetched,
+                    int(complete),
+                    json.dumps(list(provider_stats), sort_keys=True),
+                    json.dumps(list(errors)),
+                    json.dumps(list(clipped)),
+                ),
+            )
+
+    def get_search_run(self, run_id: str, *, user_id: str = DEFAULT_USER) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM search_runs WHERE run_id=? AND user_id=?",
+            (run_id, user_id),
+        ).fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        for key in ("provider_stats", "errors", "clipped"):
+            out[key] = json.loads(out[key])
+        out["complete"] = bool(out["complete"])
+        return out
+
+    def recent_search_runs(
+        self, *, user_id: str = DEFAULT_USER, limit: int = 20
+    ) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM search_runs WHERE user_id=? ORDER BY started_at DESC LIMIT ?",
+            (user_id, max(1, min(limit, 100))),
+        ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            for key in ("provider_stats", "errors", "clipped"):
+                item[key] = json.loads(item[key])
+            item["complete"] = bool(item["complete"])
+            out.append(item)
+        return out
+
+    def inventory_overview(self) -> dict:
+        """Aggregate the local evidence store without touching the network."""
+        totals = self._conn.execute(
+            """SELECT COUNT(*) AS screenings,
+                      COUNT(DISTINCT work_id) AS works,
+                      COUNT(DISTINCT venue_id) AS venues,
+                      MIN(starts_at_utc) AS earliest,
+                      MAX(starts_at_utc) AS latest,
+                      MAX(last_seen) AS last_seen
+                 FROM screenings"""
+        ).fetchone()
+        by_chain = self._conn.execute(
+            """SELECT chain, COUNT(*) AS screenings,
+                      COUNT(DISTINCT venue_id) AS venues,
+                      COUNT(DISTINCT work_id) AS works
+                 FROM screenings GROUP BY chain ORDER BY screenings DESC"""
+        ).fetchall()
+        by_availability = self._conn.execute(
+            """SELECT availability, COUNT(*) AS screenings
+                 FROM screenings GROUP BY availability ORDER BY screenings DESC"""
+        ).fetchall()
+        by_format = self._conn.execute(
+            """SELECT presentation, COUNT(*) AS screenings
+                 FROM screenings GROUP BY presentation ORDER BY screenings DESC
+                 LIMIT 30"""
+        ).fetchall()
+        watches = self._conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN active=1 THEN 1 ELSE 0 END) AS active
+                 FROM watches"""
+        ).fetchone()
+        hits = self._conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN delivered=0 THEN 1 ELSE 0 END) AS pending
+                 FROM watch_hits"""
+        ).fetchone()
+        return {
+            "screenings": totals["screenings"] or 0,
+            "works": totals["works"] or 0,
+            "venues": totals["venues"] or 0,
+            "earliest": totals["earliest"],
+            "latest": totals["latest"],
+            "last_seen": totals["last_seen"],
+            "by_chain": [dict(row) for row in by_chain],
+            "by_availability": [dict(row) for row in by_availability],
+            "by_format": [dict(row) for row in by_format],
+            "watches": {
+                "total": watches["total"] or 0,
+                "active": watches["active"] or 0,
+            },
+            "alerts": {
+                "total": hits["total"] or 0,
+                "pending": hits["pending"] or 0,
+            },
+        }
+
+    def inventory_by_venue(self, venue_id: str) -> dict:
+        row = self._conn.execute(
+            """SELECT venue_id, chain, COUNT(*) AS screenings,
+                      COUNT(DISTINCT work_id) AS works,
+                      MIN(starts_at_utc) AS earliest,
+                      MAX(starts_at_utc) AS latest,
+                      SUM(CASE WHEN availability IN ('sellable','almost_full')
+                               THEN 1 ELSE 0 END) AS sellable,
+                      SUM(CASE WHEN availability='sold_out' THEN 1 ELSE 0 END) AS sold_out,
+                      MAX(last_seen) AS last_seen
+                 FROM screenings WHERE venue_id=? GROUP BY venue_id, chain""",
+            (venue_id,),
+        ).fetchone()
+        return dict(row) if row else {
+            "venue_id": venue_id,
+            "screenings": 0,
+            "works": 0,
+            "sellable": 0,
+            "sold_out": 0,
+        }
+
+    def recent_seat_snapshots(self, *, limit: int = 100) -> list[dict]:
+        rows = self._conn.execute(
+            """SELECT screening_id, captured_at, available, capacity
+                 FROM seat_snapshots ORDER BY captured_at DESC LIMIT ?""",
+            (max(1, min(limit, 1000)),),
+        ).fetchall()
+        return [dict(row) for row in rows]

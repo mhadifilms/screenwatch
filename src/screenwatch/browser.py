@@ -3,12 +3,13 @@
 Most of this system runs on `curl_cffi` with a Chrome TLS fingerprint, which
 clears edge filtering and Queue-it and even Cloudflare's `__cf_bm` cookie. It
 does not clear a Cloudflare *managed challenge*, because that one requires
-executing JavaScript. Regal's `experience.regmovies.com/api/GetSeatPlan` is
-behind exactly that: warm session, real cookies, still 403.
+executing JavaScript. Regal's public movie page also renders its seat grid
+after hydration, so that path needs a real browser even when the page itself
+loads normally.
 
-So: a real engine executes the challenge once, and afterwards the page's own
-`fetch()` is used to call the JSON API from inside the trusted context. That
-gives JSON ergonomics with browser trust, which was the plan from the outset.
+The browser therefore supports both kinds of browser-tier read: a normal page
+visit, optionally waiting for a selector that proves the client-rendered data
+arrived, and a JSON fetch from inside the trusted context.
 
 No login is involved anywhere - none of these sites require an account to see
 a seat map. The profile is persistent purely so the challenge clearance and
@@ -127,7 +128,14 @@ class BrowserTransport:
         return self._page
 
     # ------------------------------------------------------------------
-    def visit(self, url: str, *, wait_for_challenge: bool = True) -> BrowserResponse:
+    def visit(
+        self,
+        url: str,
+        *,
+        wait_for_challenge: bool = True,
+        wait_for_selector: str | None = None,
+        wait_timeout_ms: int | None = None,
+    ) -> BrowserResponse:
         """Navigate, letting a managed challenge resolve itself if one appears."""
         page = self._ensure()
         response = page.goto(url, wait_until="domcontentloaded")
@@ -143,7 +151,14 @@ class BrowserTransport:
             with contextlib.suppress(Exception):
                 page.wait_for_load_state("networkidle",
                                          timeout=self.challenge_wait_ms)
-            body = page.content()
+        if wait_for_selector and not any(marker in body for marker in BLOCK_MARKERS):
+            with contextlib.suppress(Exception):
+                page.wait_for_selector(
+                    wait_for_selector,
+                    state="attached",
+                    timeout=wait_timeout_ms or self.timeout_ms,
+                )
+        body = page.content()
 
         return BrowserResponse(
             url=page.url,

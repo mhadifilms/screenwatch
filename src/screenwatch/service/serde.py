@@ -164,6 +164,7 @@ def option_to_dict(option, *, include_seatmap: bool = False) -> dict:
     out = {
         "option_id": option.option_id,
         "screening_id": s.screening_id,
+        "canonical_screening_id": s.canonical_screening_id,
         "score": round(option.score, 4),
         "title": s.work.title,
         "work_id": s.work.work_id,

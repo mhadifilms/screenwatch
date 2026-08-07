@@ -13,6 +13,8 @@ whoever asked. The cap stays; the silence goes.
 
 from __future__ import annotations
 
+WATCH_MAX_DAYS = 31
+
 
 class ScopeReporting:
     """Mixin: record and expose what this provider's caps left out.
@@ -43,9 +45,9 @@ class ScopeReporting:
         )
         return list(venues[:cap])
 
-    def _clip_days(self, days: list) -> list:
+    def _clip_days(self, days: list, *, cap: int | None = None) -> list:
         """Apply `max_days`, recording the tail dropped."""
-        cap = getattr(self, "max_days", None)
+        cap = getattr(self, "max_days", None) if cap is None else cap
         if cap is None or len(days) <= cap:
             return list(days)
         self._note_clip(

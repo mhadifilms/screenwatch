@@ -1,34 +1,30 @@
-"""Regal seat plans.
+"""Regal seat maps from the rendered movie/showtime page.
 
-Endpoint recovered from Regal's own bundle rather than guessed:
+The old JSON route was recoverable from Regal's bundle, but it is not a public
+read surface: `/api/GetSeatPlan` redirects to the public site and Cloudflare
+blocks the result. The public booking flow is different. Clicking a showtime
+on a theatre page navigates to:
 
-    GET {booking_api}/api/GetSeatPlan?theatreCode={code}&sessionId={id}
-    GET .../api/GetSeatPlan?...&bypass=true        (the app's own variant)
+    /movies/{title-slug}-{movie-code}?date=YYYY-MM-DD&site={theatre}&id={performance}
 
-`booking_api` comes from `NEXT_PUBLIC_BOOKING_API` in the page's env block,
-which resolves to `https://webbooking.regmovies.com`.
+That page renders the seat plan as ordinary buttons. Each real seat carries a
+stable id such as `seat-0-2-8`, an `aria-label` such as `B4 accessible seat`, a
+title describing its kind, and `disabled` when it cannot be selected. No seat
+is selected here, so this remains a read-only page visit; a hold is created by
+the later click that this project never makes.
 
-**Status: implemented from evidence, not yet verified against a live
-response.** Cloudflare denies `/api/*` on the regmovies hosts to every client
-tried, `curl_cffi` and a real browser alike. It is a *path* rule rather than
-an IP ban: measured in a single session, `experience.regmovies.com/about`
-returns 200 while `/api/tickets` returns 403, and showtime scraping across all
-402 theatres works throughout. There is therefore nothing to wait out, and a
-response most likely needs whatever the real booking flow carries that a bare
-GET does not - an order session token being the obvious candidate.
-
-So `parse` is written against the Vista seat-plan schema that endpoint
-returns, and is defensive about which of the two common field spellings
-arrives.
-
-Vista (which Regal runs) returns rows of `SeatsInRow`, each seat carrying a
-status code where 0 means available. Both the modern camelCase and the older
-PascalCase spellings are accepted because Regal's proxy has shipped each.
+The JSON parser remains for compatibility with the earlier Vista-shaped
+implementation and for any deployment that still receives that payload. The
+live path is the rendered HTML parser below.
 """
 
 from __future__ import annotations
 
+import re
+import unicodedata
+from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urlencode
 
 from ..model import (
     Auditorium,
@@ -42,6 +38,7 @@ from ..model import (
 
 BOOKING_API = "https://webbooking.regmovies.com"
 SEAT_PLAN = "{base}/api/GetSeatPlan?theatreCode={theatre}&sessionId={session}"
+REGAL = "https://www.regmovies.com"
 
 # Vista seat status codes, as documented and as observed.
 _AVAILABLE = {0, "0", "Available", "available"}
@@ -75,6 +72,69 @@ def _pick(node: dict, *names, default=None):
     return default
 
 
+def _movie_slug(title: str) -> str:
+    """Match Regal's route slug: punctuation disappears, spaces become `-`."""
+    ascii_title = unicodedata.normalize("NFKD", title).encode(
+        "ascii", "ignore"
+    ).decode()
+    cleaned = re.sub(r"[^a-z0-9\s]", "", ascii_title.lower())
+    return re.sub(r"\s+", "-", cleaned).strip("-")
+
+
+def _movie_route(title: str, movie_code: str) -> str:
+    slug = _movie_slug(title)
+    code = (movie_code or "").strip().lower()
+    if not slug and not code:
+        raise SeatDataUnavailable("Regal seat page needs a movie title or code")
+    return "-".join(part for part in (slug, code) if part)
+
+
+class _RenderedSeatParser(HTMLParser):
+    """Read the seat buttons Regal renders after the movie page hydrates."""
+
+    _SEAT_ID = re.compile(r"^seat-(\d+)-(\d+)-(\d+)$")
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.seats: list[dict[str, Any]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "button":
+            return
+        values = dict(attrs)
+        match = self._SEAT_ID.fullmatch(values.get("id") or "")
+        if not match:
+            return
+
+        aria = (values.get("aria-label") or "").strip()
+        seat_label, _, description = aria.partition(" ")
+        label_match = re.fullmatch(r"([A-Za-z]+)(\d+)", seat_label)
+        row_label = label_match.group(1) if label_match else str(match.group(2))
+        col_label = label_match.group(2) if label_match else str(match.group(3))
+        self.seats.append(
+            {
+                "row_index": int(match.group(2)),
+                "col_index": int(match.group(3)),
+                "row_label": row_label,
+                "col_label": col_label,
+                "description": f"{description} {values.get('title') or ''}".lower(),
+                "available": "disabled" not in values,
+            }
+        )
+
+
+def _rendered_kind(description: str) -> SeatKind:
+    if "companion" in description:
+        return SeatKind.COMPANION
+    if "accessible" in description or "wheelchair" in description:
+        return SeatKind.WHEELCHAIR
+    if "love" in description:
+        return SeatKind.LOVESEAT
+    if "recliner" in description:
+        return SeatKind.RECLINER
+    return SeatKind.STANDARD
+
+
 class RegalSeatSource:
     chain = "regal"
     source = "regal:seatplan"
@@ -85,13 +145,74 @@ class RegalSeatSource:
         url = SEAT_PLAN.format(base=base, theatre=theatre_code, session=session_id)
         return url + "&bypass=true" if bypass else url
 
+    def movie_url(
+        self,
+        *,
+        title: str,
+        movie_code: str,
+        date: str,
+        theatre_code: str,
+        performance_id: str,
+        base: str = REGAL,
+    ) -> str:
+        """Build the same route Regal creates when a showtime is clicked."""
+        route = _movie_route(title, movie_code)
+        query = urlencode({
+            "date": date,
+            "site": theatre_code,
+            "id": performance_id,
+        })
+        return f"{base}/movies/{route}?{query}"
+
     # ------------------------------------------------------------------
     @staticmethod
     def parse(payload: Any, *, venue_id: str, screen_id: str = "") -> Auditorium:
         if isinstance(payload, str):
-            raise SeatDataUnavailable("Regal seat plan came back as HTML, not JSON")
+            return RegalSeatSource._parse_html(
+                payload, venue_id=venue_id, screen_id=screen_id
+            )
         if not isinstance(payload, dict):
             raise SeatDataUnavailable("unexpected Regal seat plan payload")
+        return RegalSeatSource._parse_json(
+            payload, venue_id=venue_id, screen_id=screen_id
+        )
+
+    @staticmethod
+    def _parse_html(html: str, *, venue_id: str, screen_id: str) -> Auditorium:
+        if any(marker in html for marker in ("Attention Required", "Sorry, you have been blocked")):
+            raise SeatDataUnavailable("Regal seat page was blocked by Cloudflare")
+        parser = _RenderedSeatParser()
+        parser.feed(html)
+        if not parser.seats:
+            raise SeatDataUnavailable(
+                "Regal seat page HTML had no rendered seat buttons - page shape "
+                "changed, or this showing is general admission"
+            )
+
+        seats = [
+            Seat(
+                row_label=seat["row_label"],
+                row_index=seat["row_index"],
+                col_label=seat["col_label"],
+                col_index=seat["col_index"],
+                status=(
+                    SeatStatus.AVAILABLE
+                    if seat["available"]
+                    else SeatStatus.SOLD
+                ),
+                kind=_rendered_kind(seat["description"]),
+            )
+            for seat in parser.seats
+        ]
+        return Auditorium(
+            venue_id=venue_id,
+            screen_id=screen_id,
+            seats=normalize_geometry(mark_aisles(seats)),
+            geometry_confidence=1.0,
+        )
+
+    @staticmethod
+    def _parse_json(payload: dict, *, venue_id: str, screen_id: str) -> Auditorium:
         if payload.get("errorCode") or payload.get("ErrorCode"):
             raise SeatDataUnavailable(
                 f"Regal seat plan error: "

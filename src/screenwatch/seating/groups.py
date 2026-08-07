@@ -251,7 +251,10 @@ def find_groups(
     )
     party_size = request.party_size
     allow_split = request.allow_split
-    model = model or QualityModel()
+    # Seat maps have their own geometry. Adapt the generic middle-area prior
+    # to this room before comparing groups, so the same recommendation logic
+    # works for a sparse art-house layout and a large multi-aisle IMAX.
+    model = (model or QualityModel()).for_auditorium(auditorium)
     rows = auditorium.rows()
     row_count = auditorium.row_count
 

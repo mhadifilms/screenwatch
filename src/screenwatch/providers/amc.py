@@ -23,7 +23,7 @@ from ..seating.model import Auditorium
 from ..seating.sources.amc import AmcSeatSource
 from ..service.venues import Venue
 from ..transport import Transport
-from .scope import ScopeReporting
+from .scope import WATCH_MAX_DAYS, ScopeReporting
 
 
 class AmcProvider(ScopeReporting):
@@ -51,7 +51,8 @@ class AmcProvider(ScopeReporting):
                 continue          # cannot build a showtimes URL without the market
             # Anchored on the venue's own date, not UTC's - see `local_today`.
             window = spec.window(venue.today())
-            for day in self._clip_days(_days(window.start, window.end)):
+            day_cap = max(self.max_days, WATCH_MAX_DAYS) if spec.include_sold_out else None
+            for day in self._clip_days(_days(window.start, window.end), cap=day_cap):
                 out.extend(self._one_day(spec, venue, day, transport))
         return out
 

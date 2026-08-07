@@ -76,6 +76,16 @@ class TestCadence:
         tier = cadence_for(row(spec=spec_json(far, far)), now=NOW, today=TODAY)
         assert (tier.name, tier.interval_s) == ("cold", COLD_S)
 
+    def test_ticket_watch_stays_warm_before_release(self):
+        far = TODAY + timedelta(days=40)
+        spec = SearchSpec(
+            work=WorkRef(query="dune"),
+            date_window=DateWindow(far, far),
+            include_sold_out=True,
+        )
+        tier = cadence_for(row(spec=spec_to_json(spec)), now=NOW, today=TODAY)
+        assert (tier.name, tier.interval_s) == ("warm", WARM_S)
+
     def test_a_passed_window_retires_the_watch(self):
         """Polling forever for a date that has gone is pure waste."""
         past = TODAY - timedelta(days=1)

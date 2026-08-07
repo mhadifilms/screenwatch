@@ -15,6 +15,7 @@ from mcp.server import MCPServer
 
 from ..identity.normalize import analyze
 from ..seating.render import to_svg, to_unicode_grid
+from ..service.observatory import Observatory
 from ..service.search import SearchResult, SearchService
 from ..service.serde import option_to_dict, spec_from_dict, spec_from_json, spec_to_dict
 from ..service.watch import WatchService
@@ -24,9 +25,11 @@ from .schemas import SearchSpecInput
 def build_server(search: SearchService, watches: WatchService) -> MCPServer:
     server = MCPServer(
         name="screenwatch",
-        version="0.1.0",
+        version="0.2.0",
         instructions=(
-            "Ranked cinema showtime search across chains and independents. "
+            "US theater and release intelligence across chains and independents. "
+            "Use list_venues and get_data_overview to understand coverage before "
+            "searching. "
             "Call resolve_title first if a title is ambiguous or a re-release. "
             "find_screenings returns bookable options - a showing plus the "
             "actual seats you would get - each with reasons and tradeoffs. "
@@ -34,6 +37,7 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
         ),
     )
     last: dict[str, SearchResult | None] = {"result": None}
+    observatory = Observatory(search, store=search.store, directory=search.directory)
 
     def _find(option_id: str):
         result = last["result"]
@@ -76,10 +80,14 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
         result = search.search(spec_from_dict(spec.to_dict()))
         last["result"] = result
         return {
+            "search_id": result.search_id,
             "narration": result.narrate(),
             "comparison": result.comparison(),
             "considered": result.considered,
             "seatmaps_fetched": result.seatmaps_fetched,
+            "complete": result.complete,
+            "duration_ms": result.duration_ms,
+            "provider_stats": list(result.provider_stats),
             "provider_errors": list(result.provider_errors),
             # What the providers' caps left unread, so a model reading this
             # can say "nothing in what I checked" rather than "nothing".
@@ -87,6 +95,45 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
             "unresolved_titles": list(result.unresolved_titles),
             "options": [option_to_dict(o) for o in result.options[:20]],
         }
+
+    @server.tool(
+        description="Read the local evidence overview: indexed screenings, works, "
+                    "venues, provider seat surfaces, coverage types, active watches, "
+                    "and alert backlog. This is read-only and does not trigger a poll."
+    )
+    def get_data_overview() -> dict:
+        return observatory.overview()
+
+    @server.tool(
+        description="List known US venues with type, chain, coordinates, seat-data "
+                    "surface, current local inventory, and curated room capabilities. "
+                    "Use this to find art houses, multiplexes, or exact-seat providers."
+    )
+    def list_venues(
+        chain: str | None = None,
+        venue_type: str | None = None,
+        query: str | None = None,
+        sort: Literal["distance", "name", "type", "chain"] = "distance",
+        limit: int = 100,
+    ) -> dict:
+        return {
+            "venues": observatory.list_venues(
+                chain=chain,
+                venue_type=venue_type,
+                query=query,
+                sort=sort,
+                limit=limit,
+            ),
+            "types": search.directory.types(),
+        }
+
+    @server.tool(
+        description="Get a single venue's detailed record, including known screen "
+                    "hardware, ticketing platform, inventory, and seat-data limits."
+    )
+    def get_venue(venue_id: str) -> dict:
+        record = observatory.get_venue(venue_id)
+        return record or {"error": f"Unknown venue_id {venue_id!r}."}
 
     @server.tool(
         description="Seat map for one option, normalized so a 500-seat IMAX and "
@@ -147,7 +194,7 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
                      if seed else "Unseeded: current screenings will be reported too."),
         }
 
-    @server.tool(description="List active monitors and what each is watching for.")
+    @server.tool(description="List active monitors, health, and what each is watching for.")
     def list_watches() -> dict:
         # An object rather than a bare list: the SDK wraps non-object returns
         # in a synthetic envelope, so every tool here returns a dict to keep
@@ -159,6 +206,11 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
                 "cadence_s": w["cadence_s"],
                 "last_run": w["last_run"],
                 "last_hit": w["last_hit"],
+                "last_success": w["last_success"],
+                "last_error": w["last_error"],
+                "last_warning": w["last_warning"],
+                "error_count": w["error_count"],
+                "webhook": bool(w["webhook"]),
                 "spec": spec_to_dict(spec_from_json(w["spec"])),
             }
             for w in watches.list()
@@ -169,10 +221,18 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
         return {"cancelled": watches.cancel(watch_id)}
 
     @server.tool(
-        description="Run every monitor whose cadence has elapsed and return any "
-                    "undelivered hits."
+        description="Acknowledge alert ids after the client has actually handled them."
     )
-    def poll_watches(acknowledge: bool = True) -> dict:
+    def acknowledge_hits(hit_ids: list[int]) -> dict:
+        watches.acknowledge(hit_ids)
+        return {"acknowledged": hit_ids}
+
+    @server.tool(
+        description="Run every monitor whose cadence has elapsed and return any "
+                    "unacknowledged hits. Polling is non-destructive by default; "
+                    "acknowledge them explicitly after handling."
+    )
+    def poll_watches(acknowledge: bool = False) -> dict:
         fresh = watches.run_due()
         pending = watches.pending()
         if acknowledge:

@@ -117,6 +117,7 @@ def quality_model_for(spec: SearchSpec, venue_id: str) -> QualityModel:
     return QualityModel.for_venue(
         venue_id,
         ideal_depth=prefs.ideal_depth,
+        adaptive_middle=False if prefs.ideal_depth is not None else None,
         avoid_front_rows=prefs.avoid_front_rows,
         max_lateral=prefs.max_lateral,
         aisle_penalty=0.15 if prefs.avoid_aisle else 0.0,
@@ -214,5 +215,3 @@ def fine_rank(
     ranked = list(options)
     ranked.sort(key=lambda o: (-o.score, o.screening.starts_at_utc))
     return ranked
-
-

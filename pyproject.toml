@@ -24,6 +24,7 @@ dev = [
 ]
 
 [project.scripts]
+screenwatch = "screenwatch.local:main"
 screenwatch-mcp = "screenwatch.mcp.server:main"
 screenwatch-scheduler = "screenwatch.service.scheduler:main"
 

@@ -40,6 +40,13 @@ def theatre_html():
     return (FIXTURES / "regal" / "theatre-times-square.html").read_text()
 
 
+@pytest.fixture(scope="module")
+def seatmap_html():
+    from conftest import FIXTURES
+
+    return (FIXTURES / "regal" / "seatmap-times-square.html").read_text()
+
+
 CHALLENGE = "<html><head><title>Just a moment...</title></head><body></body></html>"
 
 
@@ -141,7 +148,7 @@ class TestPresentation:
         session.responses = [theatre_html]
         session.calls = 0
         spec = SearchSpec(work=WorkRef(query="*"),
-                          date_window=DateWindow(date(2020, 1, 1), date(2030, 1, 1)))
+                          date_window=DateWindow(date(2026, 8, 2), date(2026, 8, 2)))
         venues = [v for v in provider.discover(spec)
                   if v.venue_id == "regal-times-square-1929"]
         return provider.screenings(spec, venues, transport=None)
@@ -198,6 +205,49 @@ class TestSeats:
         with pytest.raises(SeatDataUnavailable, match="unknown Regal theatre code"):
             provider.fetch_seats(option, transport=None)
 
+    def test_browser_fetches_the_rendered_movie_page(self, directory_html, seatmap_html):
+        from datetime import datetime
+
+        from screenwatch.adapters.regal.showtimes import RegalPerformance
+        from screenwatch.browser import BrowserResponse
+
+        class FakeBrowser:
+            def __init__(self):
+                self.calls = []
+
+            def visit(self, url, **kw):
+                self.calls.append((url, kw))
+                return BrowserResponse(url=url, status=200, text=seatmap_html)
+
+        browser = FakeBrowser()
+        provider = RegalProvider(
+            session=FakeSession([directory_html]), backoff_s=0, browser=browser
+        )
+        provider._theatres = [type("T", (), {
+            "venue_id": "regal-x", "theatre_code": "1929"
+        })()]
+        provider._seat_requests["regal:259528"] = RegalPerformance(
+            performance_id="259528", theatre_code="1929", movie_code="HO00021207",
+            title="Spider-Man: Brand New Day",
+            starts_at_utc=datetime(2026, 8, 3, 2, 30),
+            starts_at_local=datetime(2026, 8, 2, 22, 30), auditorium="5",
+            attributes=("3D",), sold_out=False,
+        )
+        option = type("O", (), {"screening": type("S", (), {
+            "venue_id": "regal-x", "screening_id": "regal:259528",
+            "screen_id": "5",
+        })()})()
+
+        room = provider.fetch_seats(option, transport=None)
+
+        assert room.available == 8
+        assert len(room.seats) == 13
+        assert browser.calls == [(
+            "https://www.regmovies.com/movies/"
+            "spiderman-brand-new-day-ho00021207?date=2026-08-02&site=1929&id=259528",
+            {"wait_for_selector": "button[id^='seat-']", "wait_timeout_ms": 12_000},
+        )]
+
 
 class TestBlockVsChallenge:
     """Cloudflare 403s look alike but mean opposite things.
@@ -234,7 +284,7 @@ class TestBlockVsChallenge:
 
         class BlockedBrowser:
             @staticmethod
-            def fetch_json(url, origin=None):
+            def visit(url, **kw):
                 from screenwatch.browser import BrowserResponse
 
                 return BrowserResponse(url=url, status=403,
@@ -244,16 +294,24 @@ class TestBlockVsChallenge:
                                  browser=BlockedBrowser())
         provider._theatres = [type("T", (), {
             "venue_id": "regal-x", "theatre_code": "1929"})()]
+        from datetime import datetime
+
+        from screenwatch.adapters.regal.showtimes import RegalPerformance
+
+        provider._seat_requests["regal:1"] = RegalPerformance(
+            performance_id="1", theatre_code="1929", movie_code="HO1", title="X",
+            starts_at_utc=datetime(2026, 8, 2, 21),
+            starts_at_local=datetime(2026, 8, 2, 17), auditorium="1",
+            attributes=(), sold_out=False,
+        )
         option = type("O", (), {"screening": type("S", (), {
             "venue_id": "regal-x", "screening_id": "regal:1", "screen_id": ""})()})()
-        with pytest.raises(SeatDataUnavailable, match="not a solvable challenge"):
+        with pytest.raises(SeatDataUnavailable, match="blocked by Cloudflare"):
             provider.fetch_seats(option, transport=None)
 
 
 class TestRegalSeatPlanParsing:
-    """Written from Vista's schema, since Cloudflare denies /api/* to every
-    client tried. The parser is what will meet the first real response, so
-    its own behaviour is worth pinning even while the fetch is blocked."""
+    """Pin both the old Vista payload and the live rendered page shape."""
 
     def parse(self, payload, **kw):
         from screenwatch.seating.sources.regal import RegalSeatSource
@@ -315,6 +373,33 @@ class TestRegalSeatPlanParsing:
 
         with pytest.raises(SeatDataUnavailable, match="HTML"):
             self.parse("<html>Just a moment...</html>")
+
+    def test_parses_the_rendered_movie_page(self, seatmap_html):
+        from screenwatch.seating.model import SeatKind, SeatStatus
+
+        room = self.parse(seatmap_html, screen_id="5")
+
+        assert room.screen_id == "5"
+        assert room.available == 8
+        assert sum(s.status is SeatStatus.SOLD for s in room.seats) == 5
+        assert sum(s.kind is SeatKind.COMPANION for s in room.seats) == 2
+        assert sum(s.kind is SeatKind.WHEELCHAIR for s in room.seats) == 2
+        assert {s.row_label for s in room.seats} == {"A", "B", "C"}
+
+    def test_movie_url_matches_the_route_the_site_uses(self):
+        from screenwatch.seating.sources.regal import RegalSeatSource
+
+        url = RegalSeatSource().movie_url(
+            title="Spider-Man: Brand New Day",
+            movie_code="HO00021207",
+            date="2026-08-02",
+            theatre_code="1929",
+            performance_id="259528",
+        )
+        assert url == (
+            "https://www.regmovies.com/movies/"
+            "spiderman-brand-new-day-ho00021207?date=2026-08-02&site=1929&id=259528"
+        )
 
     def test_an_error_payload_is_surfaced(self):
         from screenwatch.seating.model import SeatDataUnavailable
@@ -443,7 +528,7 @@ class TestBookingLinkPointsSomewhereReal:
         provider.theatres()
         session.responses, session.calls = [theatre_html], 0
         spec = SearchSpec(work=WorkRef(query="*"),
-                          date_window=DateWindow(date(2020, 1, 1), date(2030, 1, 1)))
+                          date_window=DateWindow(date(2026, 8, 2), date(2026, 8, 2)))
         venues = [v for v in provider.discover(spec)
                   if v.venue_id == "regal-times-square-1929"]
         shows = provider.screenings(spec, venues, transport=None)

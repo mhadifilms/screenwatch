@@ -80,6 +80,50 @@ class TestScaleInvariance:
             )
 
 
+class TestAdaptiveMiddleArea:
+    def test_default_uses_a_layout_aware_middle_band(self):
+        auditorium = grid(8, 10)
+        model = QualityModel().for_auditorium(auditorium)
+
+        assert model.middle_band == pytest.approx((0.2857, 0.7143), abs=0.0001)
+        middle = [
+            row[len(row) // 2] for row in auditorium.rows()
+            if model.middle_band[0] <= row[0].y <= model.middle_band[1]
+        ]
+        outside = [
+            row[len(row) // 2] for row in auditorium.rows()
+            if row[0].y < model.middle_band[0] or row[0].y > model.middle_band[1]
+        ]
+        assert len({seat.y for seat in middle}) > 1
+        assert min(model.score(seat, row_count=auditorium.row_count) for seat in middle) > max(
+            model.score(seat, row_count=auditorium.row_count) for seat in outside
+        )
+
+        [best] = find_groups(auditorium, 1)[:1]
+        assert model.middle_band[0] <= best.seats[0].y <= model.middle_band[1]
+
+    def test_skipped_rows_choose_the_observed_physical_middle(self):
+        auditorium = build_auditorium(
+            "v", "1", ["......", "......", "", "", "......", "......", "......"]
+        )
+        model = QualityModel().for_auditorium(auditorium)
+
+        # The gap remains in y, so the first row after the cross-aisle is the
+        # closest observed middle instead of being treated as row three.
+        assert model.middle_band == pytest.approx((0.6667, 0.6667), abs=0.0001)
+        [best] = find_groups(auditorium, 1)[:1]
+        assert best.seats[0].row_index == 4
+
+    def test_tiny_rooms_do_not_penalize_every_seat_as_front(self):
+        auditorium = grid(2, 6)
+        model = QualityModel().for_auditorium(auditorium)
+        centres = [row[len(row) // 2] for row in auditorium.rows()]
+
+        assert model.score(centres[0], row_count=auditorium.row_count) == pytest.approx(
+            model.score(centres[1], row_count=auditorium.row_count)
+        )
+
+
 class TestGroupFinding:
     def test_prefers_contiguous_seating(self):
         a = build_auditorium("v", "1", ["××....××", "××××××××"])

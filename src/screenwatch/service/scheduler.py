@@ -9,8 +9,9 @@ whose target date is tonight, or that just saw its first screening appear, is
 in the window where tickets actually move. The tiers mirror the ones designed
 for the read layer:
 
-    cold      nothing found yet, target far off      30 min
+    cold      ordinary search target far off          30 min
     warm      screenings exist for the target        5 min
+              ticket watch before release             5 min
     hot       a hit in the last hour, or target      45 s (jittered)
               date is today
     retired   target date has passed                 no longer polled
@@ -69,6 +70,11 @@ def cadence_for(row: dict, *, now: datetime, today: date) -> Tier:
     if window is not None:
         if window.end < today:
             return Tier("retired", 0)
+        if spec.include_sold_out:
+            # A ticket watch is specifically waiting for state changes before
+            # the target date: new showtimes, returns and seat releases. Keep
+            # it warm even when the release window is still in the future.
+            return Tier("warm", WARM_S)
         if window.start <= today <= window.end:
             return Tier("hot", HOT_S)
         if (window.start - today).days <= 2:
@@ -114,7 +120,9 @@ class Scheduler:
 
     # ------------------------------------------------------------------
     def due(self, now: datetime) -> list[dict]:
-        today = now.date()
+        # Cadence tiers follow the user's local calendar, just like search
+        # windows.  UTC would retire a Bay Area watch several hours early.
+        today = now.astimezone().date()
         out = []
         for row in self.store.list_watches(self.user_id):
             tier = cadence_for(row, now=now, today=today)
@@ -141,6 +149,10 @@ class Scheduler:
                 # A watch that throws must not stop the loop; the run is
                 # recorded either way so it backs off rather than hot-spinning.
                 self.store.touch_watch(row["watch_id"])
+        deliver_due = getattr(self.watches, "deliver_due", None)
+        if deliver_due is not None:
+            with contextlib.suppress(Exception):
+                deliver_due(user_id=self.user_id)
         if hits and self.on_hits:
             self.on_hits(hits)
         return hits
@@ -167,9 +179,20 @@ def describe_hits(hits: list[WatchHit]) -> str:
     lines = [f"{len(hits)} new screening(s):"]
     for hit in hits:
         p = hit.payload()
+        alert_type = p.get("alert_type", "new_screening").replace("_", " ")
+        changes = ", ".join(p.get("changes", ()))
+        detail = f" [{changes}]" if changes else ""
+        state = []
+        if inventory := p.get("inventory_status"):
+            state.append(inventory.replace("_", " "))
+        if (position := p.get("seat_position")) and position != "unknown":
+            state.append(position.replace("_", " "))
+        status = f" — {'; '.join(state)}" if state else ""
+        seats = f" — {p['seats']}" if p.get("seats") else ""
         lines.append(
-            f"  {p['title']} — {p['presentation']} — {p['venue']} "
-            f"{p['starts_at_local']}  {p['booking_link'] or ''}"
+            f"  {alert_type}{detail}: {p['title']} — {p['presentation']} — "
+            f"{p['venue']} — {p['starts_at_local']}{status}{seats}  "
+            f"{p['booking_link'] or ''}"
         )
     return "\n".join(lines)
 

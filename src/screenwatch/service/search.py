@@ -10,11 +10,14 @@ into `Screening`s however it likes, and everything downstream is uniform.
 
 from __future__ import annotations
 
+import time
+import uuid
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Protocol
 
 from ..identity.resolve import WorkResolver, title_rank
+from ..models import Availability
 from ..ranking.candidate import Option, Screening
 from ..ranking.coarse import coarse_rank
 from ..ranking.diversify import diversify
@@ -23,7 +26,8 @@ from ..ranking.fine import fine_rank
 from ..ranking.spec import SearchSpec
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..transport import Transport
-from .store import Store
+from .serde import spec_to_json
+from .store import DEFAULT_USER, Store
 from .venues import Venue, VenueDirectory
 
 
@@ -56,6 +60,11 @@ class SearchResult:
     # deliberate - but the difference between "nothing is on" and "nothing is
     # on in the part we looked at", which the caller has to be able to see.
     clipped: tuple[str, ...] = ()
+    search_id: str = ""
+    started_at: str | None = None
+    finished_at: str | None = None
+    duration_ms: float = 0.0
+    provider_stats: tuple[dict, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -95,6 +104,7 @@ class SearchService:
         self.resolver = resolver or WorkResolver()
         self.directory = directory or VenueDirectory()
         self._transport = transport
+        self._last_provider_stats: tuple[dict, ...] = ()
 
     @property
     def transport(self) -> Transport:
@@ -116,24 +126,60 @@ class SearchService:
         screenings: list[Screening] = []
         errors: list[str] = []
         clipped: list[str] = []
+        provider_stats: list[dict] = []
 
         for provider in self.providers:
+            provider_started = time.perf_counter()
+            discovery_count = 0
             if discover := getattr(provider, "discover", None):
                 try:
-                    self.directory.register(discover(spec))
+                    discovered = discover(spec)
+                    discovery_count = len(discovered)
+                    self.directory.register(discovered)
                 except Exception as exc:                       # noqa: BLE001
                     errors.append(f"{provider.chain} discovery: {type(exc).__name__}: {exc}")
             venues = self.directory.matching(spec.location, chain=provider.chain)
             if not venues:
+                provider_stats.append({
+                    "chain": provider.chain,
+                    "status": "not_in_scope",
+                    "venues": 0,
+                    "discovered": discovery_count,
+                    "screenings": 0,
+                    "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
+                    "clipped": [],
+                })
                 continue
             try:
-                screenings.extend(provider.screenings(spec, venues, self.transport))
+                found = provider.screenings(spec, venues, self.transport)
+                screenings.extend(found)
+                provider_stats.append({
+                    "chain": provider.chain,
+                    "status": "ok",
+                    "venues": len(venues),
+                    "discovered": discovery_count,
+                    "screenings": len(found),
+                    "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
+                    "clipped": list(getattr(provider, "clipped", ())),
+                })
             except Exception as exc:                       # noqa: BLE001
                 # One dead provider must not empty the whole search - but it
                 # must be visible, because a silently missing chain looks
                 # exactly like a chain with nothing on.
                 errors.append(f"{provider.chain}: {type(exc).__name__}: {exc}")
+                provider_stats.append({
+                    "chain": provider.chain,
+                    "status": "error",
+                    "venues": len(venues),
+                    "discovered": discovery_count,
+                    "screenings": 0,
+                    "duration_ms": round((time.perf_counter() - provider_started) * 1000, 2),
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "clipped": list(getattr(provider, "clipped", ())),
+                })
             clipped.extend(getattr(provider, "clipped", ()))
+
+        self._last_provider_stats = tuple(provider_stats)
 
         return screenings, errors, clipped
 
@@ -188,8 +234,75 @@ class SearchService:
             for s in screenings
         ]
 
-    def search(self, spec: SearchSpec, *, today: date | None = None) -> SearchResult:
-        today = today or datetime.now(UTC).date()
+    @staticmethod
+    def unify_screenings(screenings: list[Screening]) -> list[Screening]:
+        """Collapse duplicate listings of the same real-world showing.
+
+        The provider id is not allowed to decide whether two listings are the
+        same show.  A richer listing wins the seat/booking handle, while the
+        structured metadata from all equivalent listings is retained.
+        """
+        grouped: dict[str, list[Screening]] = {}
+        order: list[str] = []
+        for screening in screenings:
+            key = screening.canonical_screening_id
+            if key not in grouped:
+                order.append(key)
+            grouped.setdefault(key, []).append(screening)
+
+        out: list[Screening] = []
+        for key in order:
+            group = grouped[key]
+            chosen = max(group, key=_screening_richness)
+            sources = tuple(sorted({source for s in group for source in s.sources}))
+            if len(group) == 1 and sources == chosen.sources:
+                out.append(chosen)
+                continue
+
+            # A source that says sellable is useful evidence that this real
+            # show can be bought even if another surface is stale.  Keep the
+            # most useful known availability and fill missing links/counts
+            # from the richer duplicate without changing the chosen provider
+            # handle used for seat fetching.
+            availability = _merged_availability(group)
+            deeplink = chosen.deeplink or next(
+                (s.deeplink for s in group if s.deeplink), None
+            )
+            out.append(replace(
+                chosen,
+                availability=availability,
+                deeplink=deeplink,
+                sources=sources,
+                seats_available=next(
+                    (s.seats_available for s in group
+                     if s.seats_available is not None),
+                    chosen.seats_available,
+                ),
+                seats_capacity=next(
+                    (s.seats_capacity for s in group
+                     if s.seats_capacity is not None),
+                    chosen.seats_capacity,
+                ),
+                seats_sold=next(
+                    (s.seats_sold for s in group if s.seats_sold is not None),
+                    chosen.seats_sold,
+                ),
+            ))
+        return out
+
+    def search(
+        self,
+        spec: SearchSpec,
+        *,
+        today: date | None = None,
+        user_id: str = DEFAULT_USER,
+    ) -> SearchResult:
+        started_clock = datetime.now().astimezone()
+        started_perf = time.perf_counter()
+        search_id = f"search_{uuid.uuid4().hex[:12]}"
+        # Relative windows are user-facing calendar windows.  Anchoring them
+        # to UTC makes a Bay Area watch jump to tomorrow at 5pm local time.
+        today = today or datetime.now().astimezone().date()
         screenings, errors, clipped = self.gather(spec)
         screenings = self.filter_by_work(screenings, spec)
 
@@ -202,6 +315,15 @@ class SearchService:
             screenings = [
                 s for s in screenings if spec.presentations.wants(s.presentation)
             ]
+
+        # Register every raw handle before collapsing duplicates.  This is
+        # what lets a watch migrate from an old provider id to the canonical
+        # identity without replaying the current inventory as new.
+        self.store.register_screening_aliases([
+            (s.canonical_screening_id, s.screening_id, s.chain)
+            for s in screenings
+        ])
+        screenings = self.unify_screenings(screenings)
 
         options = coarse_rank(screenings, spec)
 
@@ -241,7 +363,8 @@ class SearchService:
         annotate(options, spec)
         self._persist(options)
 
-        return SearchResult(
+        finished_clock = datetime.now().astimezone()
+        result = SearchResult(
             options=options,
             spec=spec,
             considered=len(screenings),
@@ -251,7 +374,28 @@ class SearchService:
             ),
             provider_errors=tuple(errors),
             clipped=tuple(clipped),
+            search_id=search_id,
+            started_at=started_clock.isoformat(),
+            finished_at=finished_clock.isoformat(),
+            duration_ms=round((time.perf_counter() - started_perf) * 1000, 2),
+            provider_stats=self._last_provider_stats,
         )
+        self.store.record_search_run(
+            search_id,
+            spec=spec_to_json(spec),
+            started_at=result.started_at or started_clock.isoformat(),
+            finished_at=result.finished_at or finished_clock.isoformat(),
+            duration_ms=result.duration_ms,
+            considered=result.considered,
+            result_count=len(result.options),
+            seatmaps_fetched=result.seatmaps_fetched,
+            complete=result.complete,
+            provider_stats=result.provider_stats,
+            errors=result.provider_errors,
+            clipped=result.clipped,
+            user_id=user_id,
+        )
+        return result
 
     # ------------------------------------------------------------------
     def _provider_for(self, chain: str) -> Provider | None:
@@ -263,6 +407,7 @@ class SearchService:
             self.store.put_work(s.work)
             self.store.upsert_screening(
                 s.screening_id,
+                canonical_id=s.canonical_screening_id,
                 work_id=s.work.work_id,
                 venue_id=s.venue_id,
                 chain=s.chain,
@@ -290,3 +435,31 @@ def _matches_query(screening: Screening, query: str) -> bool:
 
     want, have = match_key(query), match_key(screening.work.title)
     return want in have or have in want
+
+
+def _screening_richness(screening: Screening) -> tuple:
+    """Prefer the duplicate with the best downstream enrichment handles."""
+    return (
+        screening.screen_id is not None,
+        screening.deeplink is not None,
+        screening.seats_available is not None,
+        screening.presentation.projection.value != "unknown",
+        screening.presentation.brand.value != "none",
+        screening.availability is not Availability.UNKNOWN,
+        len(screening.sources),
+        screening.chain,
+    )
+
+
+def _merged_availability(screenings: list[Screening]) -> Availability:
+    """Use the most actionable claim when equivalent sources disagree."""
+    values = {screening.availability for screening in screenings}
+    for candidate in (
+        Availability.SELLABLE,
+        Availability.ALMOST_FULL,
+        Availability.SOLD_OUT,
+        Availability.UNKNOWN,
+    ):
+        if candidate in values:
+            return candidate
+    return Availability.UNKNOWN

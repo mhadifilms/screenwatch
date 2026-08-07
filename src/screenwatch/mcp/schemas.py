@@ -75,7 +75,10 @@ class PresentationInput(BaseModel):
 class SeatingInput(BaseModel):
     allow_split: bool = Field(True, description="Accept a split rather than nothing")
     avoid_front_rows: int = Field(2, description="Treat the first N rows as a last resort")
-    ideal_depth: float | None = Field(None, description="0=front, 1=back. Default ~0.6")
+    ideal_depth: float | None = Field(
+        None,
+        description="0=front, 1=back. Default is an adaptive middle area; set to override",
+    )
     max_lateral: float = Field(1.0, description="0=centre only, 1=anywhere")
     require: list[str] = Field(default_factory=list)
     avoid_aisle: bool = False

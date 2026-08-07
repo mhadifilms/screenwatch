@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 
@@ -167,6 +167,56 @@ class TestStore:
         store.set_pref("home", {"lat": 1.0, "lon": 2.0})
         assert store.get_pref("home")["lat"] == 1.0
         assert store.get_pref("missing", "fallback") == "fallback"
+
+    def test_alert_event_key_is_idempotent(self, store):
+        store.create_watch("w1", "x", "{}")
+        first = store.record_hit_status(
+            "w1", "amc:1", {"alert_type": "new_screening"},
+            event_key="new_screening:amc:1",
+        )
+        second = store.record_hit_status(
+            "w1", "amc:1", {"alert_type": "new_screening"},
+            event_key="new_screening:amc:1",
+        )
+
+        assert first[0] == second[0]
+        assert second[1] is False
+        assert store._conn.execute("SELECT COUNT(*) FROM watch_hits").fetchone()[0] == 1
+
+    def test_existing_watch_database_migrates_alert_columns(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE watches (
+                watch_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+                label TEXT NOT NULL, spec TEXT NOT NULL,
+                cadence_s INTEGER NOT NULL DEFAULT 300,
+                active INTEGER NOT NULL DEFAULT 1, webhook TEXT,
+                created_at TEXT NOT NULL, last_run TEXT, last_hit TEXT
+            );
+            CREATE TABLE watch_hits (
+                hit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                watch_id TEXT NOT NULL, screening_id TEXT NOT NULL,
+                payload TEXT NOT NULL, created_at TEXT NOT NULL,
+                delivered INTEGER NOT NULL DEFAULT 0
+            );
+            """
+        )
+        conn.close()
+
+        store = Store(path)
+        columns = {
+            row[1] for row in store._conn.execute("PRAGMA table_info(watches)")
+        }
+        hit_columns = {
+            row[1] for row in store._conn.execute("PRAGMA table_info(watch_hits)")
+        }
+        assert {"last_success", "last_error", "last_warning", "error_count"} <= columns
+        assert "event_key" in hit_columns
+        store.close()
 
 
 # --------------------------------------------------------------------------
@@ -344,6 +394,201 @@ class TestWatches:
         assert row["label"] == "dune 70mm"
         assert spec_from_json(row["spec"]).work.query == "dune"
 
+    def test_alert_payload_explains_a_new_drop(self):
+        _service, watches, _ = self.build([screening("amc:1")])
+        watch_id = watches.create(
+            self.spec(), "x", seed=False, today=date(2026, 8, 2)
+        )
+
+        [hit] = watches.run(watch_id, today=date(2026, 8, 2))
+        payload = hit.payload()
+
+        assert payload["alert_type"] == "new_screening"
+        assert payload["priority"] > 0
+        assert payload["current"]["screening_id"] == "amc:1"
+        assert payload["delta"] is None
+        assert payload["booking_link"]
+        assert payload["observed_at"]
+
+    def test_existing_screening_alerts_when_a_party_can_now_fit(self):
+        service, watches, _ = self.build([screening("amc:1")])
+        watch_id = watches.create(self.spec(), "x", today=date(2026, 8, 2))
+
+        # The first search had no seat surface. A later poll exposes two free
+        # seats for the same screening; that is news even though its id did
+        # not change.
+        service.providers[0]._auditorium = build_auditorium(
+            "amc-metreon-16", "1", [".."]
+        )
+        [hit] = watches.run(watch_id, today=date(2026, 8, 2))
+
+        assert hit.alert_type == "party_fits"
+        assert "seat_map_available" in hit.changes
+        assert hit.previous["seat_data"] == "unavailable"
+        payload = hit.payload()
+        assert payload["current"]["seat_data"] == "grid"
+        assert payload["delta"]["seat_data"] == {
+            "from": "unavailable", "to": "grid"
+        }
+
+    def test_sold_out_showing_alerts_when_tickets_return(self):
+        sold = replace(screening("amc:1"), availability=Availability.SOLD_OUT)
+        service, watches, store = self.build([sold])
+        watch_id = watches.create(self.spec(), "x", today=date(2026, 8, 2))
+        assert spec_from_json(store.get_watch(watch_id)["spec"]).include_sold_out
+
+        service.providers[0]._screenings = [screening("amc:1")]
+        [hit] = watches.run(watch_id, today=date(2026, 8, 2))
+
+        assert hit.alert_type == "tickets_returned"
+        assert hit.payload()["delta"]["availability"] == {
+            "from": "sold_out", "to": "sellable"
+        }
+
+    def test_state_calls_out_nearly_sold_out_inventory(self):
+        nearly = replace(
+            screening("amc:1"), seats_available=5, seats_capacity=100
+        )
+        service, watches, _ = self.build([nearly])
+        watch_id = watches.create(
+            self.spec(), "x", seed=False, today=date(2026, 8, 2)
+        )
+
+        [hit] = watches.run(watch_id, today=date(2026, 8, 2))
+        payload = hit.payload()
+        assert payload["inventory_status"] == "nearly_sold_out"
+        assert payload["current"]["availability_status"] == "nearly_sold_out"
+        assert payload["current"]["seat_position"] == "unknown"
+
+    def test_middle_seat_change_is_a_first_class_alert(self):
+        initial = build_auditorium("amc-metreon-16", "1", ["....", "××××", "...."])
+        service, watches, _ = self.build([screening("amc:1")])
+        service.providers[0]._auditorium = initial
+        watch_id = watches.create(self.spec(), "x", today=date(2026, 8, 2))
+
+        service.providers[0]._auditorium = build_auditorium(
+            "amc-metreon-16", "1", ["××××", "....", "××××"]
+        )
+        [hit] = watches.run(watch_id, today=date(2026, 8, 2))
+
+        assert hit.alert_type == "middle_seats_available"
+        assert "middle_seats_available" in hit.changes
+        payload = hit.payload()
+        assert payload["previous"]["seat_position"] == "no_middle_seats"
+        assert payload["current"]["seat_position"] == "middle_area"
+        assert payload["seat_position"] == "middle_area"
+
+    def test_webhook_success_does_not_consume_poll_alerts(self):
+        calls = []
+
+        def sender(url, body, request):
+            calls.append((url, body, request.headers))
+
+        service, _old_watches, store = self.build([screening("amc:1")])
+        watches = WatchService(
+            service, store, webhook_sender=sender,
+        )
+        watch_id = watches.create(
+            self.spec(), "x", seed=False,
+            webhook="https://alerts.example.test/hook",
+            today=date(2026, 8, 2),
+        )
+
+        watches.run(watch_id, today=date(2026, 8, 2))
+
+        assert len(calls) == 1
+        assert calls[0][1]["event"] == "screenwatch.alerts.v1"
+        assert calls[0][1]["hits"][0]["hit_id"]
+        assert calls[0][1]["hits"][0]["delivery_attempt"] == 1
+        assert any(
+            key.lower() == "x-screenwatch-idempotency-key"
+            for key in calls[0][2]
+        )
+        assert watches.pending()
+        assert watches.pending()[0]["payload"]["hit_id"] == watches.pending()[0]["hit_id"]
+        assert store.pending_webhook_hits(watch_id) == []
+
+        watches.acknowledge([watches.pending()[0]["hit_id"]])
+        assert watches.pending() == []
+
+    def test_failed_webhook_is_retried_with_durable_backoff(self):
+        clock = [datetime(2026, 8, 2, 12, 0, tzinfo=UTC)]
+        attempts = []
+
+        def sender(_url, _body, _request):
+            attempts.append(clock[0])
+            if len(attempts) == 1:
+                raise RuntimeError("receiver offline")
+
+        service, _old_watches, store = self.build([screening("amc:1")])
+        watches = WatchService(
+            service, store, webhook_sender=sender, clock=lambda: clock[0]
+        )
+        watch_id = watches.create(
+            self.spec(), "x", seed=False,
+            webhook="https://alerts.example.test/hook",
+            today=date(2026, 8, 2),
+        )
+
+        watches.run(watch_id, today=date(2026, 8, 2))
+        assert len(attempts) == 1
+        assert store.pending_webhook_hits(watch_id, now=clock[0].isoformat()) == []
+        delivery = store._conn.execute(
+            "SELECT attempts, delivered_at, next_attempt_at, last_error "
+            "FROM watch_deliveries"
+        ).fetchone()
+        assert delivery["attempts"] == 1
+        assert delivery["delivered_at"] is None
+        assert "receiver offline" in delivery["last_error"]
+
+        clock[0] += timedelta(seconds=61)
+        watches.deliver_due()
+        assert len(attempts) == 2
+        assert store.pending_webhook_hits(watch_id, now=clock[0].isoformat()) == []
+
+    def test_watch_health_records_failures_and_recovers(self):
+        class FlakySearch:
+            def __init__(self, store):
+                self.store = store
+                self.fail = True
+                self.warn = False
+
+            def search(self, spec, *, today=None):
+                if self.fail:
+                    raise RuntimeError("upstream unavailable")
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "options": [],
+                        "provider_errors": ("regal: partial outage",) if self.warn else (),
+                        "clipped": (),
+                    },
+                )()
+
+        store = Store.memory()
+        service = FlakySearch(store)
+        watches = WatchService(service, store)
+        watch_id = watches.create(
+            self.spec(), "x", seed=False, today=date(2026, 8, 2)
+        )
+
+        with pytest.raises(RuntimeError, match="upstream unavailable"):
+            watches.run(watch_id, today=date(2026, 8, 2))
+        assert store.get_watch(watch_id)["error_count"] == 1
+        assert "upstream unavailable" in store.get_watch(watch_id)["last_error"]
+
+        service.fail = False
+        watches.run(watch_id, today=date(2026, 8, 2))
+        health = store.get_watch(watch_id)
+        assert health["error_count"] == 0
+        assert health["last_error"] is None
+        assert health["last_success"]
+
+        service.warn = True
+        watches.run(watch_id, today=date(2026, 8, 2))
+        assert store.get_watch(watch_id)["last_warning"] == "regal: partial outage"
+
 
 # --------------------------------------------------------------------------
 class TestVenueDirectory:
@@ -385,6 +630,7 @@ class TestTransportsAgree:
         app = create_app(service, WatchService(service, store))
         routes = {r.path for r in app.routes}
         for path in ("/v1/search", "/v1/watches", "/v1/resolve",
+                     "/v1/watches/acknowledge",
                      "/v1/seatmap/{option_id}", "/v1/booking-link/{option_id}",
                      "/v1/seatmap/{option_id}.svg"):
             assert path in routes
@@ -424,6 +670,39 @@ class TestTransportsAgree:
         assert grid.status_code == 200
         assert "grid" in grid.json()
 
+    def test_api_poll_is_safe_until_alerts_are_acknowledged(self):
+        from fastapi.testclient import TestClient
+
+        from screenwatch.api.app import create_app
+
+        store = Store.memory()
+        service = SearchService(
+            [FakeProvider([screening("amc:1")])],
+            store=store,
+            directory=VenueDirectory(),
+            transport=object(),
+        )
+        watches = WatchService(service, store)
+        watch_id = watches.create(
+            SearchSpec(work=WorkRef(query=WORK.title)),
+            "x",
+            seed=False,
+            today=date(2026, 8, 2),
+        )
+        client = TestClient(create_app(service, watches))
+
+        first = client.post("/v1/watches/poll")
+        hit_id = first.json()["hits"][0]["hit_id"]
+        assert first.status_code == 200
+        assert client.post("/v1/watches/poll").json()["hits"][0]["hit_id"] == hit_id
+
+        acknowledged = client.post(
+            "/v1/watches/acknowledge", json={"hit_ids": [hit_id]}
+        )
+        assert acknowledged.json() == {"acknowledged": [hit_id]}
+        assert client.post("/v1/watches/poll").json()["hits"] == []
+        assert store.get_watch(watch_id)["last_success"]
+
 
 class TestMcpTools:
     """Exercised through the real MCP dispatch path, not by calling the
@@ -459,7 +738,8 @@ class TestMcpTools:
         assert names == {
             "resolve_title", "find_screenings", "get_seatmap", "explain_ranking",
             "create_watch", "list_watches", "cancel_watch", "poll_watches",
-            "get_booking_link",
+            "acknowledge_hits", "get_booking_link", "get_data_overview",
+            "list_venues", "get_venue",
         }
 
     @pytest.mark.asyncio

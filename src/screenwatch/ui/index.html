@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b1020" />
+    <title>screenwatch — theater intelligence</title>
+    <link rel="icon" href="/assets/favicon.svg" />
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div class="background-glow glow-one"></div>
+    <div class="background-glow glow-two"></div>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="screenwatch home">
+        <span class="brand-mark">◒</span>
+        <span>screen<span class="brand-muted">watch</span></span>
+      </a>
+      <div class="topbar-actions">
+        <span id="health-status" class="status-dot"><span></span>connecting</span>
+        <button id="notify-button" class="button button-quiet" type="button">Enable alerts</button>
+        <a class="icon-link" href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="hero">
+        <div class="eyebrow">THEATER INTELLIGENCE / US COVERAGE</div>
+        <h1>Find the screening worth leaving the house for.</h1>
+        <p class="hero-copy">
+          Screenwatch watches the messy real world of cinema: formats, venues,
+          room geometry, seat inventory, and ticket drops — then explains the
+          best option like a very knowledgeable friend.
+        </p>
+        <div class="hero-pills">
+          <span>seat-aware ranking</span>
+          <span>new-release watches</span>
+          <span>hard stop at booking</span>
+        </div>
+      </section>
+
+      <section class="control-card panel" aria-labelledby="search-title">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow">DISCOVER</div>
+            <h2 id="search-title">Search the map</h2>
+          </div>
+          <span class="keyboard-hint">⌘ K to focus</span>
+        </div>
+        <form id="search-form" class="search-form">
+          <label class="field field-title">
+            <span>Film, event, or format</span>
+            <input id="title" name="title" required autocomplete="off" placeholder="Dune: Part Three" />
+          </label>
+          <label class="field field-radius">
+            <span>Radius</span>
+            <select id="radius" name="radius">
+              <option value="15">15 km</option>
+              <option value="40" selected>40 km</option>
+              <option value="80">80 km</option>
+              <option value="200">pilgrimage mode</option>
+            </select>
+          </label>
+          <label class="field field-party">
+            <span>Party</span>
+            <input id="party" name="party" type="number" min="1" max="20" value="2" />
+          </label>
+          <label class="field field-date">
+            <span>From</span>
+            <input id="from-date" name="from-date" type="date" />
+          </label>
+          <label class="field field-date">
+            <span>Through</span>
+            <input id="through-date" name="through-date" type="date" />
+          </label>
+          <button class="button button-primary search-submit" type="submit"><span>Find screenings</span><span>→</span></button>
+        </form>
+        <div class="advanced-row">
+          <div class="format-picker">
+            <span class="picker-label">Prioritize</span>
+            <label class="check-chip"><input type="checkbox" value="imax70" /><span>IMAX 70mm</span></label>
+            <label class="check-chip"><input type="checkbox" value="imax" /><span>IMAX</span></label>
+            <label class="check-chip"><input type="checkbox" value="dolby" /><span>Dolby</span></label>
+            <label class="check-chip"><input type="checkbox" value="70mm" /><span>70mm</span></label>
+            <label class="check-chip"><input type="checkbox" value="35mm" /><span>35mm</span></label>
+            <label class="check-chip"><input type="checkbox" value="laser" /><span>Laser</span></label>
+          </div>
+          <details class="location-details">
+            <summary>Use a location pin</summary>
+            <div class="location-inputs">
+              <label class="field"><span>Latitude</span><input id="lat" type="number" step="any" placeholder="37.78" /></label>
+              <label class="field"><span>Longitude</span><input id="lon" type="number" step="any" placeholder="-122.40" /></label>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section id="intelligence-strip" class="intelligence-strip" aria-live="polite">
+        <div class="metric"><span class="metric-value" id="metric-screenings">—</span><span class="metric-label">screenings indexed</span></div>
+        <div class="metric"><span class="metric-value" id="metric-venues">—</span><span class="metric-label">venues in view</span></div>
+        <div class="metric"><span class="metric-value" id="metric-seat-data">—</span><span class="metric-label">seat intelligence</span></div>
+        <div class="metric metric-highlight"><span class="metric-value" id="metric-alerts">—</span><span class="metric-label">alerts waiting</span></div>
+      </section>
+
+      <div class="workspace-grid">
+        <section class="panel results-panel" aria-labelledby="results-title">
+          <div class="section-heading results-heading">
+            <div>
+              <div class="eyebrow">RANKED OPTIONS</div>
+              <h2 id="results-title">Your next great screening</h2>
+            </div>
+            <div id="result-meta" class="result-meta">Run a search to begin</div>
+          </div>
+          <div id="results-empty" class="empty-state">
+            <div class="empty-glyph">✦</div>
+            <h3>Nothing is ranked yet.</h3>
+            <p>Search for a title to compare real bookable options, not just a wall of showtimes.</p>
+          </div>
+          <div id="results-loading" class="loading-state" hidden>
+            <span class="spinner"></span><span>Reading theaters and checking the best rooms…</span>
+          </div>
+          <div id="results-list" class="results-list"></div>
+          <div id="scope-note" class="scope-note" hidden></div>
+        </section>
+
+        <aside class="side-column">
+          <section class="panel watches-panel" aria-labelledby="watches-title">
+            <div class="section-heading compact">
+              <div>
+                <div class="eyebrow">ALWAYS-ON</div>
+                <h2 id="watches-title">Release watches</h2>
+              </div>
+              <button id="poll-button" class="button button-icon" type="button" title="Poll watches now">↻</button>
+            </div>
+            <p class="panel-intro">Get a quiet alert when the exact thing you want appears — including seats returning to a sold-out show.</p>
+            <form id="watch-form" class="watch-form">
+              <input id="watch-label" placeholder="e.g. Dune 3 / IMAX 70mm / Bay Area" required />
+              <div class="watch-actions">
+                <label class="seed-toggle"><input id="watch-seed" type="checkbox" checked /><span>Only alert on new drops</span></label>
+                <button class="button button-secondary" type="submit">Create watch</button>
+              </div>
+            </form>
+            <div id="watches-list" class="watches-list"><div class="mini-empty">No active watches yet.</div></div>
+          </section>
+
+          <section class="panel principles-panel">
+            <div class="eyebrow">WHAT MAKES IT DIFFERENT</div>
+            <div class="principle"><span class="principle-icon">▦</span><div><strong>Seats, not vibes</strong><small>Confirmed grids beat guesses. Estimates are labeled.</small></div></div>
+            <div class="principle"><span class="principle-icon">◎</span><div><strong>Formats stay honest</strong><small>IMAX, 15/70, Dolby, 35mm, and venue geometry remain distinct.</small></div></div>
+            <div class="principle"><span class="principle-icon">↗</span><div><strong>Book when ready</strong><small>We surface the link, then you take over. No cart automation.</small></div></div>
+          </section>
+        </aside>
+      </div>
+
+      <section class="panel venues-panel" aria-labelledby="venues-title">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow">THE VENUE GRAPH</div>
+            <h2 id="venues-title">Understand the rooms around you</h2>
+          </div>
+          <div class="venue-tools">
+            <input id="venue-filter" class="compact-input" placeholder="Filter venues" />
+            <select id="venue-sort" class="compact-select"><option value="distance">Nearest first</option><option value="name">Name</option><option value="type">Type</option><option value="chain">Chain</option></select>
+          </div>
+        </div>
+        <div id="venue-summary" class="venue-summary"></div>
+        <div class="table-wrap">
+          <table class="venue-table">
+            <thead><tr><th>Venue</th><th>Type</th><th>Seat surface</th><th>Indexed evidence</th><th>Known rooms</th></tr></thead>
+            <tbody id="venues-table"><tr><td colspan="5" class="table-empty">Loading the venue graph…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>
