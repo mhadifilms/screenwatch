@@ -238,7 +238,12 @@ class SearchSpec:
             raise ValueError("max_seatmap_fetches must not be negative")
 
     def window(self, today: date) -> DateWindow:
-        return self.date_window or DateWindow.next_days(today, 7)
+        # A normal search stays intentionally cheap. Watches include sold-out
+        # inventory so they can detect returns and release changes; give those
+        # open-ended specs the same 31-day rolling horizon the providers can
+        # serve without an explicit date range.
+        default_days = 31 if self.include_sold_out else 7
+        return self.date_window or DateWindow.next_days(today, default_days)
 
     def admits_time(self, when: datetime) -> bool:
         return not self.time_windows or any(w.contains(when) for w in self.time_windows)

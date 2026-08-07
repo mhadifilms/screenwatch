@@ -212,6 +212,20 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+_INVENTORY_GROUPS = {
+    "chain": "s.chain",
+    "venue": "s.venue_id",
+    "venue_type": "COALESCE(d.venue_type, 'unknown')",
+    "city": "COALESCE(NULLIF(d.city, ''), 'unknown')",
+    "format": "s.presentation",
+    "availability": "s.availability",
+}
+_INVENTORY_LABELS = {
+    **_INVENTORY_GROUPS,
+    "venue": "COALESCE(NULLIF(d.name, ''), s.venue_id)",
+}
+
+
 class Store:
     def __init__(self, path: str | pathlib.Path = "screenwatch.db") -> None:
         self.path = str(path)
@@ -807,6 +821,34 @@ class Store:
         ).fetchall()
         return [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
 
+    def hit_history(
+        self,
+        watch_id: str,
+        *,
+        user_id: str = DEFAULT_USER,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return a user's durable alert history, newest first.
+
+        A watch is an evidence stream, not just a boolean notification. Keeping
+        the full history inspectable makes it possible to understand what
+        changed, replay a missed drop, and audit a webhook without reaching
+        into SQLite directly.
+        """
+        rows = self._conn.execute(
+            """SELECT h.hit_id, h.watch_id, h.screening_id, h.event_key,
+                      h.payload, h.created_at, h.delivered
+                 FROM watch_hits h
+                 JOIN watches w ON w.watch_id=h.watch_id
+                WHERE h.watch_id=? AND w.user_id=?
+                ORDER BY h.created_at DESC, h.hit_id DESC LIMIT ?""",
+            (watch_id, user_id, max(1, min(limit, 1000))),
+        ).fetchall()
+        return [
+            {**dict(row), "payload": json.loads(row["payload"])}
+            for row in rows
+        ]
+
     def mark_delivered(
         self, hit_ids: list[int], *, user_id: str = DEFAULT_USER
     ) -> None:
@@ -1149,6 +1191,63 @@ class Store:
             "seats_available": 0,
             "seats_capacity": 0,
         }
+
+    def inventory_analytics(self, *, group_by: str = "chain", limit: int = 100) -> list[dict]:
+        """Aggregate indexed evidence by a safe, documented dimension.
+
+        The query intentionally uses only observations already in the local
+        store. Seat totals are taken from the latest snapshot for each
+        screening, so a venue does not look artificially full because every
+        historical poll is summed together.
+        """
+        try:
+            expression = _INVENTORY_GROUPS[group_by]
+            label_expression = _INVENTORY_LABELS[group_by]
+        except KeyError as exc:
+            allowed = ", ".join(sorted(_INVENTORY_GROUPS))
+            raise ValueError(f"group_by must be one of: {allowed}") from exc
+        rows = self._conn.execute(
+            f"""WITH latest_seats AS (
+                         SELECT screening_id, available, capacity, captured_at,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY screening_id
+                                    ORDER BY captured_at DESC
+                                ) AS position
+                           FROM seat_snapshots
+                       )
+                       SELECT {expression} AS group_key,
+                              {label_expression} AS group_label,
+                              COUNT(*) AS screenings,
+                              COUNT(DISTINCT s.work_id) AS works,
+                              COUNT(DISTINCT s.venue_id) AS venues,
+                              SUM(CASE WHEN s.availability IN ('sellable','almost_full')
+                                       THEN 1 ELSE 0 END) AS sellable,
+                              SUM(CASE WHEN s.availability='sold_out'
+                                       THEN 1 ELSE 0 END) AS sold_out,
+                              COUNT(ls.screening_id) AS seat_screenings,
+                              COALESCE(SUM(ls.available), 0) AS seats_available,
+                              COALESCE(SUM(ls.capacity), 0) AS seats_capacity,
+                              MAX(COALESCE(ls.captured_at, s.last_seen)) AS last_seen
+                         FROM screenings s
+                         LEFT JOIN directory_venues d ON d.venue_id=s.venue_id
+                         LEFT JOIN latest_seats ls
+                           ON ls.screening_id=s.screening_id AND ls.position=1
+                        GROUP BY {expression}
+                        ORDER BY screenings DESC, group_key
+                        LIMIT ?""",
+            (max(1, min(limit, 1000)),),
+        ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["seat_coverage"] = round(
+                item["seat_screenings"] / item["screenings"], 4
+            ) if item["screenings"] else 0.0
+            item["seat_fill"] = round(
+                1 - item["seats_available"] / item["seats_capacity"], 4
+            ) if item["seats_capacity"] else None
+            out.append(item)
+        return out
 
     def recent_seat_snapshots(self, *, limit: int = 100) -> list[dict]:
         rows = self._conn.execute(

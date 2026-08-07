@@ -88,7 +88,10 @@ class Observatory:
         chain: str | None = None,
         venue_type: str | None = None,
         query: str | None = None,
+        city: str | None = None,
         origin: GeoPoint | None = None,
+        radius_km: float | None = None,
+        include_unknown: bool = True,
         sort: str = "distance",
         limit: int = 200,
     ) -> list[dict]:
@@ -97,7 +100,10 @@ class Observatory:
             chain=chain,
             venue_type=venue_type,
             query=query,
+            city=city,
             origin=origin,
+            radius_km=radius_km,
+            include_unknown=include_unknown,
             sort=sort,
             limit=limit,
         ):
@@ -110,6 +116,24 @@ class Observatory:
 
     def recent_searches(self, *, limit: int = 20, user_id: str = "local") -> list[dict]:
         return self.store.recent_search_runs(limit=limit, user_id=user_id)
+
+    def inventory_analytics(self, *, group_by: str = "chain", limit: int = 100) -> dict:
+        """Return grouped, source-backed inventory metrics for dashboards.
+
+        The store owns the SQL and latest-snapshot semantics; this wrapper
+        gives every transport one stable response shape and a concise caveat
+        about what the numbers mean.
+        """
+        return {
+            "group_by": group_by,
+            "groups": self.store.inventory_analytics(group_by=group_by, limit=limit),
+            "source": "local evidence store",
+            "caveat": (
+                "Counts describe screenings observed by configured providers. "
+                "Seat totals use the latest snapshot per screening; missing seat "
+                "surfaces are not inferred to be empty."
+            ),
+        }
 
     def _venue_record(self, venue: Venue, *, origin: GeoPoint | None = None) -> dict:
         record = venue.to_dict(origin=origin)

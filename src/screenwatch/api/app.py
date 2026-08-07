@@ -168,6 +168,19 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
     ) -> dict:
         return {"providers": search.store.provider_health(user_id=uid, limit=limit)}
 
+    @app.get("/v1/analytics/inventory")
+    def inventory_analytics(
+        group_by: str = Query(
+            "chain",
+            pattern="^(chain|venue|venue_type|city|format|availability)$",
+        ),
+        limit: int = Query(100, ge=1, le=1000),
+    ) -> dict:
+        try:
+            return observatory.inventory_analytics(group_by=group_by, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     @app.get("/v1/venues")
     def venues(
         chain: str | None = None,
@@ -177,13 +190,19 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
         limit: int = Query(200, ge=1, le=1000),
         lat: float | None = None,
         lon: float | None = None,
+        city: str | None = None,
+        radius_km: float | None = Query(None, gt=0, le=10000),
+        include_unknown: bool = True,
     ) -> dict:
         origin = GeoPoint(lat, lon) if lat is not None and lon is not None else None
         rows = observatory.list_venues(
             chain=chain,
             venue_type=type,
             query=q,
+            city=city,
             origin=origin,
+            radius_km=radius_km,
+            include_unknown=include_unknown,
             sort=sort,
             limit=limit,
         )
@@ -221,6 +240,31 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
             "confidence": resolution.link.confidence,
             "needs_review": resolution.link.needs_review,
             "candidates": [vars(candidate) for candidate in resolution.candidates],
+        }
+
+    @app.get("/v1/releases/signals")
+    def release_signals(query: str = Query(..., min_length=1, max_length=200)) -> dict:
+        """Return the cheapest currently available catalog signal for a title."""
+        spec = SearchSpec(work=WorkRef(query=query.strip()), release_radar=True)
+        try:
+            signals = search.release_signals(spec)
+        except Exception as exc:
+            raise HTTPException(
+                502,
+                detail={
+                    "message": "AMC catalog signal could not be read",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            ) from exc
+        return {
+            "query": query.strip(),
+            "source": "amc:sitemap",
+            "signals": signals,
+            "ticket_sale_proven": False,
+            "caveat": (
+                "Catalog presence is an early release signal, not proof that "
+                "tickets are on sale. Use a strict screening watch for that."
+            ),
         }
 
     @app.post("/v1/search")
@@ -324,6 +368,20 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
         if row is None or row["user_id"] != uid:
             raise HTTPException(404, "unknown watch_id")
         return {**row, "spec": spec_to_dict(spec_from_json(row["spec"]))}
+
+    @app.get("/v1/watches/{watch_id}/history")
+    def watch_history(
+        watch_id: str,
+        limit: int = Query(100, ge=1, le=1000),
+        uid: str = Depends(user),
+    ) -> dict:
+        row = search.store.get_watch(watch_id)
+        if row is None or row["user_id"] != uid:
+            raise HTTPException(404, "unknown watch_id")
+        return {
+            "watch_id": watch_id,
+            "hits": search.store.hit_history(watch_id, user_id=uid, limit=limit),
+        }
 
     @app.post("/v1/watches/{watch_id}/run")
     def run_watch(watch_id: str, body: WatchRun | None = None, uid: str = Depends(user)) -> dict:

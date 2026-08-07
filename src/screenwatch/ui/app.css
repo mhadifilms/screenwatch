@@ -167,6 +167,16 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 .health-pill.error { color: var(--danger); border-color: rgba(255,141,153,.25); }
 .health-pill.error > span { background: var(--danger); }
 .health-empty { color: var(--muted); font-size: 10px; }
+.data-pulse-heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin: 18px 0 10px; }
+.data-pulse-heading h3 { margin: 5px 0 0; font-size: 15px; }
+.analytics-picker { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; }
+.analytics-picker select { min-height: 34px; padding: 7px 28px 7px 9px; font-size: 11px; }
+.inventory-analytics { border: 1px solid var(--line); border-radius: 11px; background: rgba(8,13,25,.32); margin-bottom: 19px; }
+.analytics-table { width: 100%; border-collapse: collapse; min-width: 680px; }
+.analytics-table th { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .11em; font-weight: 650; text-align: left; padding: 10px 11px; }
+.analytics-table td { border-top: 1px solid var(--line); padding: 10px 11px; color: var(--soft); font-size: 11px; vertical-align: top; }
+.analytics-key { color: var(--text) !important; font-weight: 650; }
+.analytics-caveat { padding: 10px 11px 12px; color: var(--muted); font-size: 10px; line-height: 1.45; border-top: 1px solid var(--line); }
 .table-wrap { overflow-x: auto; }
 .venue-table { width: 100%; border-collapse: collapse; min-width: 680px; }
 .venue-table th { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .13em; font-weight: 650; text-align: left; padding: 0 12px 10px; }
@@ -211,6 +221,7 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
   .result-side .score-label { display: none; }
   .results-heading, .section-heading { align-items: flex-start; }
   .result-meta { text-align: left; }
+  .data-pulse-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
   .venue-tools { flex-direction: column; width: 145px; }
   .compact-input { width: auto; }
 }

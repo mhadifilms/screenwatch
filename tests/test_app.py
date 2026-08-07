@@ -72,6 +72,7 @@ def test_local_app_and_data_endpoints_are_available():
     overview = client.get("/v1/analytics/overview").json()
     assert overview["directory"]["venues"] >= 1
     assert overview["providers"][0]["seat_data"] == "exact"
+    assert client.get("/v1/analytics/inventory?group_by=chain").json()["groups"] == []
 
     venues = client.get("/v1/venues?sort=name").json()
     assert venues["venues"]
@@ -79,6 +80,9 @@ def test_local_app_and_data_endpoints_are_available():
     scoped = client.get("/v1/venues?chain=amc&type=multiplex").json()
     assert scoped["venues"]
     assert {venue["chain"] for venue in scoped["venues"]} == {"amc"}
+    city_scoped = client.get("/v1/venues?city=San%20Francisco").json()
+    assert city_scoped["venues"]
+    assert all("san-francisco" in (venue["market"] or "") for venue in city_scoped["venues"])
     refreshed = client.post("/v1/venues/refresh", json={"chains": ["amc"]})
     assert refreshed.status_code == 200
     assert refreshed.json()["provider_stats"][0]["status"] == "unsupported"
@@ -110,6 +114,9 @@ def test_search_id_persists_and_scopes_seat_map():
     ).json()["venues"][0]["inventory"]
     assert venue_inventory["seat_screenings"] == 1
     assert venue_inventory["seats_capacity"] == 12
+    analytics = client.get("/v1/analytics/inventory?group_by=chain").json()
+    assert analytics["groups"][0]["group_key"] == "amc"
+    assert analytics["groups"][0]["seat_coverage"] == 1.0
     option_id = body["options"][0]["option_id"]
 
     session = client.get(f"/v1/search/{body['search_id']}").json()
@@ -167,6 +174,12 @@ def test_release_radar_persists_catalog_signals_until_the_source_changes():
         [Provider()], store=store, directory=VenueDirectory(), transport=transport
     )
     watches = WatchService(service, store)
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(service, watches))
+    signals_response = client.get("/v1/releases/signals?query=The%20Odyssey")
+    assert signals_response.status_code == 200
+    assert signals_response.json()["signals"][0]["movie_id"] == "76238"
     watch_id = watches.create(
         SearchSpec(
             work=WorkRef(query="The Odyssey"),
@@ -200,6 +213,8 @@ def test_local_notification_poll_can_acknowledge_displayed_hits():
     hit_id, _ = store.record_hit_status(
         watch_id, "canonical:test", {"title": WORK.title}, event_key="test-alert"
     )
+    history = client.get(f"/v1/watches/{watch_id}/history").json()
+    assert history["hits"][0]["hit_id"] == hit_id
     response = client.post("/v1/watches/poll?acknowledge=true")
     assert response.status_code == 200
     assert response.json()["hits"][0]["hit_id"] == hit_id
@@ -231,6 +246,13 @@ async def test_mcp_exposes_data_and_venue_intelligence():
     venue_result = await server.call_tool("get_venue", {"venue_id": "amc-metreon-16"})
     venue = json.loads(venue_result.content[0].text)
     assert venue["seat_surface"] == "exact"
+
+    analytics_result = await server.call_tool("get_inventory_analytics", {"group_by": "chain"})
+    analytics = json.loads(analytics_result.content[0].text)
+    assert analytics["groups"] == []
+
+    history_result = await server.call_tool("get_watch_history", {"watch_id": "missing"})
+    assert json.loads(history_result.content[0].text)["error"] == "unknown watch_id"
 
     refresh_result = await server.call_tool("refresh_venues", {"location": {}})
     refresh = json.loads(refresh_result.content[0].text)

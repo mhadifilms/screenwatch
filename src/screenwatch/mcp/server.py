@@ -15,7 +15,7 @@ from mcp.server import MCPServer
 
 from ..identity.normalize import analyze
 from ..identity.work import WorkRef
-from ..ranking.spec import SearchSpec
+from ..ranking.spec import GeoPoint, SearchSpec
 from ..seating.render import to_svg, to_unicode_grid
 from ..service.observatory import Observatory
 from ..service.search import SearchResult, SearchService
@@ -27,7 +27,7 @@ from ..service.serde import (
     spec_to_dict,
 )
 from ..service.watch import WatchService
-from .schemas import LocationInput, SearchSpecInput
+from .schemas import LocationInput, OriginInput, SearchSpecInput
 
 
 def build_server(search: SearchService, watches: WatchService) -> MCPServer:
@@ -113,6 +113,45 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
         return observatory.overview()
 
     @server.tool(
+        description="Query the local evidence store as a data cube. Group indexed "
+        "screenings by chain, venue, venue type, city, format, or availability; "
+        "include latest seat coverage and open/capacity totals. This is read-only."
+    )
+    def get_inventory_analytics(
+        group_by: Literal[
+            "chain", "venue", "venue_type", "city", "format", "availability"
+        ] = "chain",
+        limit: int = 100,
+    ) -> dict:
+        return observatory.inventory_analytics(group_by=group_by, limit=limit)
+
+    @server.tool(
+        description="Check the low-cost AMC movie catalog signal for a title. "
+        "This can reveal that a release entry exists before showtimes are listed, "
+        "but it never claims tickets are on sale; use a strict screening watch for "
+        "the actual drop."
+    )
+    def find_release_signals(query: str) -> dict:
+        spec = SearchSpec(work=WorkRef(query=query.strip()), release_radar=True)
+        try:
+            signals = search.release_signals(spec)
+        except Exception as exc:                       # noqa: BLE001
+            return {
+                "query": query,
+                "source": "amc:sitemap",
+                "signals": [],
+                "complete": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {
+            "query": query,
+            "source": "amc:sitemap",
+            "signals": signals,
+            "complete": True,
+            "ticket_sale_proven": False,
+        }
+
+    @server.tool(
         description="Refresh the local venue graph from the configured US sources. "
         "This discovers venue metadata and coordinates, persists it locally, and "
         "does not fetch film showtimes or seat maps."
@@ -133,6 +172,10 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
         chain: str | None = None,
         venue_type: str | None = None,
         query: str | None = None,
+        city: str | None = None,
+        origin: OriginInput | None = None,
+        radius_km: float | None = None,
+        include_unknown: bool = True,
         sort: Literal["distance", "name", "type", "chain"] = "distance",
         limit: int = 100,
     ) -> dict:
@@ -141,6 +184,10 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
                 chain=chain,
                 venue_type=venue_type,
                 query=query,
+                city=city,
+                origin=GeoPoint(origin.lat, origin.lon) if origin else None,
+                radius_km=radius_km,
+                include_unknown=include_unknown,
                 sort=sort,
                 limit=limit,
             ),
@@ -235,6 +282,20 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
             }
             for w in watches.list()
         ]}
+
+    @server.tool(
+        description="Read the durable alert history for one monitor, including "
+        "the change type, previous/current state, source-backed booking link, "
+        "and whether the local alert queue has acknowledged it."
+    )
+    def get_watch_history(watch_id: str, limit: int = 100) -> dict:
+        row = search.store.get_watch(watch_id)
+        if row is None:
+            return {"watch_id": watch_id, "hits": [], "error": "unknown watch_id"}
+        return {
+            "watch_id": watch_id,
+            "hits": search.store.hit_history(watch_id, limit=limit),
+        }
 
     @server.tool(description="Stop a monitor.")
     def cancel_watch(watch_id: str) -> dict:

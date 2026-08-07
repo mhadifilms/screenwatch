@@ -187,6 +187,7 @@
       return;
     }
     state.spec = buildSpec({ strict: true });
+    if ($("#watch-rolling").checked) state.spec.date_window = null;
     const label = $("#watch-label").value.trim() || `${state.spec.work.query} watch`;
     const spec = { ...state.spec, strict_presentations: state.spec.presentations?.length > 0, include_sold_out: true };
     try {
@@ -222,6 +223,7 @@
       }
       await loadWatches();
       await loadOverview();
+      await loadAnalytics();
     } catch (error) { showToast(error.message, "error"); }
   }
 
@@ -240,6 +242,29 @@
 
   async function loadOverview() {
     try { renderOverview(await api("/v1/analytics/overview")); } catch (error) { showToast(error.message, "error"); }
+  }
+
+  function renderAnalytics(payload) {
+    const target = $("#inventory-analytics");
+    const groups = payload.groups || [];
+    if (!groups.length) {
+      target.innerHTML = `<div class="table-empty">No indexed evidence yet. Run a search or refresh sources.</div>`;
+      return;
+    }
+    const percent = (value) => value == null ? "—" : `${Math.round(Number(value) * 100)}%`;
+    target.innerHTML = `<div class="table-wrap"><table class="analytics-table"><thead><tr><th>Dimension</th><th>Screenings</th><th>Venues</th><th>Sellable</th><th>Seat coverage</th><th>Open / capacity</th></tr></thead><tbody>${groups.map((group) => {
+      const seats = Number(group.seats_capacity || 0) > 0
+        ? `${Number(group.seats_available || 0).toLocaleString()} / ${Number(group.seats_capacity || 0).toLocaleString()}`
+        : "—";
+      return `<tr><td class="analytics-key">${escapeHtml(group.group_label || group.group_key)}</td><td>${Number(group.screenings || 0).toLocaleString()}<span class="venue-chain">${Number(group.works || 0).toLocaleString()} works</span></td><td>${Number(group.venues || 0).toLocaleString()}</td><td>${Number(group.sellable || 0).toLocaleString()}</td><td>${percent(group.seat_coverage)}</td><td>${escapeHtml(seats)}<span class="venue-chain">${group.seat_fill == null ? "no fill estimate" : `${percent(group.seat_fill)} occupied`}</span></td></tr>`;
+    }).join("")}</tbody></table></div><div class="analytics-caveat">${escapeHtml(payload.caveat || "")}</div>`;
+  }
+
+  async function loadAnalytics() {
+    try {
+      const group = $("#analytics-group").value || "chain";
+      renderAnalytics(await api(`/v1/analytics/inventory?group_by=${encodeURIComponent(group)}`));
+    } catch (error) { showToast(error.message, "error"); }
   }
 
   function renderVenues(rows) {
@@ -263,6 +288,9 @@
         q: $("#venue-filter").value || "",
         chain: $("#venue-chain").value || "",
         type: $("#venue-type").value || "",
+        city: $("#city").value || "",
+        radius_km: $("#radius").value || "",
+        include_unknown: "true",
         lat: $("#lat").value || "",
         lon: $("#lon").value || "",
       });
@@ -284,7 +312,7 @@
         method: "POST",
         body: JSON.stringify(buildLocation()),
       });
-      await Promise.all([loadVenues(), loadOverview()]);
+      await Promise.all([loadVenues(), loadOverview(), loadAnalytics()]);
       const note = result.errors?.length ? ` with ${result.errors.length} source note${result.errors.length === 1 ? "" : "s"}` : "";
       showToast(`Venue graph refreshed — ${Number(result.discovered || 0).toLocaleString()} records observed${note}.`);
     } catch (error) { showToast(error.message, "error"); }
@@ -306,6 +334,7 @@
     $("#venue-chain").addEventListener("change", loadVenues);
     $("#venue-type").addEventListener("change", loadVenues);
     $("#venue-sort").addEventListener("change", loadVenues);
+    $("#analytics-group").addEventListener("change", loadAnalytics);
     $("#locate-button").addEventListener("click", () => {
       if (!("geolocation" in navigator)) { showToast("This browser does not expose geolocation.", "error"); return; }
       const button = $("#locate-button");
@@ -340,7 +369,7 @@
     $("#from-date").value = isoToday();
     $("#through-date").value = isoToday(7);
     bind();
-    await Promise.all([loadHealth(), loadOverview(), loadWatches(), loadVenues()]);
+    await Promise.all([loadHealth(), loadOverview(), loadAnalytics(), loadWatches(), loadVenues()]);
     setInterval(pollWatches, 60_000);
   });
 })();

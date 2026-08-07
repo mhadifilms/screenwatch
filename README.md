@@ -205,7 +205,7 @@ API's own vocabulary instead of waiting to meet a surprise in production.
 
 ```bash
 uv venv && uv pip install -e '.[dev,api]'
-python -m pytest                      # 609 tests, offline
+python -m pytest                      # 610 tests, offline
 ruff check src tests                  # ruleset pinned in pyproject.toml
 ```
 
@@ -236,6 +236,12 @@ The venue graph is durable: **Refresh sources** discovers bounded provider
 metadata and coordinates, stores it in SQLite, and makes it available to the
 next app or MCP process without repeating discovery.
 
+The **Inventory pulse** below the venue graph is a read-only evidence cube. It
+can regroup the screenings already observed by exhibitor, venue type, city,
+format, availability, or individual venue, and reports how much of each group
+has a current seat surface plus the latest open/capacity rollup. It never
+turns an unobserved venue or missing seat map into a zero.
+
 MCP server (stdio):
 
 ```bash
@@ -249,9 +255,12 @@ claude mcp add screenwatch -- "$PWD/.venv/bin/python" -m screenwatch.mcp.server
 | `get_seatmap` | unicode grid or SVG, recommended seats highlighted |
 | `explain_ranking` | pairwise component comparison |
 | `get_data_overview` | indexed inventory, provider coverage, source health, seat surfaces, and alert backlog |
+| `get_inventory_analytics` | grouped local evidence by chain, venue, type, city, format, or availability, including latest seat rollups |
+| `find_release_signals` | inspect the cheap AMC catalog tripwire for a title before ticket inventory exists |
 | `list_venues` / `get_venue` | venue types, room capabilities, inventory, and seat-data limits |
 | `refresh_venues` | refresh bounded provider venue discovery into the local graph |
 | `create_watch` / `list_watches` / `cancel_watch` / `poll_watches` / `acknowledge_hits` | monitors and durable alerts |
+| `get_watch_history` | replay and audit a monitor's durable alert stream |
 | `get_booking_link` | final URL — **hard stop** |
 
 Always-on monitors:
@@ -275,7 +284,10 @@ Important HTTP surfaces include:
 | `POST /v1/venues/refresh` | source discovery for venue metadata and coordinates |
 | `GET /v1/analytics/overview` | source coverage, indexed counts, watches, and pending alerts |
 | `GET /v1/analytics/providers` | persisted source freshness, latency, clipping, and error health |
+| `GET /v1/analytics/inventory` | grouped evidence cube by chain, venue, venue type, city, format, or availability; latest seat coverage and open/capacity totals |
+| `GET /v1/releases/signals?query=...` | cheap AMC catalog signal before showtimes exist; explicitly not a ticket-sale assertion |
 | `POST /v1/watches` / `POST /v1/watches/poll` | durable new-release and seat-return monitors |
+| `GET /v1/watches/{watch_id}/history` | durable alert history with state deltas and delivery status |
 | `GET /v1/search/{search_id}/seatmap/{option_id}` | scoped seat-map retrieval without a fragile global last-search state |
 
 ## robots.txt is advisory here

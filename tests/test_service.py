@@ -141,6 +141,12 @@ class TestSpecRoundTrip:
         spec = SearchSpec(work=WorkRef(query="x"))
         assert spec_to_dict(spec_from_json(spec_to_json(spec))) == spec_to_dict(spec)
 
+    def test_open_ticket_watch_uses_rolling_31_day_horizon(self):
+        spec = SearchSpec(work=WorkRef(query="dune"), include_sold_out=True)
+        assert spec.window(date(2026, 8, 2)) == DateWindow(
+            date(2026, 8, 2), date(2026, 9, 2)
+        )
+
 
 # --------------------------------------------------------------------------
 class TestStore:
@@ -845,7 +851,8 @@ class TestMcpTools:
             "resolve_title", "find_screenings", "get_seatmap", "explain_ranking",
             "create_watch", "list_watches", "cancel_watch", "poll_watches",
             "acknowledge_hits", "get_booking_link", "get_data_overview",
-            "list_venues", "get_venue", "refresh_venues",
+            "list_venues", "get_venue", "refresh_venues", "get_inventory_analytics",
+            "find_release_signals", "get_watch_history",
         }
 
     @pytest.mark.asyncio

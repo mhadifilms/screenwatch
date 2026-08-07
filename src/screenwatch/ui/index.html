@@ -144,6 +144,7 @@
               <div class="watch-actions">
                 <label class="seed-toggle"><input id="watch-seed" type="checkbox" checked /><span>Only alert on new drops</span></label>
                 <label class="seed-toggle"><input id="release-radar" type="checkbox" /><span>Watch catalog entry</span></label>
+                <label class="seed-toggle"><input id="watch-rolling" type="checkbox" checked /><span>Rolling 31-day window</span></label>
                 <button class="button button-secondary" type="submit">Create watch</button>
               </div>
             </form>
@@ -175,6 +176,14 @@
         </div>
         <div id="venue-summary" class="venue-summary"></div>
         <div id="provider-health" class="provider-health" aria-live="polite"></div>
+        <div class="data-pulse-heading">
+          <div>
+            <div class="eyebrow">LOCAL EVIDENCE</div>
+            <h3>Inventory pulse</h3>
+          </div>
+          <label class="analytics-picker"><span>Group by</span><select id="analytics-group"><option value="chain">Exhibitor</option><option value="venue_type">Venue type</option><option value="city">City</option><option value="format">Format</option><option value="availability">Availability</option><option value="venue">Venue</option></select></label>
+        </div>
+        <div id="inventory-analytics" class="inventory-analytics"><div class="table-empty">Search or refresh sources to build the local evidence cube.</div></div>
         <div class="table-wrap">
           <table class="venue-table">
             <thead><tr><th>Venue</th><th>Type</th><th>Seat surface</th><th>Indexed evidence</th><th>Known rooms</th></tr></thead>

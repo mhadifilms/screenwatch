@@ -203,7 +203,14 @@ def option_to_dict(option, *, include_seatmap: bool = False) -> dict:
         "starts_at_local_offset": local_offset(s),
         "starts_at_utc": s.starts_at_utc.isoformat(),
         "presentation": s.presentation.describe(),
+        "presentation_raw": s.presentation.raw,
+        "sources": list(s.sources),
+        "screen_id": s.screen_id,
+        "price_hint_usd": s.price_hint_usd,
         "availability": s.availability.value,
+        "seats_available": s.seats_available,
+        "seats_capacity": s.seats_capacity,
+        "seats_sold": s.seats_sold,
         "seat_data": option.seat_data,
         "seats": (
             {

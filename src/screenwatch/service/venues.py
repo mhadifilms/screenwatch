@@ -251,7 +251,10 @@ class VenueDirectory:
         chain: str | None = None,
         venue_type: str | None = None,
         query: str | None = None,
+        city: str | None = None,
         origin: GeoPoint | None = None,
+        radius_km: float | None = None,
+        include_unknown: bool = True,
         sort: str = "distance",
         limit: int = 200,
     ) -> list[Venue]:
@@ -260,11 +263,21 @@ class VenueDirectory:
             venue for venue in self._venues.values()
             if (not chain or venue.chain == chain)
             and (not venue_type or venue.venue_type == venue_type)
+            and (not city or _matches_city(venue, city))
             and (
                 not needle
                 or needle in venue.name.lower()
                 or needle in venue.venue_id.lower()
                 or needle in (venue.market or "").lower()
+            )
+            and (
+                origin is None
+                or radius_km is None
+                or (
+                    venue.distance_km(origin) is not None
+                    and venue.distance_km(origin) <= radius_km
+                )
+                or (include_unknown and venue.distance_km(origin) is None)
             )
         ]
         if sort == "name":
