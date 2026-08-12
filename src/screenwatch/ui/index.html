@@ -50,7 +50,7 @@
         <form id="search-form" class="search-form">
           <label class="field field-title">
             <span>Film, event, or format</span>
-            <input id="title" name="title" required autocomplete="off" placeholder="Dune: Part Three" />
+            <input id="title" name="title" required autocomplete="off" placeholder="Film or event title" />
           </label>
           <label class="field field-radius">
             <span>Radius</span>
@@ -64,6 +64,16 @@
           <label class="field field-party">
             <span>Party</span>
             <input id="party" name="party" type="number" min="1" max="20" value="2" />
+          </label>
+          <label class="field field-relationship">
+            <span>Going with</span>
+            <select id="party-kind" name="party-kind">
+              <option value="friends" selected>Friends</option>
+              <option value="date">A date</option>
+              <option value="family">Family</option>
+              <option value="coworkers">Coworkers</option>
+              <option value="generic">No preference</option>
+            </select>
           </label>
           <label class="field field-date">
             <span>From</span>
@@ -98,6 +108,9 @@
             <label class="field"><span>Chains</span><select id="chain-filter"><option value="">All exhibitors</option><option value="amc">AMC</option><option value="regal">Regal</option><option value="cinemark">Cinemark</option><option value="alamo">Alamo Drafthouse</option><option value="independent">Independent</option></select></label>
             <label class="field"><span>Venue type</span><select id="type-filter"><option value="">All types</option><option value="multiplex">Multiplex</option><option value="art_house">Art house</option><option value="dine_in">Dine-in</option><option value="drive_in">Drive-in</option><option value="independent">Independent</option></select></label>
             <label class="field"><span>Coverage</span><select id="coverage-mode"><option value="auto" selected>Auto / scoped complete</option><option value="nearby">Fast / bounded</option><option value="exhaustive">Exhaustive / all sources</option></select></label>
+            <label class="field field-venues"><span>Specific theaters</span><select id="search-venues" multiple size="3" aria-label="Specific theaters"></select></label>
+            <label class="field"><span>Tickets per checkout</span><input id="checkout-limit" type="number" min="1" max="50" value="10" /></label>
+            <label class="field"><span>Parallel checkouts</span><input id="checkout-lanes" type="number" min="1" max="10" value="2" /></label>
           </div>
         </div>
       </section>
@@ -128,6 +141,7 @@
           </div>
           <div id="results-list" class="results-list"></div>
           <div id="scope-note" class="scope-note" hidden></div>
+          <section id="booking-runway" class="booking-runway" hidden></section>
         </section>
 
         <aside class="side-column">
@@ -141,11 +155,12 @@
             </div>
             <p class="panel-intro">Get a quiet alert when the exact thing you want appears — including seats returning to a sold-out show.</p>
             <form id="watch-form" class="watch-form">
-              <input id="watch-label" placeholder="e.g. Dune 3 / IMAX 70mm / Bay Area" required />
+              <input id="watch-label" placeholder="e.g. Film / format / region" required />
               <div class="watch-actions">
                 <label class="seed-toggle"><input id="watch-seed" type="checkbox" checked /><span>Only alert on new drops</span></label>
                 <label class="seed-toggle"><input id="release-radar" type="checkbox" /><span>Watch catalog entry</span></label>
                 <label class="seed-toggle"><input id="watch-rolling" type="checkbox" checked /><span>Rolling 31-day window</span></label>
+                <label class="field watch-cadence"><span>Check every</span><select id="watch-cadence"><option value="60">1 minute</option><option value="300" selected>5 minutes</option><option value="900">15 minutes</option></select></label>
                 <button class="button button-secondary" type="submit">Create watch</button>
               </div>
             </form>

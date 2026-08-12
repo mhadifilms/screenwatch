@@ -75,6 +75,13 @@ class Seat:
     x: float = 0.0          # -1..1 lateral, 0 = centreline
     y: float = 0.0          # 0..1 depth, 0 = front row
     aisle_adjacent: bool = False
+    # Physical seats are sometimes sold/experienced as a unit (loveseats,
+    # sofas, four-seat motion platforms).  `module_id` is deliberately
+    # separate from kind: two adjacent recliners are not necessarily a sofa.
+    module_id: str | None = None
+    module_position: int | None = None
+    module_size: int | None = None
+    module_required: bool = False
 
     @property
     def id(self) -> str:
@@ -193,6 +200,10 @@ def normalize_geometry(seats: list[Seat]) -> tuple[Seat, ...]:
                     x=round(centred * 2 - 1, 4),
                     y=round(depth_of[row_index], 4),
                     aisle_adjacent=seat.aisle_adjacent,
+                    module_id=seat.module_id,
+                    module_position=seat.module_position,
+                    module_size=seat.module_size,
+                    module_required=seat.module_required,
                 )
             )
     return tuple(sorted(out, key=lambda s: (s.row_index, s.col_index)))
@@ -223,3 +234,49 @@ def mark_aisles(seats: list[Seat], gap_threshold: int = 2) -> list[Seat]:
                 Seat(**{**seat.__dict__, "aisle_adjacent": seat.col_index in aisle_cols})
             )
     return flagged
+
+
+def infer_modules(seats: list[Seat], *, size: int = 2) -> list[Seat]:
+    """Annotate consecutive ungrouped loveseat seats as physical modules.
+
+    Some feeds expose left/right explicitly and parsers should keep that.
+    Others expose only ``loveseat`` for both halves; this conservative pass
+    pairs consecutive seats within a row and never bridges a coordinate gap.
+    Inference describes topology but does not invent a whole-module purchase
+    rule (`module_required` remains false).
+    """
+    by_row: dict[int, list[Seat]] = {}
+    for seat in seats:
+        by_row.setdefault(seat.row_index, []).append(seat)
+    out: list[Seat] = []
+    for row_index, row in by_row.items():
+        ordered = sorted(row, key=lambda seat: seat.col_index)
+        i = 0
+        while i < len(ordered):
+            seat = ordered[i]
+            if seat.module_id or seat.kind is not SeatKind.LOVESEAT:
+                out.append(seat)
+                i += 1
+                continue
+            block = [seat]
+            j = i + 1
+            while (
+                j < len(ordered) and len(block) < size
+                and ordered[j].kind is SeatKind.LOVESEAT
+                and not ordered[j].module_id
+                and ordered[j].col_index == block[-1].col_index + 1
+            ):
+                block.append(ordered[j])
+                j += 1
+            if len(block) == size:
+                module_id = f"{row_index}:{block[0].col_index}-{block[-1].col_index}"
+                out.extend(
+                    Seat(**{**member.__dict__, "module_id": module_id,
+                            "module_position": position, "module_size": size})
+                    for position, member in enumerate(block)
+                )
+                i = j
+            else:
+                out.extend(block)
+                i = j
+    return sorted(out, key=lambda seat: (seat.row_index, seat.col_index))

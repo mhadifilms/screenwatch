@@ -530,8 +530,16 @@ class SearchService:
         for key in order:
             group = grouped[key]
             chosen = max(group, key=_screening_richness)
-            sources = tuple(sorted({source for s in group for source in s.sources}))
-            if len(group) == 1 and sources == chosen.sources:
+            listings = tuple({
+                (listing.source, listing.deeplink): listing
+                for screening in group for listing in screening.source_listings
+            }.values())
+            sources = tuple(sorted({listing.source for listing in listings}))
+            if (
+                len(group) == 1
+                and sources == chosen.sources
+                and listings == chosen.listings
+            ):
                 out.append(chosen)
                 continue
 
@@ -549,6 +557,7 @@ class SearchService:
                 availability=availability,
                 deeplink=deeplink,
                 sources=sources,
+                listings=listings,
                 seats_available=next(
                     (s.seats_available for s in group
                      if s.seats_available is not None),

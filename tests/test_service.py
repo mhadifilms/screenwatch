@@ -370,7 +370,13 @@ class TestSearchService:
         )
         assert result.best.seat_data == "grid"
         assert result.best.can_seat_party is True
+        assert result.best.seat_alternatives
         assert result.seatmaps_fetched == 1
+
+        payload = option_to_dict(result.best)
+        assert payload["seats"]["optimization"]["proven_optimal"] is True
+        assert payload["seats"]["nash_welfare"] > 0
+        assert payload["seat_alternatives"]
 
     def test_booking_link_is_the_last_step(self):
         store = Store.memory()
@@ -555,6 +561,22 @@ class TestWatches:
         assert payload["previous"]["seat_position"] == "no_middle_seats"
         assert payload["current"]["seat_position"] == "middle_area"
         assert payload["seat_position"] == "middle_area"
+
+    @pytest.mark.parametrize(
+        "url",
+        (
+            "file:///tmp/screenwatch-alert.json",
+            "ftp://alerts.example.test/hook",
+            "https://secret:token@alerts.example.test/hook",
+            "not-a-url",
+        ),
+    )
+    def test_watch_rejects_unsafe_webhook_urls_before_persisting(self, url):
+        service, watches, store = self.build([screening("amc:1")])
+
+        with pytest.raises(ValueError, match="webhook"):
+            watches.create(self.spec(), "x", webhook=url, seed=False)
+        assert store.list_watches() == []
 
     def test_webhook_success_does_not_consume_poll_alerts(self):
         calls = []

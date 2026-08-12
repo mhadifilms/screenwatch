@@ -92,6 +92,14 @@ def spec_to_dict(spec: SearchSpec) -> dict:
             "avoid_aisle": spec.seating.avoid_aisle,
             "wheelchair_spaces": spec.seating.wheelchair_spaces,
             "companion_seats": spec.seating.companion_seats,
+            "party_kind": spec.seating.party_kind,
+            "relationships": [
+                {"a": a, "b": b, "weight": weight, "must_adjacent": must}
+                for a, b, weight, must in spec.seating.bonds
+            ],
+            "max_rows": spec.seating.max_rows,
+            "avoid_strangers": spec.seating.avoid_strangers,
+            "prefer_aisle": spec.seating.prefer_aisle,
         },
         "budget": {"max_total_usd": spec.budget.max_total_usd,
                    "max_per_ticket_usd": spec.budget.max_per_ticket_usd},
@@ -150,6 +158,15 @@ def spec_from_dict(data: dict) -> SearchSpec:
             avoid_aisle=seating.get("avoid_aisle", False),
             wheelchair_spaces=seating.get("wheelchair_spaces", 0),
             companion_seats=seating.get("companion_seats", 0),
+            party_kind=seating.get("party_kind", "generic"),
+            bonds=tuple(
+                (int(r["a"]), int(r["b"]), float(r.get("weight", 1.0)),
+                 bool(r.get("must_adjacent", False)))
+                for r in seating.get("relationships") or ()
+            ),
+            max_rows=seating.get("max_rows"),
+            avoid_strangers=seating.get("avoid_strangers", True),
+            prefer_aisle=seating.get("prefer_aisle", False),
         ),
         budget=Budget(budget.get("max_total_usd"), budget.get("max_per_ticket_usd")),
         weights=Weights(**(data.get("weights") or {})),
@@ -191,6 +208,39 @@ def option_to_dict(option, *, include_seatmap: bool = False) -> dict:
     """Wire shape for an Option. Shared by the API and MCP so the two agree."""
     from ..seating.render import to_unicode_grid
 
+    def seat_group_to_dict(group) -> dict:
+        return {
+            "labels": group.labels,
+            "cohesion": group.cohesion.value,
+            "together": group.cohesion.is_together,
+            "complete": group.complete,
+            "count": group.size,
+            "quality": group.quality,
+            "worst_person_utility": group.fairness,
+            "nash_welfare": group.nash_welfare,
+            "robust_preference_score": group.robust_preference_score,
+            "pareto_optimal": group.pareto_optimal,
+            "parts": [[seat.id for seat in part] for part in group.parts],
+            "assignments": [
+                {"member": member, "seat": seat.id}
+                for seat, member in zip(group.seats, group.assignment, strict=False)
+            ],
+            "optimization": (
+                {
+                    "method": group.certificate.method,
+                    "proven_optimal": group.certificate.proven_optimal,
+                    "combinations_considered": group.certificate.combinations_considered,
+                    "candidates_evaluated": group.certificate.candidates_evaluated,
+                    "optimality_gap_upper_bound": (
+                        group.certificate.optimality_gap_upper_bound
+                    ),
+                    "geometry_confidence": group.certificate.geometry_confidence,
+                    "scope": group.certificate.scope,
+                }
+                if group.certificate else None
+            ),
+        }
+
     s = option.screening
     out = {
         "option_id": option.option_id,
@@ -207,6 +257,17 @@ def option_to_dict(option, *, include_seatmap: bool = False) -> dict:
         "presentation": s.presentation.describe(),
         "presentation_raw": s.presentation.raw,
         "sources": list(s.sources),
+        "source_listings": [
+            {
+                "source": listing.source,
+                "availability": listing.availability.value,
+                "booking_link": listing.deeplink,
+                "observed_at": (
+                    listing.observed_at.isoformat() if listing.observed_at else None
+                ),
+            }
+            for listing in s.source_listings
+        ],
         "screen_id": s.screen_id,
         "price_hint_usd": s.price_hint_usd,
         "availability": s.availability.value,
@@ -214,17 +275,10 @@ def option_to_dict(option, *, include_seatmap: bool = False) -> dict:
         "seats_capacity": s.seats_capacity,
         "seats_sold": s.seats_sold,
         "seat_data": option.seat_data,
-        "seats": (
-            {
-                "labels": option.seats.labels,
-                "cohesion": option.seats.cohesion.value,
-                "together": option.seats.cohesion.is_together,
-                "complete": option.seats.complete,
-                "count": option.seats.size,
-                "quality": option.seats.quality,
-            }
-            if option.seats else None
-        ),
+        "seats": seat_group_to_dict(option.seats) if option.seats else None,
+        "seat_alternatives": [
+            seat_group_to_dict(group) for group in option.seat_alternatives
+        ],
         "seat_estimate": (
             {
                 "available": option.feasibility.available,

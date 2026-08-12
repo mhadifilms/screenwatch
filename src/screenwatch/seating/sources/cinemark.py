@@ -31,6 +31,7 @@ from ..model import (
     SeatDataUnavailable,
     SeatKind,
     SeatStatus,
+    infer_modules,
     mark_aisles,
     normalize_geometry,
 )
@@ -121,6 +122,6 @@ class CinemarkSeatSource:
         return Auditorium(
             venue_id=venue_id,
             screen_id=screen_id,
-            seats=normalize_geometry(mark_aisles(seats)),
+            seats=normalize_geometry(mark_aisles(infer_modules(seats))),
             geometry_confidence=1.0,
         )

@@ -1,7 +1,7 @@
 """Always-on monitors.
 
 The behaviour that matters: *"some 70mm tickets already dropped, but tell me
-when NEW ones appear for Dune 3 in the Bay Area."* A watch therefore seeds a
+when NEW ones appear for this film in the Bay Area."* A watch therefore seeds a
 seen-set at creation time with everything currently on sale, then compares
 later observations for positive changes too. Without that, every new watch
 immediately pages you about tickets that have been available for a week, while
@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, replace
@@ -33,8 +34,23 @@ from .store import DEFAULT_USER, Store
 _NEARLY_SOLD_OUT_RATIO = 0.10
 _NEARLY_SOLD_OUT_COUNT = 8
 
+
+def validate_webhook_url(value: str | None) -> str | None:
+    """Accept only explicit HTTP(S) endpoints without embedded credentials."""
+    if value is None:
+        return None
+    if len(value) > 2048:
+        raise ValueError("webhook URL is too long")
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("webhook must be an absolute HTTP(S) URL")
+    if parsed.username or parsed.password:
+        raise ValueError("webhook URL must not contain credentials")
+    return value
+
 _ALERT_PRIORITY = {
     "tickets_returned": 100,
+    "source_available": 98,
     "middle_seats_available": 95,
     "party_fits": 90,
     "seats_together": 85,
@@ -131,6 +147,14 @@ def _state_for(option: Option) -> dict:
         "seat_position": _seat_position(option),
         "seat_quality": option.components.get("seat_quality"),
         "score": round(option.score, 4),
+        "source_listings": [
+            {
+                "source": listing.source,
+                "availability": listing.availability.value,
+                "booking_link": listing.deeplink,
+            }
+            for listing in screening.source_listings
+        ],
     }
 
 
@@ -146,6 +170,17 @@ def _changes(previous: dict, current: dict) -> tuple[str, ...]:
         }
     ):
         changes.append("tickets_returned")
+
+    old_sources = {
+        item.get("source") for item in previous.get("source_listings", ())
+        if item.get("availability") in {"sellable", "almost_full"}
+    }
+    new_sources = {
+        item.get("source") for item in current.get("source_listings", ())
+        if item.get("availability") in {"sellable", "almost_full"}
+    }
+    if "source_listings" in previous and new_sources - old_sources:
+        changes.append("source_available")
 
     old_seat_data = previous.get("seat_data")
     new_seat_data = current.get("seat_data")
@@ -201,7 +236,7 @@ def _delta(previous: dict | None, current: dict) -> dict | None:
         delta["score"] = round(new_score - old_score, 4)
     for field in (
         "availability", "availability_status", "seat_data", "seat_position",
-        "seat_quality", "together", "complete",
+        "seat_quality", "together", "complete", "source_listings",
     ):
         if previous.get(field) != current.get(field):
             delta[field] = {
@@ -364,6 +399,7 @@ class WatchService:
         same spec - otherwise the seen-set would be seeded with screenings the
         watch will never report and the first genuine hit would be missed.
         """
+        webhook = validate_webhook_url(webhook)
         spec = replace(
             spec,
             include_sold_out=True,

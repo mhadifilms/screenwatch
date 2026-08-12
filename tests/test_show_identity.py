@@ -6,13 +6,13 @@ from datetime import UTC, date, datetime
 
 from screenwatch.identity.work import Work, WorkRef
 from screenwatch.models import Availability, Brand, Presentation, Projection
-from screenwatch.ranking.candidate import Screening
+from screenwatch.ranking.candidate import Option, Screening, SourceListing
 from screenwatch.ranking.spec import DateWindow, SearchSpec
 from screenwatch.seating.model import SeatDataUnavailable
 from screenwatch.service.search import SearchService
 from screenwatch.service.store import Store
 from screenwatch.service.venues import VenueDirectory
-from screenwatch.service.watch import WatchService
+from screenwatch.service.watch import WatchService, _changes, _state_for
 
 WORK = Work("tmdb:999", "Dune: Part Three", year=2026)
 PRESENTATION = Presentation(
@@ -50,13 +50,50 @@ def test_provider_handles_do_not_change_canonical_show_id():
 
 def test_equivalent_provider_listings_collapse_but_keep_sources():
     amc = showing("amc:1")
-    regal = replace(amc, screening_id="regal:2", chain="regal", sources=("regal",))
+    regal = replace(
+        amc,
+        screening_id="regal:2",
+        chain="regal",
+        sources=("regal",),
+        deeplink="https://tickets.test/regal:2",
+    )
 
     merged = SearchService.unify_screenings([amc, regal])
 
     assert len(merged) == 1
     assert merged[0].canonical_screening_id == amc.canonical_screening_id
-    assert set(merged[0].sources) == {"regal"}
+    assert set(merged[0].sources) == {"amc", "regal"}
+    assert {
+        (listing.source, listing.deeplink)
+        for listing in merged[0].source_listings
+    } == {
+        ("amc", "https://tickets.test/amc:1"),
+        ("regal", "https://tickets.test/regal:2"),
+    }
+
+
+def test_watch_state_detects_a_new_sellable_storefront():
+    sold_out = replace(
+        showing("chain:1"),
+        availability=Availability.SOLD_OUT,
+        listings=(
+            SourceListing("chain:web", Availability.SOLD_OUT, "https://tickets.test/1"),
+        ),
+    )
+    aggregator = replace(
+        sold_out,
+        screening_id="aggregator:2",
+        availability=Availability.SELLABLE,
+        deeplink="https://tickets.test/2",
+        listings=(
+            SourceListing(
+                "aggregator:web", Availability.SELLABLE, "https://tickets.test/2"
+            ),
+        ),
+    )
+    previous = _state_for(Option(sold_out))
+    current = _state_for(Option(SearchService.unify_screenings([sold_out, aggregator])[0]))
+    assert "source_available" in _changes(previous, current)
 
 
 class _Provider:

@@ -2,7 +2,7 @@
 
 Watches are durable searches with state. They are designed for events such as:
 
-> Tell me when a new IMAX 70mm screening appears for Dune: Part Three in the
+> Tell me when a new IMAX 70mm screening appears for Example Feature in the
 > Bay Area, and tell me when a party-sized seat group becomes possible.
 
 ## Watch lifecycle
@@ -21,6 +21,13 @@ Every hit is persisted before delivery. Polling is non-destructive by default:
 reading alerts does not acknowledge them. A client acknowledges only after it
 has handled the alert. Webhook delivery has its own retry ledger, so consuming
 the local notification queue does not erase a webhook attempt.
+
+Webhook endpoints must be absolute `http://` or `https://` URLs, may not embed
+credentials, and are limited in length. Delivery uses a ten-second timeout,
+durable exponential retry state, stable event and hit identifiers, and an
+idempotency key. Localhost HTTP endpoints remain allowed because Screenwatch
+is local-first; do not expose watch creation to untrusted remote callers
+without an authentication and network-egress policy in front of the app.
 
 ## What can trigger a hit
 
@@ -45,11 +52,11 @@ takes.
 curl -s http://127.0.0.1:8787/v1/watches \
   -H 'content-type: application/json' \
   -d '{
-    "label": "Dune 3 IMAX 70mm Bay Area",
+    "label": "Example Feature IMAX 70mm Bay Area",
     "cadence_s": 300,
     "seed": true,
     "spec": {
-      "work": {"query": "Dune: Part Three"},
+      "work": {"query": "Example Feature"},
       "party_size": 4,
       "location": {
         "city": "San Francisco",

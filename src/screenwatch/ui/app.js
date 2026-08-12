@@ -48,7 +48,7 @@
     const location = {
       radius_km: Number($("#radius").value || 40),
       city: $("#city").value.trim() || null,
-      allow: [],
+      allow: $$("#search-venues option:checked").map((option) => option.value),
       deny: [],
       chains: $("#chain-filter").value ? [$("#chain-filter").value] : [],
       venue_types: $("#type-filter").value ? [$("#type-filter").value] : [],
@@ -67,7 +67,12 @@
       date_window: { start: $("#from-date").value, end: $("#through-date").value },
       presentations: buildPresentations(),
       strict_presentations: strict,
-      seating: { together: true, allow_split: true },
+      seating: {
+        together: true,
+        allow_split: true,
+        party_kind: $("#party-kind").value,
+        avoid_strangers: true,
+      },
       include_sold_out: false,
       release_radar: $("#release-radar").checked,
       max_seatmap_fetches: 10,
@@ -108,21 +113,72 @@
         ? `${Math.round(estimate.together_probability * 100)}% chance together`
         : option.seat_data === "unavailable" ? "seat data unavailable" : "seat check not run";
     const seatClass = seats?.complete || estimate?.can_fit ? "good" : option.seat_data === "unavailable" ? "warn" : "";
+    const optimization = seats?.optimization;
+    const proofTag = optimization?.proven_optimal
+      ? `proven best · ${Number(optimization.combinations_considered || 0).toLocaleString()} layouts checked`
+      : optimization
+        ? `optimized · ${Number(optimization.candidates_evaluated || 0).toLocaleString()} finalists tested`
+        : "";
+    const alternativeTag = option.seat_alternatives?.length
+      ? `+${option.seat_alternatives.length} meaningfully different layout${option.seat_alternatives.length === 1 ? "" : "s"}`
+      : "";
+    const alternatives = option.seat_alternatives?.length
+      ? `<details class="seat-alternatives"><summary>Compare other strong seat layouts</summary><div>${option.seat_alternatives.map((group, alternativeIndex) => {
+          const shape = (group.parts || []).map((part) => part.length).join("+") || `${group.count}`;
+          const proof = group.optimization?.proven_optimal ? "proven optimal" : "optimized candidate";
+          return `<div class="seat-alternative"><strong>${alternativeIndex + 1}. ${escapeHtml(group.labels)}</strong><span>${escapeHtml(shape)} · ${escapeHtml(group.cohesion.replaceAll("_", " "))} · worst person ${Math.round(Number(group.worst_person_utility || 0) * 100)}% · ${escapeHtml(proof)}</span></div>`;
+        }).join("")}</div></details>`
+      : "";
     const reasons = option.reasons?.slice(0, 2).join(" · ") || "Ranked across format, timing, venue, and availability.";
     const booking = option.booking_link ? `<a class="book-link" href="${escapeHtml(option.booking_link)}" target="_blank" rel="noreferrer">Book ↗</a>` : "";
     const seatmap = option.seat_data === "grid" && state.result?.search_id
       ? `<a class="seatmap-link" href="/v1/search/${encodeURIComponent(state.result.search_id)}/seatmap/${encodeURIComponent(option.option_id)}.svg" target="_blank" rel="noreferrer">view seat map</a>`
       : "";
+    const sources = (option.source_listings || []).map((listing) => {
+      const label = `${listing.source} · ${listing.availability}`;
+      return listing.booking_link
+        ? `<a class="tag source-link" href="${escapeHtml(listing.booking_link)}" target="_blank" rel="noreferrer">${escapeHtml(label)} ↗</a>`
+        : `<span class="tag">${escapeHtml(label)}</span>`;
+    }).join("");
+    const runway = state.result?.search_id
+      ? `<button class="button button-quiet runway-button" data-runway-option="${escapeHtml(option.option_id)}" type="button">Plan checkout</button>` : "";
     return `<article class="result-card">
       <div class="result-rank">${index + 1}</div>
       <div class="result-main">
         <div class="result-title-row"><span class="result-time">${escapeHtml(formatTime(option.starts_at_local, option.starts_at_local_offset))}</span><span class="result-format">${escapeHtml(option.presentation)}</span></div>
         <div class="result-venue">${escapeHtml(option.venue.name)} <span class="tag">${escapeHtml(option.venue.chain)}</span></div>
-        <div class="result-subline"><span class="tag ${seatClass}">${escapeHtml(seatTag)}</span><span class="tag">${escapeHtml(formatDistance(option.venue.distance_km))}</span><span class="tag">${escapeHtml(option.availability)}</span>${seatmap ? `<span class="tag">${seatmap}</span>` : ""}</div>
+        <div class="result-subline"><span class="tag ${seatClass}">${escapeHtml(seatTag)}</span>${proofTag ? `<span class="tag" title="${escapeHtml(optimization.scope || "")}">${escapeHtml(proofTag)}</span>` : ""}${alternativeTag ? `<span class="tag">${escapeHtml(alternativeTag)}</span>` : ""}<span class="tag">${escapeHtml(formatDistance(option.venue.distance_km))}</span><span class="tag">${escapeHtml(option.availability)}</span>${sources}${seatmap ? `<span class="tag">${seatmap}</span>` : ""}</div>
         <div class="result-reasons"><strong>Why this is here:</strong> ${escapeHtml(reasons)}</div>
+        ${alternatives}
       </div>
-      <div class="result-side"><div><div class="score">${Math.round(option.score * 100)}<small>%</small></div><div class="score-label">fit score</div></div>${booking}</div>
+      <div class="result-side"><div><div class="score">${Math.round(option.score * 100)}<small>%</small></div><div class="score-label">fit score</div></div>${runway}${booking}</div>
     </article>`;
+  }
+
+  function bindRunwayButtons(root = document) {
+    $$('[data-runway-option]', root).forEach((button) => button.addEventListener("click", () => loadBookingRunway(button.dataset.runwayOption)));
+  }
+
+  async function loadBookingRunway(optionId) {
+    if (!state.result?.search_id) return;
+    const target = $("#booking-runway");
+    target.hidden = false;
+    target.innerHTML = `<div class="loading-state"><span class="spinner"></span><span>Dividing seats across signed-in profiles…</span></div>`;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    try {
+      const payload = await api(`/v1/search/${encodeURIComponent(state.result.search_id)}/booking-runway/${encodeURIComponent(optionId)}`, {
+        method: "POST",
+        body: JSON.stringify({
+          party_size: state.spec.party_size,
+          transaction_limit: Math.max(1, Number($("#checkout-limit").value || 10)),
+          parallel_checkouts: Math.max(1, Number($("#checkout-lanes").value || 2)),
+        }),
+      });
+      const lanes = payload.lanes.map((lane) => `<article class="checkout-lane"><div class="lane-number">${lane.lane}</div><div class="lane-main"><span class="status-kicker">WAVE ${lane.wave} · ${escapeHtml(lane.profile)}</span><h4>${lane.ticket_count} tickets</h4><p>${lane.seat_label ? `Select ${escapeHtml(lane.seat_label)}` : "Select this block from the staged seat recommendation."}</p></div>${lane.booking_link ? `<a class="button button-primary" href="${escapeHtml(lane.booking_link)}" target="_blank" rel="noreferrer">Open lane ${lane.lane} ↗</a>` : `<span class="tag warn">link pending</span>`}</article>`).join("");
+      target.innerHTML = `<div class="runway-heading"><div><span class="status-kicker">BOOKING RUNWAY · ${escapeHtml(payload.readiness)}</span><h3>${escapeHtml(payload.option.venue)} · ${escapeHtml(payload.split.join(" + "))}</h3><p>${escapeHtml(payload.handoff)}</p></div><span class="tag ${payload.readiness === "ready" ? "good" : "warn"}">${payload.exact_seat_assignment ? "exact seats assigned" : "seat assignment pending"}</span></div>${payload.warning ? `<div class="runway-warning">${escapeHtml(payload.warning)}</div>` : ""}<div class="checkout-lanes">${lanes}</div><div class="runway-protocol"><strong>Commit protocol</strong><span>Both profiles signed in → both carts match the seam → one person calls “submit” → both buyers purchase. If one cart fails, do not silently move the other block.</span></div>`;
+    } catch (error) {
+      target.innerHTML = `<div class="runway-warning">${escapeHtml(error.message)}</div>`;
+    }
   }
 
   function renderResults(result) {
@@ -133,6 +189,7 @@
     loading.hidden = true;
     empty.hidden = result.options.length > 0;
     list.innerHTML = result.options.map(renderOption).join("");
+    bindRunwayButtons(list);
     $("#result-meta").textContent = `${result.options.length} ranked options · ${result.considered} considered · ${result.coverage || "nearby"} coverage · ${Math.round(result.duration_ms)}ms`;
     const coverageNote = result.coverage === "exhaustive"
       ? "Exhaustive source traversal requested"
@@ -225,7 +282,7 @@
     const label = $("#watch-label").value.trim() || `${state.spec.work.query} watch`;
     const spec = { ...state.spec, strict_presentations: state.spec.presentations?.length > 0, include_sold_out: true };
     try {
-      await api("/v1/watches", { method: "POST", body: JSON.stringify({ label, spec, seed: $("#watch-seed").checked, cadence_s: 300 }) });
+      await api("/v1/watches", { method: "POST", body: JSON.stringify({ label, spec, seed: $("#watch-seed").checked, cadence_s: Number($("#watch-cadence").value || 300) }) });
       $("#watch-label").value = "";
       await loadWatches();
       showToast("Watch created. It will stay quiet about tickets already on sale.");
@@ -344,6 +401,15 @@
     } catch (error) { showToast(error.message, "error"); }
   }
 
+  async function loadVenueChoices() {
+    try {
+      const payload = await api("/v1/venues?sort=name&limit=1000");
+      $("#search-venues").innerHTML = (payload.venues || []).map((venue) =>
+        `<option value="${escapeHtml(venue.id)}">${escapeHtml(venue.name)} · ${escapeHtml(venue.chain)}</option>`
+      ).join("");
+    } catch (error) { showToast(error.message, "error"); }
+  }
+
   async function refreshVenues() {
     const button = $("#refresh-venues");
     button.disabled = true;
@@ -411,7 +477,7 @@
     $("#from-date").value = isoToday();
     $("#through-date").value = isoToday(7);
     bind();
-    await Promise.all([loadHealth(), loadOverview(), loadAnalytics(), loadWatches(), loadVenues()]);
+    await Promise.all([loadHealth(), loadOverview(), loadAnalytics(), loadWatches(), loadVenues(), loadVenueChoices()]);
     setInterval(pollWatches, 60_000);
   });
 })();

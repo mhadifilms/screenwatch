@@ -179,9 +179,9 @@ def build_auditorium(
         ])
 
     `.` free, `×`/`x` sold, `o` held, ` ` structural gap, `#` blocked,
-    `w` wheelchair space, `c` companion seat, `r` recliner - all free.
+    `w` wheelchair space, `c` companion seat, `r` recliner, `l` loveseat - all free.
     """
-    from .model import Seat, mark_aisles, normalize_geometry
+    from .model import Seat, infer_modules, mark_aisles, normalize_geometry
 
     codes = {
         ".": (SeatStatus.AVAILABLE, SeatKind.STANDARD),
@@ -193,6 +193,7 @@ def build_auditorium(
         "w": (SeatStatus.AVAILABLE, SeatKind.WHEELCHAIR),
         "c": (SeatStatus.AVAILABLE, SeatKind.COMPANION),
         "r": (SeatStatus.AVAILABLE, SeatKind.RECLINER),
+        "l": (SeatStatus.AVAILABLE, SeatKind.LOVESEAT),
     }
     labels = row_labels or "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -215,5 +216,5 @@ def build_auditorium(
     return Auditorium(
         venue_id=venue_id,
         screen_id=screen_id,
-        seats=normalize_geometry(mark_aisles(seats)),
+        seats=normalize_geometry(mark_aisles(infer_modules(seats))),
     )

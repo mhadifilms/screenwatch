@@ -96,6 +96,13 @@ def reasons_for(option: Option, spec: SearchSpec) -> tuple[str, ...]:
             out.append(f"seats all {spec.party_size} of you")
         if c.get("seat_quality", 0) >= 0.75:
             out.append("good position in the room")
+        certificate = option.seats.certificate
+        if certificate is not None and certificate.proven_optimal:
+            out.append(
+                f"proven best after checking all "
+                f"{certificate.combinations_considered:,} candidate seat combinations"
+            )
+        out.extend(reason for reason in option.seats.reasons if reason not in out)
 
     if c.get("membership_fit", 0) >= 1.0 and spec.memberships:
         out.append("covered by your pass")
@@ -129,6 +136,7 @@ def tradeoffs_for(
             )
 
     if option.seats is not None:
+        out.extend(warning for warning in option.seats.warnings if warning not in out)
         if not option.seats.complete:
             out.append(
                 f"only seats {option.seats.size} of {spec.party_size}"

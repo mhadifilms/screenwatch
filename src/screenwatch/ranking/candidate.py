@@ -20,6 +20,16 @@ from ..seating.model import Auditorium
 
 
 @dataclass(frozen=True)
+class SourceListing:
+    """One storefront's claim about a showing."""
+
+    source: str
+    availability: Availability
+    deeplink: str | None = None
+    observed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class Screening:
     """One showing at one venue, before seats are considered."""
 
@@ -37,6 +47,7 @@ class Screening:
     distance_km: float | None = None
     screen_id: str | None = None
     sources: tuple[str, ...] = ()
+    listings: tuple[SourceListing, ...] = ()
     # Exact counts where the source publishes them (C360 does). Carried on the
     # screening so phase B does not re-request data already in hand.
     seats_available: int | None = None
@@ -64,6 +75,15 @@ class Screening:
     def bookable(self) -> bool:
         return self.availability.is_buyable
 
+    @property
+    def source_listings(self) -> tuple[SourceListing, ...]:
+        if self.listings:
+            return self.listings
+        return tuple(
+            SourceListing(source, self.availability, self.deeplink)
+            for source in (self.sources or (self.chain,))
+        )
+
 
 @dataclass
 class Option:
@@ -78,6 +98,7 @@ class Option:
     coarse_score: float = 0.0
     components: dict[str, float] = field(default_factory=dict)
     seats: SeatGroup | None = None
+    seat_alternatives: tuple[SeatGroup, ...] = ()
     auditorium: Auditorium | None = None
     feasibility: object | None = None  # seating.estimate.Feasibility, when estimated
     seat_data: str = "not_fetched"     # not_fetched | grid | estimated | count_only | unavailable

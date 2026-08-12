@@ -31,6 +31,19 @@ python -m compileall -q src
 git diff --check
 ```
 
+For seating optimizer work, also run the reproducible oracle and runtime
+benchmark:
+
+```bash
+.venv/bin/python tools/benchmark_seating_optimizer.py
+```
+
+It compares the structured large-room search with exhaustive enumeration on
+seeded random small rooms, then reports cold runtime, selected shapes, robust
+utility, and certificate method for parties from 1 through 20. A benchmark
+with nonzero oracle regret is not automatically a bug—the algorithms optimize
+an NP-hard model—but it must be investigated and recorded rather than hidden.
+
 Fixtures are intentionally checked in so parser and service tests do not
 depend on a live cinema site. A fixture can prove that a parser handles the
 captured source; it cannot prove that the source still looks that way today.

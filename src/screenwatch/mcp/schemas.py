@@ -11,25 +11,33 @@ round trip is asserted in tests so the two cannot drift.
 
 from __future__ import annotations
 
+import math
+from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class WorkInput(BaseModel):
-    query: str | None = Field(None, description="Free-text title, e.g. 'dune part three'")
+    query: str | None = Field(None, description="Free-text title, e.g. 'example feature'")
     work_id: str | None = Field(None, description="Internal id, e.g. 'tmdb:438631'")
     tmdb_id: int | None = None
 
+    @model_validator(mode="after")
+    def has_identity(self):
+        if not any((self.query and self.query.strip(), self.work_id, self.tmdb_id)):
+            raise ValueError("work needs query, work_id, or tmdb_id")
+        return self
+
 
 class OriginInput(BaseModel):
-    lat: float
-    lon: float
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
 
 
 class LocationInput(BaseModel):
     origin: OriginInput | None = Field(None, description="Where to measure distance from")
-    radius_km: float = Field(40.0, description="Search radius around origin")
+    radius_km: float = Field(40.0, gt=0, le=10_000, description="Search radius around origin")
     city: str | None = None
     allow: list[str] = Field(
         default_factory=list,
@@ -57,6 +65,17 @@ class DateWindowInput(BaseModel):
     start: str = Field(description="YYYY-MM-DD")
     end: str = Field(description="YYYY-MM-DD")
 
+    @model_validator(mode="after")
+    def valid_order(self):
+        try:
+            start = date.fromisoformat(self.start)
+            end = date.fromisoformat(self.end)
+        except ValueError as exc:
+            raise ValueError("date window values must be YYYY-MM-DD") from exc
+        if end < start:
+            raise ValueError("date window end must not precede start")
+        return self
+
 
 class TimeWindowInput(BaseModel):
     start: str = Field("00:00", description="Local time, HH:MM")
@@ -67,6 +86,24 @@ class TimeWindowInput(BaseModel):
                     "12:45am show.",
     )
     weekdays: list[int] | None = Field(None, description="0=Monday. None = every day")
+
+    @field_validator("start", "end")
+    @classmethod
+    def valid_clock(cls, value: str) -> str:
+        try:
+            hour, minute = (int(part) for part in value.split(":"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("times must be HH:MM") from exc
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError("times must be valid 24-hour HH:MM values")
+        return value
+
+    @field_validator("weekdays")
+    @classmethod
+    def valid_weekdays(cls, value: list[int] | None) -> list[int] | None:
+        if value is not None and any(day < 0 or day > 6 for day in value):
+            raise ValueError("weekdays must use 0=Monday through 6=Sunday")
+        return value
 
 
 class PresentationInput(BaseModel):
@@ -86,32 +123,49 @@ class PresentationInput(BaseModel):
     label: str = ""
 
 
+class RelationshipInput(BaseModel):
+    a: int = Field(..., ge=0, description="Zero-based first party member")
+    b: int = Field(..., ge=0, description="Zero-based second party member")
+    weight: float = Field(1.0, gt=0, le=10)
+    must_adjacent: bool = False
+
+
 class SeatingInput(BaseModel):
     together: bool = Field(
         True,
         description="Prefer a contiguous group; false allows independent seat ranking",
     )
     allow_split: bool = Field(True, description="Accept a split rather than nothing")
-    avoid_front_rows: int = Field(2, description="Treat the first N rows as a last resort")
+    avoid_front_rows: int = Field(
+        2, ge=0, le=20, description="Treat the first N rows as a last resort"
+    )
     ideal_depth: float | None = Field(
-        None,
+        None, ge=0, le=1,
         description="0=front, 1=back. Default is an adaptive middle area; set to override",
     )
-    max_lateral: float = Field(1.0, description="0=centre only, 1=anywhere")
+    max_lateral: float = Field(1.0, ge=0, le=1, description="0=centre only, 1=anywhere")
     require: list[str] = Field(default_factory=list)
     avoid_aisle: bool = False
-    wheelchair_spaces: int = 0
-    companion_seats: int = 0
+    wheelchair_spaces: int = Field(0, ge=0)
+    companion_seats: int = Field(0, ge=0)
+    party_kind: Literal["generic", "date", "friends", "coworkers", "family"] = "generic"
+    relationships: list[RelationshipInput] = Field(
+        default_factory=list,
+        description="Who should sit together; member numbers are zero-based",
+    )
+    max_rows: int | None = Field(None, ge=1, le=8)
+    avoid_strangers: bool = True
+    prefer_aisle: bool = False
 
 
 class BudgetInput(BaseModel):
-    max_total_usd: float | None = None
-    max_per_ticket_usd: float | None = None
+    max_total_usd: float | None = Field(None, ge=0)
+    max_per_ticket_usd: float | None = Field(None, ge=0)
 
 
 class SearchSpecInput(BaseModel):
     work: WorkInput
-    party_size: int = Field(1, ge=1, description="How many tickets")
+    party_size: int = Field(1, ge=1, le=100, description="How many tickets")
     location: LocationInput = Field(default_factory=LocationInput)
     date_window: DateWindowInput | None = Field(None, description="Defaults to today..+7")
     time_windows: list[TimeWindowInput] = Field(
@@ -148,11 +202,11 @@ class SearchSpecInput(BaseModel):
         ),
     )
     max_seatmap_fetches: int = Field(
-        10, description="Seat maps cost one guarded request each; this caps them"
+        10, ge=0, le=100, description="Seat maps cost one guarded request each; this caps them"
     )
 
     diversify_per_group: int = Field(
-        2, description="How many options from the same venue+format may run "
+        2, ge=0, le=20, description="How many options from the same venue+format may run "
                        "before other choices get a turn. 0 disables re-ordering."
     )
     coverage: Literal["auto", "nearby", "exhaustive"] = Field(
@@ -163,6 +217,36 @@ class SearchSpecInput(BaseModel):
             "exhaustive removes venue/day caps for a national or long-horizon crawl."
         ),
     )
+
+    @field_validator("weights")
+    @classmethod
+    def valid_weights(cls, weights: dict[str, float]) -> dict[str, float]:
+        allowed = {
+            "format_fit", "time_fit", "lateness", "distance_fit",
+            "membership_fit", "availability_prior", "venue_affinity",
+            "group_cohesion", "seat_quality", "party_fit",
+        }
+        unknown = set(weights) - allowed
+        if unknown:
+            raise ValueError(f"unknown ranking weights: {', '.join(sorted(unknown))}")
+        if any(not math.isfinite(value) or value < 0 for value in weights.values()):
+            raise ValueError("ranking weights must be finite and non-negative")
+        return weights
+
+    @model_validator(mode="after")
+    def valid_party_constraints(self):
+        seating = self.seating
+        accessible = seating.wheelchair_spaces + seating.companion_seats
+        if accessible > self.party_size:
+            raise ValueError("accessible seats cannot exceed party_size")
+        if seating.avoid_aisle and seating.prefer_aisle:
+            raise ValueError("avoid_aisle and prefer_aisle are mutually exclusive")
+        for relationship in seating.relationships:
+            if relationship.a == relationship.b:
+                raise ValueError("a relationship must connect two different people")
+            if max(relationship.a, relationship.b) >= self.party_size:
+                raise ValueError("relationship member index exceeds party_size")
+        return self
 
     def to_dict(self) -> dict:
         data = self.model_dump(exclude_none=False)

@@ -4,7 +4,7 @@ One object rather than a long parameter list, because the same shape is a
 search request, a saved watch, and an MCP tool input. If they diverge, a watch
 stops meaning the same thing as the search that created it.
 
-Defaults are chosen so `SearchSpec(work=WorkRef(query="dune"))` is already a
+Defaults are chosen so `SearchSpec(work=WorkRef(query="example feature"))` is already a
 sensible query: anywhere, any time in the next week, one ticket, no format
 preference.
 """
@@ -157,6 +157,12 @@ class SeatingPrefs:
     avoid_aisle: bool = False
     wheelchair_spaces: int = 0
     companion_seats: int = 0
+    party_kind: str = "generic"          # generic/date/friends/coworkers/family
+    # (member_a, member_b, weight, must_be_directly_adjacent)
+    bonds: tuple[tuple[int, int, float, bool], ...] = ()
+    max_rows: int | None = None
+    avoid_strangers: bool = True
+    prefer_aisle: bool = False
 
     @property
     def needs_accessible_seating(self) -> bool:
@@ -218,7 +224,7 @@ class SearchSpec:
     # A search wants ranking: with everything sold out, a format you did not
     # ask for still beats not going, so an unmatched presentation is scored
     # low and kept. A *watch* wants the opposite. "Tell me when new 70mm IMAX
-    # Dune tickets drop" is a request about 70mm IMAX, and firing an alert for
+    # tickets drop" is a request about 70mm IMAX, and firing an alert for
     # a standard digital showing is not a partial answer, it is the wrong one -
     # and it trains the user to ignore the alerts.
     strict_presentations: bool = False

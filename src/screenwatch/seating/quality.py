@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 
+from ..models import Attribute, Brand, Presentation
 from ..presentation import trusted_venue_info
 from .model import Auditorium, Seat
 
@@ -93,6 +94,24 @@ class QualityModel:
             middle = ordered[:2] if len(ordered) > 3 else ordered[:1]
         return replace(self, middle_band=(min(middle), max(middle)))
 
+    def for_presentation(self, presentation: Presentation) -> QualityModel:
+        """Apply conservative format-specific comfort adjustments.
+
+        These are broad priors, not invented venue calibration: 3D and
+        panoramic formats are less forgiving off axis; IMAX/4DX deliberately
+        support a wider immersion band. Explicit user/venue preferences still
+        take precedence through the base model.
+        """
+        model = self
+        if Attribute.THREE_D in presentation.attrs:
+            model = replace(model, lateral_sigma=model.lateral_sigma * 0.82,
+                            front_row_penalty=model.front_row_penalty * 0.85)
+        if presentation.brand is Brand.SCREENX:
+            model = replace(model, lateral_sigma=model.lateral_sigma * 0.78)
+        if presentation.brand in (Brand.IMAX, Brand.FOURDX, Brand.DBOX):
+            model = replace(model, depth_sigma=model.depth_sigma * 1.15)
+        return model
+
     def _depth_score(self, y: float) -> float:
         sigma = max(abs(self.depth_sigma), 1e-6)
         if self.middle_band is not None:
@@ -138,6 +157,44 @@ class QualityModel:
             value *= 1.0 - self.aisle_penalty
 
         return round(max(0.0, min(1.0, value)), 4)
+
+    def score_interval(
+        self,
+        seat: Seat,
+        *,
+        row_count: int | None = None,
+        geometry_confidence: float = 1.0,
+    ) -> tuple[float, float]:
+        """Conservative desirability interval when seat geometry is uncertain.
+
+        Venue feeds range from real diagram coordinates to row/seat labels that
+        Screen Watch has normalized itself.  Treating those sources as equally
+        precise creates false confidence around the centreline and the edge of
+        the preferred depth band.  We therefore score a small uncertainty box
+        around the reported position.  At confidence 1 this collapses to the
+        ordinary point score; inferred geometry receives a wider, deliberately
+        conservative interval.
+
+        This is a distribution-free bound, not a claim that coordinate error is
+        Gaussian.  It gives the group optimizer a stable worst-case value even
+        when a source's drawing is approximate.
+        """
+        confidence = max(0.0, min(1.0, geometry_confidence))
+        x_radius = 0.18 * (1.0 - confidence)
+        y_radius = 0.12 * (1.0 - confidence)
+        samples = {
+            (
+                max(-1.0, min(1.0, seat.x + dx)),
+                max(0.0, min(1.0, seat.y + dy)),
+            )
+            for dx in (-x_radius, 0.0, x_radius)
+            for dy in (-y_radius, 0.0, y_radius)
+        }
+        values = [
+            self.score(replace(seat, x=x, y=y), row_count=row_count)
+            for x, y in samples
+        ]
+        return round(min(values), 4), round(max(values), 4)
 
     def score_all(self, auditorium: Auditorium) -> dict[str, float]:
         model = self.for_auditorium(auditorium)

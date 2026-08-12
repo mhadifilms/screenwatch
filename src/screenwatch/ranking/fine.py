@@ -21,6 +21,8 @@ from ..seating.estimate import seat_components as estimated_components
 from ..seating.groups import (
     GENERAL_KINDS,
     RECLINING_KINDS,
+    PartyBond,
+    PartyKind,
     SeatGroup,
     SeatRequest,
     find_groups,
@@ -84,7 +86,19 @@ def _seat_components(
         # for sitting apart. Cohesion is still recorded on the group itself,
         # so the rationale can describe the arrangement honestly.
         "group_cohesion": 1.0 if not spec.seating.together else group.cohesion_score,
-        "seat_quality": group.quality,
+        # Carry fairness across screening boundaries too. A room whose mean
+        # is high because fourteen people are excellent and one is awful must
+        # not beat a room that treats the whole party well.
+        "seat_quality": round(
+            (
+                0.40 * group.fairness
+                + 0.30 * group.nash_welfare
+                + 0.20 * group.quality
+                + 0.10 * group.robustness
+            )
+            if group.fairness else group.quality,
+            4,
+        ),
         "party_fit": party_fit(group, spec.party_size),
     }
 
@@ -109,6 +123,11 @@ def seat_request(spec: SearchSpec) -> SeatRequest:
         kinds=kinds,
         wheelchair_spaces=prefs.wheelchair_spaces,
         companion_seats=prefs.companion_seats,
+        party_kind=PartyKind(prefs.party_kind),
+        bonds=tuple(PartyBond(*bond) for bond in prefs.bonds),
+        max_rows=prefs.max_rows,
+        avoid_strangers=prefs.avoid_strangers,
+        prefer_aisle=prefs.prefer_aisle,
     )
 
 
@@ -120,13 +139,15 @@ def quality_model_for(spec: SearchSpec, venue_id: str) -> QualityModel:
         adaptive_middle=False if prefs.ideal_depth is not None else None,
         avoid_front_rows=prefs.avoid_front_rows,
         max_lateral=prefs.max_lateral,
-        aisle_penalty=0.15 if prefs.avoid_aisle else 0.0,
+        aisle_penalty=0.15 if prefs.avoid_aisle else (-0.08 if prefs.prefer_aisle else 0.0),
     )
 
 
 def apply_seats(option: Option, auditorium: Auditorium, spec: SearchSpec) -> Option:
     """Attach the best seat assignment for this spec and rescore."""
-    model = quality_model_for(spec, option.screening.venue_id)
+    model = quality_model_for(spec, option.screening.venue_id).for_presentation(
+        option.screening.presentation
+    )
 
     if auditorium.has_shape:
         # Counts plus room shape but no per-seat occupancy: estimate rather
@@ -148,10 +169,12 @@ def apply_seats(option: Option, auditorium: Auditorium, spec: SearchSpec) -> Opt
         return option
 
     group: SeatGroup | None = None
+    alternatives: tuple[SeatGroup, ...] = ()
     checked = False
     if auditorium.has_grid:
         groups = find_groups(auditorium, seat_request(spec), model)
         group = groups[0] if groups else None
+        alternatives = tuple(groups[1:])
         # A grid was read. If it produced nothing, that is a finding about the
         # room, not an absence of information.
         checked = True
@@ -161,6 +184,7 @@ def apply_seats(option: Option, auditorium: Auditorium, spec: SearchSpec) -> Opt
 
     option.auditorium = auditorium
     option.seats = group
+    option.seat_alternatives = alternatives
     option.components.update(_seat_components(group, spec, checked=checked))
     option.score = weighted(option.components, spec.weights, ALL_COMPONENTS)
     return option

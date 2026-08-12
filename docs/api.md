@@ -38,6 +38,7 @@ user.
 | `POST /v1/search` | Run a ranked, source-backed screening search |
 | `GET /v1/search/{search_id}` | Read a remembered or persisted search run |
 | `GET /v1/search/{search_id}/seatmap/{option_id}` | Retrieve the normalized seat grid for a search option |
+| `POST /v1/search/{search_id}/booking-runway/{option_id}` | Split a large party into capped, coordinated browser/profile checkout lanes |
 | `GET /v1/booking-link/{option_id}` | Return the final source booking URL |
 | `POST /v1/watches` | Create a durable monitor |
 | `GET /v1/watches` / `GET /v1/watches/{watch_id}` | Inspect active monitors and health |
@@ -53,8 +54,14 @@ The smallest useful request is:
 
 ```json
 {
-  "work": {"query": "Dune: Part Three"},
+  "work": {"query": "Example Feature"},
   "party_size": 4,
+  "seating": {
+    "party_kind": "friends",
+    "together": true,
+    "allow_split": true,
+    "avoid_strangers": true
+  },
   "location": {
     "city": "San Francisco",
     "radius_km": 40
@@ -83,6 +90,15 @@ Location supports `city`, an `origin` latitude/longitude, `radius_km`, chain
 filters, venue-type filters, explicit `allow` venue ids, and `deny` venue ids.
 An explicitly allowed venue remains in scope even when it is outside the
 radius—the API does not assume that a 70mm trip is accidental.
+
+Seating `party_kind` may be `date`, `friends`, `family`, `coworkers`, or
+`generic`. For a known party graph, `relationships` accepts zero-based member
+pairs with `weight` and optional `must_adjacent`; for example
+`{"a": 0, "b": 2, "weight": 1.0, "must_adjacent": true}`. The optimizer
+uses those bonds when assigning people inside the selected geometric block.
+`max_rows`, `avoid_strangers`, `prefer_aisle`, wheelchair spaces, and companion
+seats further constrain or personalize the result. Accessibility requirements
+change the feasible inventory rather than merely adding a ranking bonus.
 
 `coverage` is `auto`, `nearby`, or `exhaustive`. `auto` is exhaustive whenever
 the request has a city, origin/radius, chain, venue type, or explicit venue
@@ -116,6 +132,36 @@ An option's seat data is not all equivalent:
 Do not compare an estimated contiguous-seat result as if it were a confirmed
 seat selection. The ranker intentionally caps estimates below confirmed
 evidence.
+
+For confirmed grids, `seats` includes `worst_person_utility`, `nash_welfare`,
+`robust_preference_score`, `pareto_optimal`, and the physical `parts` of the
+arrangement. `seat_alternatives` contains high-merit, structurally different
+Pareto arrangements for the same screening rather than cosmetic one-seat
+shifts. Each carries the same fields and proof contract. The primary seat
+selection's `optimization` object reports:
+
+- `proven_optimal: true` means every candidate combination in the declared
+  hard-constraint space was evaluated and `optimality_gap_upper_bound` is zero;
+- `proven_optimal: false` means the large-room anytime solver was used. Its
+  method, evaluated-candidate count, geometry confidence, scope, and valid
+  robust-utility gap bound remain visible rather than being presented as proof.
+
+Optimality is relative to the known seat map, request, and ScreenWatch utility
+model. It is not a claim that an approximate venue feed contains unobserved
+screen dimensions, obstructions, or personal preferences.
+
+Search inputs reject invalid coordinates and clock values, reversed date
+windows, accessible-seat counts larger than the party, out-of-range
+relationship members, contradictory aisle preferences, unknown or negative
+ranking weights, and unreasonable fetch/diversification budgets before any
+provider work begins.
+
+For a large-party drop, post `party_size`, `transaction_limit`, and
+`parallel_checkouts` to the booking-runway route. A party of 15 with a limit
+of 10 becomes balanced 8+7 carts. When the option has an exact seat grid, each
+lane receives its exact seat ids and labels; otherwise the response is marked
+`provisional`. The route returns links for separate signed-in profiles and
+never holds seats or submits a purchase.
 
 ## Inventory and provenance
 

@@ -521,7 +521,18 @@ class TestBrowserFetchFlag:
         assert calls == ["https://mb.test/"]
         assert len(shows) == 1
 
-    def test_plain_venues_do_not_start_a_browser(self):
+    def test_plain_venues_do_not_start_a_browser(self, monkeypatch):
+        import screenwatch.providers.independent as mod
+
+        class FixtureDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = datetime(2026, 8, 2, 12, tzinfo=UTC)
+                return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+
+        # The fixture is an August 2 capture. Freeze the venue-local clock so
+        # this fetch-routing test cannot expire as wall time advances.
+        monkeypatch.setattr(mod, "datetime", FixtureDateTime)
         p = IndependentProvider(venues=[{
             "venue_id": "roxie", "name": "Roxie", "url": "https://roxie.test/",
             "tz": "America/Los_Angeles",

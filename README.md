@@ -44,6 +44,9 @@ as a permanent room fact.
   Cinemas/C360, and configured independent venues.
 - Two-phase ranking: inexpensive showtime ranking first, then real seat-map
   retrieval for the highest-value candidates.
+- Certified party-seat optimization: exhaustive proofs on tractable maps,
+  bounded robust/Pareto search on large maps, uncertainty-aware fairness,
+  relationship and module constraints, and meaningfully different alternatives.
 - Exact per-seat grids for AMC, Cinemark, and browser-rendered Regal; exact
   sold counts plus room shape for C360; availability-only surfaces where that
   is all the source publishes.
@@ -102,7 +105,7 @@ FastAPI's interactive schema is at
 curl -s http://127.0.0.1:8787/v1/search \
   -H 'content-type: application/json' \
   -d '{
-    "work": {"query": "Dune: Part Three"},
+    "work": {"query": "Example Feature"},
     "party_size": 4,
     "location": {"city": "San Francisco", "radius_km": 40},
     "presentations": [
@@ -126,6 +129,12 @@ option. Use `coverage: "exhaustive"` for a national or long-horizon crawl;
 use `coverage: "nearby"` for the fast bounded mode. `coverage: "auto"`
 selects exhaustive behavior for an explicitly scoped city, radius, chain, or
 venue search and keeps an unscoped query cheap.
+
+In-memory search sessions retain renderable seat maps for 30 minutes and are
+bounded to 32 entries. Their lightweight search audit remains in SQLite after
+the renderable session expires. `/v1/health` reports live-session capacity and
+the bounded seating-optimizer cache, which automatically misses whenever the
+seat map or request changes.
 
 ## MCP
 

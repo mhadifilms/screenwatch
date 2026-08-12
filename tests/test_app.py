@@ -47,7 +47,7 @@ class Provider:
         return build_auditorium("amc-metreon-16", "app-1", ["......", "......"])
 
 
-def _client():
+def _client(*, session_ttl_s=30 * 60, clock=None):
     from fastapi.testclient import TestClient
 
     store = Store.memory()
@@ -57,7 +57,13 @@ def _client():
         directory=VenueDirectory(),
         transport=object(),
     )
-    return TestClient(create_app(service, WatchService(service, store))), store
+    app = create_app(
+        service,
+        WatchService(service, store),
+        session_ttl_s=session_ttl_s,
+        clock=clock,
+    )
+    return TestClient(app), store
 
 
 def test_local_app_and_data_endpoints_are_available():
@@ -123,6 +129,7 @@ def test_search_id_persists_and_scopes_seat_map():
     assert provider_health[0]["chain"] == "amc"
     assert provider_health[0]["health"] == "healthy"
     assert body["options"][0]["starts_at_local_offset"] == "+00:00"
+    assert body["options"][0]["source_listings"][0]["source"] == "amc"
     venue_inventory = client.get(
         "/v1/venues?chain=amc&q=Metreon"
     ).json()["venues"][0]["inventory"]
@@ -140,6 +147,21 @@ def test_search_id_persists_and_scopes_seat_map():
     )
     assert seatmap.status_code == 200
     assert seatmap.json()["seat_data"] == "grid"
+    runway = client.post(
+        f"/v1/search/{body['search_id']}/booking-runway/{option_id}",
+        json={"party_size": 2, "transaction_limit": 1, "parallel_checkouts": 2},
+    )
+    assert runway.status_code == 200
+    assert runway.json()["split"] == [1, 1]
+    assert runway.json()["exact_seat_assignment"] is True
+    assert {lane["profile"] for lane in runway.json()["lanes"]} == {
+        "Checkout lane A", "Checkout lane B"
+    }
+    mismatch = client.post(
+        f"/v1/search/{body['search_id']}/booking-runway/{option_id}",
+        json={"party_size": 1, "transaction_limit": 1, "parallel_checkouts": 1},
+    )
+    assert mismatch.status_code == 422
     detail = client.get("/v1/venues/amc-metreon-16").json()
     assert detail["observed_rooms"][0]["capacity_max"] == 12
     assert detail["observed_rooms"][0]["rows"] == 2
@@ -151,6 +173,73 @@ def test_search_id_persists_and_scopes_seat_map():
     assert client.get(
         f"/v1/search/{body['search_id']}", headers={"x-user-id": "local"}
     ).status_code == 200
+    health = client.get("/v1/health").json()
+    assert health["search_sessions"]["live"] == 1
+    assert health["search_sessions"]["ttl_s"] == 1800
+    assert health["seating_optimizer_cache"]["maxsize"] == 128
+    store.close()
+
+
+def test_expired_search_session_retains_audit_record_but_not_heavy_seat_state():
+    now = [100.0]
+    client, store = _client(session_ttl_s=10, clock=lambda: now[0])
+    response = client.post(
+        "/v1/search",
+        json={
+            "work": {"query": WORK.title},
+            "party_size": 2,
+            "date_window": {"start": "2026-08-02", "end": "2026-08-03"},
+        },
+    ).json()
+    search_id = response["search_id"]
+    option_id = response["options"][0]["option_id"]
+
+    now[0] += 11
+    persisted = client.get(f"/v1/search/{search_id}").json()
+    assert persisted["persisted"]["run_id"] == search_id
+    assert persisted["options"] == []
+    expired_map = client.get(f"/v1/search/{search_id}/seatmap/{option_id}")
+    assert expired_map.status_code == 410
+    assert client.get("/v1/health").json()["search_sessions"]["live"] == 0
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "payload,fragment",
+    [
+        ({"work": {"query": ""}}, "work needs"),
+        (
+            {"work": {"query": "Dune"}, "location": {"origin": {"lat": 95, "lon": 0}}},
+            "less than or equal to 90",
+        ),
+        (
+            {
+                "work": {"query": "Dune"},
+                "party_size": 2,
+                "seating": {"wheelchair_spaces": 2, "companion_seats": 1},
+            },
+            "cannot exceed party_size",
+        ),
+        (
+            {
+                "work": {"query": "Dune"},
+                "party_size": 2,
+                "seating": {"relationships": [{"a": 0, "b": 2}]},
+            },
+            "exceeds party_size",
+        ),
+        (
+            {"work": {"query": "Dune"}, "weights": {"seat_quality": -0.1}},
+            "finite and non-negative",
+        ),
+    ],
+)
+def test_search_contract_rejects_impossible_or_unsafe_inputs(payload, fragment):
+    client, store = _client()
+    response = client.post("/v1/search", json=payload)
+
+    assert response.status_code == 422
+    assert fragment in response.text
     store.close()
 
 

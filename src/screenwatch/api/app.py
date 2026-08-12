@@ -8,12 +8,15 @@ place for small scripts and existing MCP clients.
 
 from __future__ import annotations
 
+import threading
+import time
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .. import __version__
 from ..identity.normalize import analyze
@@ -21,6 +24,7 @@ from ..identity.work import WorkRef
 from ..mcp.schemas import LocationInput, SearchSpecInput
 from ..ranking.spec import GeoPoint, SearchSpec
 from ..seating.render import to_svg, to_unicode_grid
+from ..service.booking import build_booking_runway
 from ..service.observatory import Observatory
 from ..service.search import SearchResult, SearchService
 from ..service.serde import (
@@ -31,10 +35,11 @@ from ..service.serde import (
     spec_to_dict,
 )
 from ..service.store import DEFAULT_USER
-from ..service.watch import WatchService
+from ..service.watch import WatchService, validate_webhook_url
 
 UI_DIR = Path(__file__).resolve().parents[1] / "ui"
 MAX_SEARCH_SESSIONS = 32
+DEFAULT_SEARCH_SESSION_TTL_S = 30 * 60
 
 
 class WatchCreate(BaseModel):
@@ -44,9 +49,20 @@ class WatchCreate(BaseModel):
     webhook: str | None = None
     seed: bool = True
 
+    @field_validator("webhook")
+    @classmethod
+    def valid_webhook(cls, value: str | None) -> str | None:
+        return validate_webhook_url(value)
+
 
 class WatchRun(BaseModel):
     today: str | None = Field(None, description="Optional YYYY-MM-DD anchor for testing/replay")
+
+
+class BookingRunwayCreate(BaseModel):
+    party_size: int = Field(..., ge=1, le=100)
+    transaction_limit: int = Field(10, ge=1, le=50)
+    parallel_checkouts: int = Field(2, ge=1, le=10)
 
 
 def _result_payload(result: SearchResult, *, limit: int | None = None) -> dict:
@@ -70,7 +86,13 @@ def _result_payload(result: SearchResult, *, limit: int | None = None) -> dict:
     }
 
 
-def create_app(search: SearchService, watches: WatchService) -> FastAPI:
+def create_app(
+    search: SearchService,
+    watches: WatchService,
+    *,
+    session_ttl_s: float = DEFAULT_SEARCH_SESSION_TTL_S,
+    clock: Callable[[], float] | None = None,
+) -> FastAPI:
     app = FastAPI(
         title="Screenwatch",
         version=__version__,
@@ -83,42 +105,64 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
     observatory = Observatory(search, store=search.store, directory=search.directory)
     sessions: OrderedDict[str, SearchResult] = OrderedDict()
     session_users: dict[str, str] = {}
+    session_times: dict[str, float] = {}
+    session_lock = threading.RLock()
+    session_clock = clock or time.monotonic
+    session_ttl_s = max(0.0, float(session_ttl_s))
 
     def user(x_user_id: str = Header(default=DEFAULT_USER)) -> str:
         return x_user_id
 
+    def purge_sessions() -> None:
+        cutoff = session_clock() - session_ttl_s
+        expired = [
+            search_id for search_id, seen_at in session_times.items()
+            if seen_at <= cutoff
+        ]
+        for search_id in expired:
+            sessions.pop(search_id, None)
+            session_users.pop(search_id, None)
+            session_times.pop(search_id, None)
+
     def remember(result: SearchResult, user_id: str = DEFAULT_USER) -> None:
-        sessions[result.search_id] = result
-        session_users[result.search_id] = user_id
-        sessions.move_to_end(result.search_id)
-        while len(sessions) > MAX_SEARCH_SESSIONS:
-            expired, _ = sessions.popitem(last=False)
-            session_users.pop(expired, None)
+        with session_lock:
+            purge_sessions()
+            sessions[result.search_id] = result
+            session_users[result.search_id] = user_id
+            session_times[result.search_id] = session_clock()
+            sessions.move_to_end(result.search_id)
+            while len(sessions) > MAX_SEARCH_SESSIONS:
+                expired, _ = sessions.popitem(last=False)
+                session_users.pop(expired, None)
+                session_times.pop(expired, None)
 
     def latest_session_id(user_id: str) -> str | None:
-        return next(
-            (
-                candidate_id
-                for candidate_id in reversed(sessions)
-                if session_users.get(candidate_id) == user_id
-            ),
-            None,
-        )
+        with session_lock:
+            purge_sessions()
+            return next(
+                (
+                    candidate_id
+                    for candidate_id in reversed(sessions)
+                    if session_users.get(candidate_id) == user_id
+                ),
+                None,
+            )
 
     def find_option(
         option_id: str,
         search_id: str | None = None,
         user_id: str = DEFAULT_USER,
     ):
-        result = sessions.get(search_id) if search_id else None
-        if result is not None and session_users.get(search_id) != user_id:
-            result = None
-            raise HTTPException(404, "unknown search_id")
-        if result is None and search_id:
-            raise HTTPException(410, "search session expired; run the search again")
-        if result is None and sessions:
-            session_id = latest_session_id(user_id)
-            result = sessions.get(session_id) if session_id else None
+        with session_lock:
+            purge_sessions()
+            result = sessions.get(search_id) if search_id else None
+            if result is not None and session_users.get(search_id) != user_id:
+                raise HTTPException(404, "unknown search_id")
+            if result is None and search_id:
+                raise HTTPException(410, "search session expired; run the search again")
+            if result is None and sessions:
+                session_id = latest_session_id(user_id)
+                result = sessions.get(session_id) if session_id else None
         if result is None:
             raise HTTPException(409, "no search has been run in this process")
         option = next((item for item in result.options if item.option_id == option_id), None)
@@ -144,11 +188,23 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
 
     @app.get("/v1/health")
     def health(uid: str = Depends(user)) -> dict:
+        with session_lock:
+            purge_sessions()
+            live_sessions = len(sessions)
+        from ..seating.groups import seating_cache_info
+
+        cache = seating_cache_info()
         return {
             "ok": True,
             "service": "screenwatch",
             "providers": [p.chain for p in search.providers],
             "active_watches": len(watches.list(uid)),
+            "search_sessions": {
+                "live": live_sessions,
+                "capacity": MAX_SEARCH_SESSIONS,
+                "ttl_s": session_ttl_s,
+            },
+            "seating_optimizer_cache": cache._asdict(),
         }
 
     @app.get("/v1/meta")
@@ -292,9 +348,11 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
 
     @app.get("/v1/search/{search_id}")
     def get_search(search_id: str, uid: str = Depends(user)) -> dict:
-        result = sessions.get(search_id)
-        if result is not None and session_users.get(search_id) != uid:
-            raise HTTPException(404, "unknown search_id")
+        with session_lock:
+            purge_sessions()
+            result = sessions.get(search_id)
+            if result is not None and session_users.get(search_id) != uid:
+                raise HTTPException(404, "unknown search_id")
         if result is None:
             persisted = search.store.get_search_run(search_id, user_id=uid)
             if persisted is None:
@@ -326,6 +384,20 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
             "grid": to_unicode_grid(option.auditorium, picked),
             "seat_data": option.seat_data,
         }
+
+    @app.post("/v1/search/{search_id}/booking-runway/{option_id}")
+    def booking_runway(
+        search_id: str,
+        option_id: str,
+        request: BookingRunwayCreate,
+        uid: str = Depends(user),
+    ) -> dict:
+        """Split one recommendation into coordinated, user-controlled carts."""
+        option = find_option(option_id, search_id, uid)
+        try:
+            return build_booking_runway(option, **request.model_dump())
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     # Legacy seat-map routes. They now accept an optional search_id query
     # parameter and remain useful for simple scripts.

@@ -188,6 +188,202 @@ class TestGroupFinding:
         assert best.seats[0].y > 0.3
 
 
+class TestGraphOptimizerScenarios:
+    def test_date_profile_does_not_make_larger_parties_impossible(self):
+        from screenwatch.seating.groups import PartyKind, SeatRequest
+
+        best = find_groups(
+            grid(3, 10), SeatRequest(3, party_kind=PartyKind.DATE), limit=1
+        )[0]
+        assert best.complete
+
+    def test_fifteen_people_are_not_forced_into_one_edge_heavy_row(self):
+        from screenwatch.seating.groups import PartyKind, SeatRequest
+
+        room = grid(10, 24)
+        best = find_groups(
+            room, SeatRequest(15, party_kind=PartyKind.FRIENDS), limit=1
+        )[0]
+        assert best.complete
+        assert 2 <= len({seat.row_index for seat in best.seats}) <= 4
+        assert max(len(part) for part in best.parts) < 15
+        assert best.fairness > 0 and best.reasons
+
+    def test_twenty_people_get_a_complete_compact_multirow_block(self):
+        room = grid(10, 24)
+        best = find_groups(room, 20, limit=1)[0]
+        rows = sorted({seat.row_index for seat in best.seats})
+        assert best.complete and len(rows) <= 4
+        assert rows == list(range(rows[0], rows[-1] + 1))
+        assert best.cohesion in (Cohesion.STACKED, Cohesion.ADJACENT_ROWS)
+
+    def test_three_people_respect_loveseat_module_topology(self):
+        from screenwatch.seating.groups import PartyKind, SeatRequest
+
+        room = build_auditorium("v", "1", ["××llll××", "××llll××"])
+        best = find_groups(
+            room, SeatRequest(3, party_kind=PartyKind.FRIENDS), limit=1
+        )[0]
+        modules: dict[str, int] = {}
+        for seat in best.seats:
+            if seat.module_id:
+                modules[seat.module_id] = modules.get(seat.module_id, 0) + 1
+        assert best.complete and 2 in modules.values()
+        assert len(best.parts) <= 2
+
+    def test_explicit_family_bonds_drive_person_to_seat_assignment(self):
+        from screenwatch.seating.groups import PartyBond, PartyKind, SeatRequest
+
+        room = grid(6, 10)
+        request = SeatRequest(
+            5,
+            party_kind=PartyKind.FAMILY,
+            bonds=(PartyBond(0, 1, must_adjacent=True), PartyBond(2, 3, must_adjacent=True)),
+        )
+        best = find_groups(room, request, limit=1)[0]
+        position = {person: best.seats[i] for i, person in enumerate(best.assignment)}
+        for a, b in ((0, 1), (2, 3)):
+            assert position[a].row_index == position[b].row_index
+            assert abs(position[a].col_index - position[b].col_index) == 1
+
+    def test_fragmented_twenty_person_room_can_use_more_than_four_components(self):
+        room = build_auditorium("v", "1", ["....××....××....××...."] * 8)
+        best = find_groups(room, 20, limit=1)[0]
+        assert best.complete
+        assert 5 <= len(best.parts) <= 6
+
+
+class TestCertifiedRobustOptimizer:
+    def test_small_room_is_globally_certified_against_every_subset(self):
+        room = grid(3, 5)
+        best = find_groups(room, 2, limit=1)[0]
+
+        assert best.certificate is not None
+        assert best.certificate.proven_optimal
+        assert best.certificate.method == "exhaustive-global-enumeration"
+        assert best.certificate.combinations_considered == 105  # 15 choose 2
+        assert best.certificate.optimality_gap_upper_bound == 0.0
+        assert best.pareto_optimal
+
+    def test_large_room_never_pretends_the_bounded_search_is_exact(self):
+        best = find_groups(grid(10, 24), 15, limit=1)[0]
+
+        assert best.certificate is not None
+        assert not best.certificate.proven_optimal
+        assert best.certificate.method == "anytime-structured-search"
+        assert 0.0 <= best.certificate.optimality_gap_upper_bound < 0.3
+
+    def test_custom_large_relationship_assignment_is_not_overcertified(self):
+        from screenwatch.seating.groups import PartyBond, SeatRequest
+
+        room = grid(2, 4)
+        request = SeatRequest(7, bonds=(PartyBond(0, 6, weight=1.0),))
+        best = find_groups(room, request, limit=1)[0]
+
+        assert best.certificate.method == "exhaustive-global-enumeration"
+        assert not best.assignment_proven_optimal
+        assert not best.certificate.proven_optimal
+        assert "locally optimized" in best.certificate.scope
+
+    def test_geometry_uncertainty_lowers_the_guaranteed_floor(self):
+        exact_room = grid(8, 9)
+        inferred_room = Auditorium(
+            exact_room.venue_id,
+            exact_room.screen_id,
+            exact_room.seats,
+            geometry_confidence=0.2,
+        )
+
+        exact = find_groups(exact_room, 1, limit=1)[0]
+        inferred = find_groups(inferred_room, 1, limit=1)[0]
+        assert exact.robustness == exact.quality
+        assert inferred.robustness < inferred.quality
+        assert inferred.certificate.geometry_confidence == 0.2
+
+    def test_alternatives_are_distinct_pareto_safe_arrangements(self):
+        groups = find_groups(grid(5, 7), 3, limit=4)
+        seat_sets = [{seat.id for seat in group.seats} for group in groups]
+
+        assert len(groups) == 4
+        assert groups[0].pareto_optimal
+        assert groups[0].certificate.proven_optimal
+        assert all(not group.certificate.proven_optimal for group in groups[1:])
+        assert len({frozenset(seats) for seats in seat_sets}) == 4
+        assert any(
+            len(seat_sets[0] & alternative) <= 1
+            for alternative in seat_sets[1:]
+        )
+
+    def test_score_interval_collapses_for_exact_geometry(self):
+        room = grid(6, 7)
+        seat = room.rows()[3][3]
+        model = QualityModel().for_auditorium(room)
+        point = model.score(seat, row_count=room.row_count)
+
+        assert model.score_interval(
+            seat, row_count=room.row_count, geometry_confidence=1.0
+        ) == (point, point)
+
+    def test_solver_is_invariant_to_input_seat_order(self):
+        room = build_auditorium("v", "1", ["..×....", ".......", "....×.."])
+        reordered = Auditorium(
+            room.venue_id,
+            room.screen_id,
+            tuple(reversed(room.seats)),
+            geometry_confidence=room.geometry_confidence,
+        )
+
+        original = find_groups(room, 3, limit=1)[0]
+        permuted = find_groups(reordered, 3, limit=1)[0]
+        assert {seat.id for seat in original.seats} == {seat.id for seat in permuted.seats}
+        assert original.objective == permuted.objective
+
+    def test_unavailable_geometry_cannot_change_the_exact_winner(self):
+        room = build_auditorium("v", "1", [".....", "..×..", "....."])
+        baseline = find_groups(room, 2, limit=1)[0]
+        # The sold seat is already part of the geometry but never part of the
+        # feasible set; moving it to the end of the source feed is immaterial.
+        sold = tuple(seat for seat in room.seats if not seat.is_open)
+        open_seats = tuple(seat for seat in room.seats if seat.is_open)
+        reordered = Auditorium("v", "1", open_seats + sold)
+        changed = find_groups(reordered, 2, limit=1)[0]
+
+        assert {seat.id for seat in baseline.seats} == {seat.id for seat in changed.seats}
+
+    def test_identical_optimization_is_served_from_a_bounded_cache(self):
+        from screenwatch.seating.groups import clear_seating_cache, seating_cache_info
+
+        room = grid(6, 10)
+        clear_seating_cache()
+        first = find_groups(room, 8, limit=2)
+        after_first = seating_cache_info()
+        second = find_groups(room, 8, limit=2)
+        after_second = seating_cache_info()
+
+        assert first == second
+        assert after_first.misses == 1 and after_first.hits == 0
+        assert after_second.misses == 1 and after_second.hits == 1
+        assert after_second.currsize <= after_second.maxsize == 128
+
+    def test_availability_change_invalidates_the_optimizer_cache_key(self):
+        from dataclasses import replace
+
+        from screenwatch.seating.groups import clear_seating_cache, seating_cache_info
+        from screenwatch.seating.model import SeatStatus
+
+        room = grid(4, 7)
+        clear_seating_cache()
+        find_groups(room, 3, limit=1)
+        changed = Auditorium(
+            room.venue_id,
+            room.screen_id,
+            (replace(room.seats[0], status=SeatStatus.SOLD), *room.seats[1:]),
+        )
+        find_groups(changed, 3, limit=1)
+
+        assert seating_cache_info().misses == 2
+
+
 class TestRendering:
     def test_unicode_grid_has_screen_and_legend(self):
         out = to_unicode_grid(grid(5, 10))
@@ -331,6 +527,15 @@ class TestSeatPreferencesAreHonoured:
         assert find_groups(
             room, SeatRequest(party_size=2, wheelchair_spaces=1, companion_seats=1)
         ) == []
+
+    def test_accessible_allocation_honours_max_rows_and_no_split(self):
+        from screenwatch.seating.groups import SeatRequest, find_groups
+
+        room = self.room(["wc××××", "×××××", "...××"])
+        base = dict(party_size=4, wheelchair_spaces=1, companion_seats=1)
+        assert find_groups(room, SeatRequest(**base))
+        assert find_groups(room, SeatRequest(**base, max_rows=1)) == []
+        assert find_groups(room, SeatRequest(**base, allow_split=False)) == []
 
     # -- recliners ------------------------------------------------------
     def test_requiring_recliners_excludes_standard_seats(self):

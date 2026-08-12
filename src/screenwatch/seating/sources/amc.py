@@ -34,6 +34,7 @@ from ..model import (
     SeatDataUnavailable,
     SeatKind,
     SeatStatus,
+    infer_modules,
     mark_aisles,
     normalize_geometry,
 )
@@ -170,7 +171,7 @@ class AmcSeatSource:
         return Auditorium(
             venue_id=venue_id or "amc",
             screen_id=str(showtime.get("auditorium") or ""),
-            seats=normalize_geometry(mark_aisles(seats)),
+            seats=normalize_geometry(mark_aisles(infer_modules(seats))),
             geometry_confidence=1.0,
             name=f"Auditorium {showtime.get('auditorium')}",
         )
