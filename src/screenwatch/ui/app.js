@@ -132,7 +132,7 @@
     const reasons = option.reasons?.slice(0, 2).join(" · ") || "Ranked across format, timing, venue, and availability.";
     const booking = option.booking_link ? `<a class="book-link" href="${escapeHtml(option.booking_link)}" target="_blank" rel="noreferrer">Book ↗</a>` : "";
     const seatmap = option.seat_data === "grid" && state.result?.search_id
-      ? `<a class="seatmap-link" href="/v1/search/${encodeURIComponent(state.result.search_id)}/seatmap/${encodeURIComponent(option.option_id)}.svg" target="_blank" rel="noreferrer">view seat map</a>`
+      ? `<button class="seatmap-link" data-seatmap-option="${escapeHtml(option.option_id)}" type="button">explore theater</button>`
       : "";
     const sources = (option.source_listings || []).map((listing) => {
       const label = `${listing.source} · ${listing.availability}`;
@@ -157,6 +157,42 @@
 
   function bindRunwayButtons(root = document) {
     $$('[data-runway-option]', root).forEach((button) => button.addEventListener("click", () => loadBookingRunway(button.dataset.runwayOption)));
+  }
+
+  function bindSeatmapButtons(root = document) {
+    $$('[data-seatmap-option]', root).forEach((button) => button.addEventListener("click", () => loadSeatmap(button.dataset.seatmapOption)));
+  }
+
+  function closeSeatmap() {
+    const dialog = $("#seatmap-dialog");
+    if (dialog.open) dialog.close();
+  }
+
+  async function loadSeatmap(optionId) {
+    if (!state.result?.search_id) return;
+    const dialog = $("#seatmap-dialog");
+    const stage = $("#seatmap-stage");
+    const option = state.result.options.find((item) => item.option_id === optionId);
+    $("#seatmap-dialog-title").textContent = option
+      ? `${option.venue.name} · ${formatTime(option.starts_at_local, option.starts_at_local_offset)}`
+      : "Theater layout";
+    $("#seatmap-dialog-meta").textContent = "Loading live seat positions…";
+    stage.innerHTML = `<div class="seatmap-loading"><span class="spinner"></span><span>Drawing every seat…</span></div>`;
+    $("#seatmap-download").href = `/v1/search/${encodeURIComponent(state.result.search_id)}/seatmap/${encodeURIComponent(optionId)}.svg`;
+    if (!dialog.open) dialog.showModal();
+    try {
+      const payload = await api(`/v1/search/${encodeURIComponent(state.result.search_id)}/seatmap/${encodeURIComponent(optionId)}`);
+      const summary = payload.summary || {};
+      $("#seatmap-dialog-meta").textContent = `${Number(summary.available || 0).toLocaleString()} open of ${Number(summary.capacity || 0).toLocaleString()} · ${Number(summary.rows || 0)} rows · ${Number(summary.selected || 0)} recommended for your party`;
+      const parsed = new DOMParser().parseFromString(payload.svg, "image/svg+xml");
+      const visual = parsed.documentElement;
+      if (visual.localName !== "svg" || parsed.querySelector("parsererror")) throw new Error("The seat visual could not be drawn.");
+      const columns = Number(payload.layout?.columns || 0);
+      visual.style.minWidth = `${Math.min(1800, Math.max(320, columns * 22 + 100))}px`;
+      stage.replaceChildren(document.importNode(visual, true));
+    } catch (error) {
+      stage.innerHTML = `<div class="seatmap-error">${escapeHtml(error.message)}</div>`;
+    }
   }
 
   async function loadBookingRunway(optionId) {
@@ -190,6 +226,7 @@
     empty.hidden = result.options.length > 0;
     list.innerHTML = result.options.map(renderOption).join("");
     bindRunwayButtons(list);
+    bindSeatmapButtons(list);
     $("#result-meta").textContent = `${result.options.length} ranked options · ${result.considered} considered · ${result.coverage || "nearby"} coverage · ${Math.round(result.duration_ms)}ms`;
     const coverageNote = result.coverage === "exhaustive"
       ? "Exhaustive source traversal requested"
@@ -469,6 +506,10 @@
       if (!("Notification" in window)) { showToast("Browser notifications are not available here.", "error"); return; }
       const permission = await Notification.requestPermission();
       showToast(permission === "granted" ? "Browser alerts enabled." : "Browser alerts remain disabled.", permission === "granted" ? "success" : "error");
+    });
+    $("#seatmap-close").addEventListener("click", closeSeatmap);
+    $("#seatmap-dialog").addEventListener("click", (event) => {
+      if (event.target === event.currentTarget) closeSeatmap();
     });
     window.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); $("#title").focus(); } });
   }

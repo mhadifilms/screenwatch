@@ -16,7 +16,13 @@ from screenwatch.seating.model import (
     normalize_geometry,
 )
 from screenwatch.seating.quality import QualityModel
-from screenwatch.seating.render import build_auditorium, to_svg, to_unicode_grid
+from screenwatch.seating.render import (
+    SvgOptions,
+    build_auditorium,
+    seatmap_document,
+    to_svg,
+    to_unicode_grid,
+)
 
 
 def grid(rows: int, cols: int, venue="v", screen="1") -> Auditorium:
@@ -431,6 +437,46 @@ class TestRendering:
         a = grid(5, 5)
         svg = to_svg(a, {"A1"})
         assert "#f0883e" in svg
+
+    def test_svg_exposes_accessible_semantics_and_every_seat_type(self):
+        a = build_auditorium("v", "1", [".xorwcll"])
+        svg = to_svg(a, {"A1"})
+        assert 'aria-labelledby="seatmap-title seatmap-desc"' in svg
+        assert 'data-seat-id="A1"' in svg
+        assert 'data-status="sold"' in svg
+        assert 'data-kind="recliner"' in svg
+        assert 'data-kind="wheelchair"' in svg
+        assert 'data-kind="companion"' in svg
+        assert 'data-kind="loveseat"' in svg
+        assert 'class="accessible-mark"' in svg and 'class="module-link"' in svg
+
+    def test_svg_supports_light_embeds_and_optional_chrome(self):
+        svg = to_svg(
+            grid(2, 4),
+            options=SvgOptions(theme="light", show_legend=False, show_labels=False),
+        )
+        assert "#F7F8FC" in svg
+        assert "Recommended</text>" not in svg
+        assert 'class="label"' not in svg
+
+    def test_structured_document_matches_visual_and_ignores_unknown_picks(self):
+        a = build_auditorium("v", "1", [".xo", "wcr"])
+        document = seatmap_document(a, {"A1", "Z99"})
+        assert document["version"] == 1
+        assert document["summary"]["selected"] == 1
+        assert document["summary"]["statuses"] == {
+            "available": 4,
+            "held": 1,
+            "sold": 1,
+        }
+        assert document["summary"]["kinds"]["wheelchair"] == 1
+        assert document["layout"] == {
+            "columns": 3,
+            "row_span": 2,
+            "bounds": {"min_col": 0, "max_col": 2, "min_row": 0, "max_row": 1},
+        }
+        assert next(seat for seat in document["seats"] if seat["id"] == "A1")["selected"]
+        assert document["svg"].startswith("<svg")
 
 
 class TestDegradedSeatData:

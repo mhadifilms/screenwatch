@@ -147,7 +147,8 @@ select[multiple] { appearance: auto; background-image: none; padding-right: 12px
 .score { color: var(--accent-hot); font-size: 20px; font-weight: 750; letter-spacing: -.05em; }
 .score-label { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .12em; }
 .book-link { display: inline-flex; align-items: center; gap: 5px; padding: 8px 9px; border-radius: 8px; background: rgba(255,158,113,.12); color: var(--accent-hot); text-decoration: none; font-size: 11px; font-weight: 700; }
-.seatmap-link { border: 0; color: var(--blue); background: transparent; padding: 0; font-size: 10px; }
+.seatmap-link { border: 0; color: var(--blue); background: transparent; padding: 0; font-size: 10px; cursor: pointer; }
+.seatmap-link:hover { color: #b8ccff; text-decoration: underline; text-underline-offset: 2px; }
 .scope-note { margin-top: 15px; padding: 12px; border-radius: 10px; background: rgba(255,204,124,.08); border: 1px solid rgba(255,204,124,.2); color: var(--accent-hot); font-size: 11px; line-height: 1.5; }
 
 .side-column { display: grid; gap: 18px; }
@@ -222,6 +223,21 @@ select[multiple] { appearance: auto; background-image: none; padding-right: 12px
 .seat-surface { color: var(--green); }
 .table-empty { color: var(--muted); text-align: center; padding: 28px !important; }
 
+.seatmap-dialog { width: min(1220px, calc(100vw - 32px)); max-width: none; max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--line-strong); border-radius: 20px; color: var(--text); background: var(--panel-solid); box-shadow: 0 30px 100px rgba(0,0,0,.7); overflow: hidden; }
+.seatmap-dialog::backdrop { background: rgba(3, 6, 14, .78); backdrop-filter: blur(8px); }
+.seatmap-dialog-shell { display: grid; grid-template-rows: auto minmax(240px, 1fr) auto; max-height: calc(100vh - 34px); }
+.seatmap-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 22px 24px 18px; border-bottom: 1px solid var(--line); }
+.seatmap-dialog-header h2 { margin: 5px 0 0; font-size: 19px; }
+.seatmap-dialog-header p { margin: 7px 0 0; color: var(--muted); font-size: 11px; }
+.seatmap-dialog-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.seatmap-close { display: grid; place-items: center; width: 36px; height: 36px; padding: 0 0 3px; border: 1px solid var(--line); border-radius: 11px; color: var(--soft); background: rgba(255,255,255,.05); font-size: 24px; line-height: 1; }
+.seatmap-close:hover { border-color: var(--line-strong); color: var(--text); background: rgba(255,255,255,.09); }
+.seatmap-stage { min-height: 320px; padding: 20px; overflow: auto; background: radial-gradient(circle at 50% 0%, rgba(93,131,255,.09), transparent 43%), #090d19; }
+.seatmap-stage > svg { display: block; width: 100%; height: auto; max-height: calc(100vh - 205px); margin: auto; }
+.seatmap-loading, .seatmap-error { min-height: 330px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); }
+.seatmap-error { color: var(--danger); }
+.seatmap-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 9px; line-height: 1.4; }
+
 .toast { position: fixed; right: 22px; bottom: 22px; max-width: 380px; padding: 13px 15px; border: 1px solid rgba(136,225,186,.35); border-radius: 11px; background: #182b2c; box-shadow: 0 14px 40px rgba(0,0,0,.32); color: var(--green); font-size: 12px; opacity: 0; pointer-events: none; transform: translateY(10px); transition: opacity .2s ease, transform .2s ease; z-index: 10; }
 .toast.visible { opacity: 1; transform: translateY(0); }
 
@@ -262,4 +278,10 @@ select[multiple] { appearance: auto; background-image: none; padding-right: 12px
   .data-pulse-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
   .venue-tools { flex-direction: column; width: 145px; }
   .compact-input { width: auto; }
+  .seatmap-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+  .seatmap-dialog-shell { max-height: calc(100vh - 18px); }
+  .seatmap-dialog-header { padding: 16px; }
+  .seatmap-dialog-actions .button { display: none; }
+  .seatmap-stage { padding: 12px; }
+  .seatmap-dialog-footer { display: none; }
 }

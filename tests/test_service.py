@@ -889,7 +889,8 @@ class TestMcpTools:
     async def test_all_tools_are_registered(self, server):
         names = {t.name for t in await server.list_tools()}
         assert names == {
-            "resolve_title", "find_screenings", "get_seatmap", "explain_ranking",
+            "resolve_title", "find_screenings", "get_seatmap", "render_seatmap",
+            "explain_ranking",
             "create_watch", "list_watches", "cancel_watch", "poll_watches",
             "acknowledge_hits", "get_booking_link", "get_data_overview",
             "list_venues", "get_venue", "get_venue_evidence", "refresh_venues", "get_inventory_analytics",

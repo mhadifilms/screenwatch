@@ -37,7 +37,10 @@ user.
 | `GET /v1/releases/signals?query=...` | Read the AMC catalog tripwire; not ticket-sale proof |
 | `POST /v1/search` | Run a ranked, source-backed screening search |
 | `GET /v1/search/{search_id}` | Read a remembered or persisted search run |
-| `GET /v1/search/{search_id}/seatmap/{option_id}` | Retrieve the normalized seat grid for a search option |
+| `GET /v1/search/{search_id}/seatmap/{option_id}` | Retrieve the structured seat document, SVG, and text grid for a search option |
+| `GET /v1/search/{search_id}/seatmap/{option_id}.svg` | Display the self-contained live auditorium SVG |
+| `POST /v1/seatmaps/render` | Render any supplied auditorium to structured JSON plus SVG, without a search session |
+| `POST /v1/seatmaps/render.svg` | Render any supplied auditorium directly as `image/svg+xml` |
 | `POST /v1/search/{search_id}/booking-runway/{option_id}` | Split a large party into capped, coordinated browser/profile checkout lanes |
 | `GET /v1/booking-link/{option_id}` | Return the final source booking URL |
 | `POST /v1/watches` | Create a durable monitor |
@@ -47,6 +50,46 @@ user.
 | `GET /v1/notifications` | Read unacknowledged local alerts |
 | `POST /v1/watches/poll` | Run due watches and read pending alerts |
 | `POST /v1/watches/acknowledge` | Explicitly acknowledge handled alerts |
+
+## Seat-map renderer
+
+The renderer is a native, reusable service rather than a browser-only view.
+Its SVG has a responsive `viewBox`, embedded styles, screen and row labels, a
+legend, accessible names, and machine-readable `data-seat-id`, `data-status`,
+and `data-kind` attributes. Source row and column coordinates remain intact,
+so horizontal aisles, cross-aisles, short rows, and large premium rooms do not
+collapse into a rectangular approximation. Standard seats, recliners,
+loveseats/modules, wheelchair spaces, and companion seats each retain their
+type. Available, taken, temporarily held, unavailable, and recommended seats
+remain visually distinct.
+
+For a quick generated room, send ASCII rows:
+
+```bash
+curl -s http://127.0.0.1:8787/v1/seatmaps/render \
+  -H 'content-type: application/json' \
+  -d '{
+    "venue_id": "demo-house",
+    "screen_id": "7",
+    "name": "Demo House · Auditorium 7",
+    "layout": [".. xx ..", "rr wwcll"],
+    "picked": ["A1", "A2"],
+    "theme": "dark"
+  }'
+```
+
+The layout alphabet is `.` available, `x` taken, `o` held, a space for a
+structural gap, `#` blocked, `w` wheelchair, `c` companion, `r` recliner, and
+`l` loveseat. For a source-backed layout, send `seats` instead of `layout`;
+each seat accepts row/column labels and indices, status, kind, aisle adjacency,
+and physical-module metadata. Seat ids and row/column coordinate pairs must be
+unique.
+
+The JSON response contains `summary`, `layout`, `legend`, ordered `rows`, all
+semantic `seats`, and the finished `svg`. Post the same body to the `.svg`
+route for a direct image response. Search-scoped seat-map routes use the same
+document and highlight the optimizer's recommendation. SVG routes and JSON
+routes accept dark or light themes and optional legend and row labels.
 
 ## Search shape
 
@@ -187,7 +230,8 @@ claude mcp add screenwatch -- "$PWD/.venv/bin/python" -m screenwatch.mcp.server
 
 The MCP server exposes the same major operations:
 
-- `resolve_title`, `find_screenings`, `get_seatmap`, `explain_ranking`;
+- `resolve_title`, `find_screenings`, `get_seatmap`, `render_seatmap`,
+  `explain_ranking`;
 - `get_data_overview`, `get_inventory_analytics`;
 - `list_venues`, `get_venue`, `get_venue_evidence`, `refresh_venues`;
 - `find_release_signals`;
@@ -197,3 +241,6 @@ The MCP server exposes the same major operations:
 
 The Pydantic input descriptions in `src/screenwatch/mcp/schemas.py` are part
 of the MCP contract. Update them whenever a search field's meaning changes.
+`get_seatmap` returns `unicode`, `svg`, or structured `json` for a ranked
+option. `render_seatmap` accepts the same ASCII layout alphabet without first
+running a search, which is useful for agents that already possess a room map.

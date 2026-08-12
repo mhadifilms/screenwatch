@@ -13,17 +13,25 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import __version__
 from ..identity.normalize import analyze
 from ..identity.work import WorkRef
 from ..mcp.schemas import LocationInput, SearchSpecInput
 from ..ranking.spec import GeoPoint, SearchSpec
-from ..seating.render import to_svg, to_unicode_grid
+from ..seating.model import Auditorium, Seat, SeatKind, SeatStatus, normalize_geometry
+from ..seating.render import (
+    SvgOptions,
+    build_auditorium,
+    seatmap_document,
+    to_svg,
+    to_unicode_grid,
+)
 from ..service.booking import build_booking_runway
 from ..service.observatory import Observatory
 from ..service.search import SearchResult, SearchService
@@ -63,6 +71,119 @@ class BookingRunwayCreate(BaseModel):
     party_size: int = Field(..., ge=1, le=100)
     transaction_limit: int = Field(10, ge=1, le=50)
     parallel_checkouts: int = Field(2, ge=1, le=10)
+
+
+class SeatVisualInput(BaseModel):
+    """One source-coordinate seat for the standalone visual renderer."""
+
+    row_label: str = Field(min_length=1, max_length=12)
+    row_index: int = Field(ge=0, le=1000)
+    col_label: str = Field(min_length=1, max_length=12)
+    col_index: int = Field(ge=0, le=1000)
+    status: SeatStatus = SeatStatus.AVAILABLE
+    kind: SeatKind = SeatKind.STANDARD
+    aisle_adjacent: bool = False
+    module_id: str | None = Field(None, max_length=120)
+    module_position: int | None = Field(None, ge=0, le=100)
+    module_size: int | None = Field(None, ge=1, le=100)
+    module_required: bool = False
+
+
+class SeatmapRenderCreate(BaseModel):
+    """A portable room description accepted without running a search first."""
+
+    venue_id: str = Field("custom", min_length=1, max_length=200)
+    screen_id: str = Field("1", min_length=1, max_length=100)
+    name: str | None = Field(None, max_length=200)
+    seats: list[SeatVisualInput] = Field(default_factory=list, max_length=10000)
+    layout: list[str] = Field(
+        default_factory=list,
+        max_length=1000,
+        description=(
+            "Optional ASCII rows: . open, x taken, o held, spaces are aisles, "
+            "w wheelchair, c companion, r recliner, l loveseat."
+        ),
+    )
+    row_labels: str | None = Field(None, min_length=1, max_length=1000)
+    picked: set[str] = Field(default_factory=set, max_length=1000)
+    theme: Literal["dark", "light"] = "dark"
+    show_legend: bool = True
+    show_labels: bool = True
+
+    @model_validator(mode="after")
+    def has_one_layout_source(self):
+        if bool(self.seats) == bool(self.layout):
+            raise ValueError("provide exactly one of seats or layout")
+        if self.layout and any(len(row) > 1000 for row in self.layout):
+            raise ValueError("layout rows may contain at most 1000 columns")
+        if self.seats:
+            ids = [f"{seat.row_label}{seat.col_label}" for seat in self.seats]
+            coordinates = [(seat.row_index, seat.col_index) for seat in self.seats]
+            if len(ids) != len(set(ids)):
+                raise ValueError("seat ids must be unique")
+            if len(coordinates) != len(set(coordinates)):
+                raise ValueError("seat row/column coordinates must be unique")
+        return self
+
+    def auditorium(self) -> Auditorium:
+        if self.layout:
+            auditorium = build_auditorium(
+                self.venue_id,
+                self.screen_id,
+                self.layout,
+                row_labels=self.row_labels,
+            )
+            auditorium.name = self.name
+            return auditorium
+        seats = [
+            Seat(
+                row_label=item.row_label,
+                row_index=item.row_index,
+                col_label=item.col_label,
+                col_index=item.col_index,
+                status=item.status,
+                kind=item.kind,
+                aisle_adjacent=item.aisle_adjacent,
+                module_id=item.module_id,
+                module_position=item.module_position,
+                module_size=item.module_size,
+                module_required=item.module_required,
+            )
+            for item in self.seats
+        ]
+        return Auditorium(
+            venue_id=self.venue_id,
+            screen_id=self.screen_id,
+            name=self.name,
+            seats=normalize_geometry(seats),
+        )
+
+
+def _svg_response(svg: str, *, live: bool = False) -> Response:
+    """Return SVG with safe embedding and explicit freshness semantics."""
+    return Response(
+        svg,
+        media_type="image/svg+xml",
+        headers={
+            "Cache-Control": "no-store" if live else "private, max-age=300",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def _visual_options(
+    theme: Literal["dark", "light"] = "dark",
+    show_legend: bool = True,
+    show_labels: bool = True,
+    title: str | None = None,
+) -> SvgOptions:
+    return SvgOptions(
+        theme=theme,
+        show_legend=show_legend,
+        show_labels=show_labels,
+        title=title,
+    )
 
 
 def _result_payload(result: SearchResult, *, limit: int | None = None) -> dict:
@@ -206,6 +327,31 @@ def create_app(
             },
             "seating_optimizer_cache": cache._asdict(),
         }
+
+    @app.post("/v1/seatmaps/render.svg")
+    def render_seatmap_svg(request: SeatmapRenderCreate) -> Response:
+        """Render any normalized or ASCII auditorium without a search session."""
+        options = _visual_options(
+            request.theme,
+            request.show_legend,
+            request.show_labels,
+            request.name,
+        )
+        return _svg_response(
+            to_svg(request.auditorium(), request.picked, options=options),
+            live=False,
+        )
+
+    @app.post("/v1/seatmaps/render")
+    def render_seatmap_document(request: SeatmapRenderCreate) -> dict:
+        """Return both the interactive seat model and its finished SVG."""
+        options = _visual_options(
+            request.theme,
+            request.show_legend,
+            request.show_labels,
+            request.name,
+        )
+        return seatmap_document(request.auditorium(), request.picked, options=options)
 
     @app.get("/v1/meta")
     def meta(uid: str = Depends(user)) -> dict:
@@ -362,27 +508,46 @@ def create_app(
 
     @app.get("/v1/search/{search_id}/seatmap/{option_id}.svg")
     def search_seatmap_svg(
-        search_id: str, option_id: str, uid: str = Depends(user)
+        search_id: str,
+        option_id: str,
+        theme: Literal["dark", "light"] = Query("dark"),
+        show_legend: bool = Query(True),
+        show_labels: bool = Query(True),
+        uid: str = Depends(user),
     ) -> Response:
         option = find_option(option_id, search_id, uid)
         if option.auditorium is None:
             raise HTTPException(404, f"no seat map ({option.seat_data})")
         picked = {seat.id for seat in option.seats.seats} if option.seats else set()
-        return Response(to_svg(option.auditorium, picked), media_type="image/svg+xml")
+        title = f"{option.screening.venue_name} · {option.screening.work.title}"
+        options = _visual_options(theme, show_legend, show_labels, title)
+        return _svg_response(to_svg(option.auditorium, picked, options=options), live=True)
 
     @app.get("/v1/search/{search_id}/seatmap/{option_id}")
     def search_seatmap(
-        search_id: str, option_id: str, uid: str = Depends(user)
+        search_id: str,
+        option_id: str,
+        theme: Literal["dark", "light"] = Query("dark"),
+        show_legend: bool = Query(True),
+        show_labels: bool = Query(True),
+        uid: str = Depends(user),
     ) -> dict:
         option = find_option(option_id, search_id, uid)
         if option.auditorium is None:
             raise HTTPException(404, f"no seat map ({option.seat_data})")
         picked = {seat.id for seat in option.seats.seats} if option.seats else set()
+        title = f"{option.screening.venue_name} · {option.screening.work.title}"
+        document = seatmap_document(
+            option.auditorium,
+            picked,
+            options=_visual_options(theme, show_legend, show_labels, title),
+        )
         return {
             "search_id": search_id,
             "option_id": option_id,
             "grid": to_unicode_grid(option.auditorium, picked),
             "seat_data": option.seat_data,
+            **document,
         }
 
     @app.post("/v1/search/{search_id}/booking-runway/{option_id}")
@@ -405,29 +570,44 @@ def create_app(
     def seatmap_svg(
         option_id: str,
         search_id: str | None = Query(None),
+        theme: Literal["dark", "light"] = Query("dark"),
+        show_legend: bool = Query(True),
+        show_labels: bool = Query(True),
         uid: str = Depends(user),
     ) -> Response:
         option = find_option(option_id, search_id, uid)
         if option.auditorium is None:
             raise HTTPException(404, f"no seat map ({option.seat_data})")
         picked = {seat.id for seat in option.seats.seats} if option.seats else set()
-        return Response(to_svg(option.auditorium, picked), media_type="image/svg+xml")
+        title = f"{option.screening.venue_name} · {option.screening.work.title}"
+        options = _visual_options(theme, show_legend, show_labels, title)
+        return _svg_response(to_svg(option.auditorium, picked, options=options), live=True)
 
     @app.get("/v1/seatmap/{option_id}")
     def seatmap(
         option_id: str,
         search_id: str | None = Query(None),
+        theme: Literal["dark", "light"] = Query("dark"),
+        show_legend: bool = Query(True),
+        show_labels: bool = Query(True),
         uid: str = Depends(user),
     ) -> dict:
         option = find_option(option_id, search_id, uid)
         if option.auditorium is None:
             raise HTTPException(404, f"no seat map ({option.seat_data})")
         picked = {seat.id for seat in option.seats.seats} if option.seats else set()
+        title = f"{option.screening.venue_name} · {option.screening.work.title}"
+        document = seatmap_document(
+            option.auditorium,
+            picked,
+            options=_visual_options(theme, show_legend, show_labels, title),
+        )
         return {
             "search_id": search_id or latest_session_id(uid),
             "option_id": option_id,
             "grid": to_unicode_grid(option.auditorium, picked),
             "seat_data": option.seat_data,
+            **document,
         }
 
     @app.post("/v1/watches")

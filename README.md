@@ -50,6 +50,10 @@ as a permanent room fact.
 - Exact per-seat grids for AMC, Cinemark, and browser-rendered Regal; exact
   sold counts plus room shape for C360; availability-only surfaces where that
   is all the source publishes.
+- A native auditorium visual engine shared by the browser, HTTP API, and MCP:
+  responsive self-contained SVG, structured seat JSON, real aisle/cross-aisle
+  geometry, typed recliner/loveseat/accessibility inventory, occupancy states,
+  and highlighted party recommendations from microcinemas through large IMAX rooms.
 - Structured presentation matching for IMAX 70mm, standard 70mm, 35mm,
   nitrate, laser, Dolby Cinema, aspect ratio, 3D, captions, subtitles, and
   other attributes.
@@ -150,7 +154,8 @@ The main tools are:
 | --- | --- |
 | `resolve_title` | Canonicalize a title and inspect variants/bookability |
 | `find_screenings` | Rank options with reasons, tradeoffs, and seat evidence |
-| `get_seatmap` | Render a normalized seat map for a search option |
+| `get_seatmap` | Render a search option as text, self-contained SVG, or structured seat JSON |
+| `render_seatmap` | Generate the same visual for a standalone auditorium layout |
 | `get_data_overview` | Inspect source coverage, freshness, evidence provenance, and alert backlog |
 | `get_inventory_analytics` | Group observed evidence by chain, venue, type, city, format, or availability |
 | `list_venues` / `get_venue` | Explore venues, seat surfaces, observed capabilities, and provenance |

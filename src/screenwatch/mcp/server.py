@@ -17,7 +17,13 @@ from .. import __version__
 from ..identity.normalize import analyze
 from ..identity.work import WorkRef
 from ..ranking.spec import GeoPoint, SearchSpec
-from ..seating.render import to_svg, to_unicode_grid
+from ..seating.render import (
+    SvgOptions,
+    build_auditorium,
+    seatmap_document,
+    to_svg,
+    to_unicode_grid,
+)
 from ..service.observatory import Observatory
 from ..service.search import SearchResult, SearchService
 from ..service.serde import (
@@ -224,7 +230,11 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
                     "a 40-seat microcinema render comparably. Your recommended "
                     "seats are highlighted."
     )
-    def get_seatmap(option_id: str, format: Literal["unicode", "svg"] = "unicode") -> str:
+    def get_seatmap(
+        option_id: str,
+        format: Literal["unicode", "svg", "json"] = "unicode",
+        theme: Literal["dark", "light"] = "dark",
+    ) -> str | dict:
         option, error = _find(option_id)
         if error:
             return error
@@ -234,10 +244,37 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
                 "Ranking fell back to availability only."
             )
         picked = {s.id for s in option.seats.seats} if option.seats else set()
-        return (
-            to_svg(option.auditorium, picked) if format == "svg"
-            else to_unicode_grid(option.auditorium, picked)
+        title = f"{option.screening.venue_name} · {option.screening.work.title}"
+        options = SvgOptions(theme=theme, title=title)
+        if format == "json":
+            return seatmap_document(option.auditorium, picked, options=options)
+        if format == "svg":
+            return to_svg(option.auditorium, picked, options=options)
+        return to_unicode_grid(option.auditorium, picked)
+
+    @server.tool(
+        description=(
+            "Render a standalone auditorium without running a screening search. "
+            "Rows use . for open, x for taken, o for held, spaces for aisles, "
+            "w for wheelchair, c for companion, r for recliner, and l for loveseat."
         )
+    )
+    def render_seatmap(
+        layout: list[str],
+        picked: list[str] | None = None,
+        title: str = "Custom auditorium",
+        format: Literal["unicode", "svg", "json"] = "svg",
+        theme: Literal["dark", "light"] = "dark",
+    ) -> str | dict:
+        auditorium = build_auditorium("custom", "1", layout)
+        auditorium.name = title
+        selected = set(picked or [])
+        options = SvgOptions(theme=theme, title=title)
+        if format == "json":
+            return seatmap_document(auditorium, selected, options=options)
+        if format == "unicode":
+            return to_unicode_grid(auditorium, selected)
+        return to_svg(auditorium, selected, options=options)
 
     @server.tool(
         description="Why the top option beat the runner-up, component by component."

@@ -147,6 +147,15 @@ def test_search_id_persists_and_scopes_seat_map():
     )
     assert seatmap.status_code == 200
     assert seatmap.json()["seat_data"] == "grid"
+    assert seatmap.json()["summary"]["capacity"] == 12
+    assert seatmap.json()["summary"]["selected"] == 2
+    assert seatmap.json()["svg"].startswith("<svg")
+    seatmap_svg = client.get(
+        f"/v1/search/{body['search_id']}/seatmap/{option_id}.svg?theme=light"
+    )
+    assert seatmap_svg.status_code == 200
+    assert seatmap_svg.headers["cache-control"] == "no-store"
+    assert "#F7F8FC" in seatmap_svg.text
     runway = client.post(
         f"/v1/search/{body['search_id']}/booking-runway/{option_id}",
         json={"party_size": 2, "transaction_limit": 1, "parallel_checkouts": 2},
@@ -329,6 +338,44 @@ def test_local_notification_poll_can_acknowledge_displayed_hits():
     store.close()
 
 
+def test_standalone_seatmap_renderer_serves_svg_and_structured_seats():
+    client, store = _client()
+    request = {
+        "venue_id": "demo-house",
+        "screen_id": "7",
+        "name": "Demo House · Auditorium 7",
+        "layout": [".. xx ..", "rr wwcll"],
+        "picked": ["A1", "A2"],
+        "theme": "dark",
+    }
+    visual = client.post("/v1/seatmaps/render.svg", json=request)
+    assert visual.status_code == 200
+    assert visual.headers["content-type"].startswith("image/svg+xml")
+    assert visual.headers["x-content-type-options"] == "nosniff"
+    assert visual.text.startswith("<svg")
+    assert 'data-seat-id="A1"' in visual.text
+    assert 'data-kind="wheelchair"' in visual.text
+
+    document = client.post("/v1/seatmaps/render", json=request)
+    assert document.status_code == 200
+    payload = document.json()
+    assert payload["auditorium"]["venue_id"] == "demo-house"
+    assert payload["summary"]["selected"] == 2
+    assert payload["summary"]["kinds"]["recliner"] == 2
+    assert payload["layout"]["columns"] == 8
+    assert payload["svg"].startswith("<svg")
+
+    duplicate = client.post("/v1/seatmaps/render", json={
+        "seats": [
+            {"row_label": "A", "row_index": 0, "col_label": "1", "col_index": 0},
+            {"row_label": "A", "row_index": 1, "col_label": "1", "col_index": 1},
+        ],
+    })
+    assert duplicate.status_code == 422
+    assert "seat ids must be unique" in duplicate.text
+    store.close()
+
+
 @pytest.mark.asyncio
 async def test_mcp_exposes_data_and_venue_intelligence():
     from screenwatch.mcp.server import build_server
@@ -368,4 +415,14 @@ async def test_mcp_exposes_data_and_venue_intelligence():
     refresh_result = await server.call_tool("refresh_venues", {"location": {}})
     refresh = json.loads(refresh_result.content[0].text)
     assert refresh["provider_stats"][0]["status"] == "unsupported"
+
+    rendered_result = await server.call_tool("render_seatmap", {
+        "layout": ["..xx..", "rrwcll"],
+        "picked": ["A1", "A2"],
+        "format": "json",
+    })
+    rendered = json.loads(rendered_result.content[0].text)
+    assert rendered["summary"]["selected"] == 2
+    assert rendered["summary"]["kinds"]["wheelchair"] == 1
+    assert rendered["svg"].startswith("<svg")
     store.close()

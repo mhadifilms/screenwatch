@@ -212,6 +212,27 @@
       </section>
     </main>
 
+    <dialog id="seatmap-dialog" class="seatmap-dialog" aria-labelledby="seatmap-dialog-title">
+      <div class="seatmap-dialog-shell">
+        <header class="seatmap-dialog-header">
+          <div>
+            <div class="eyebrow">LIVE AUDITORIUM</div>
+            <h2 id="seatmap-dialog-title">Theater layout</h2>
+            <p id="seatmap-dialog-meta">Loading live seat positions…</p>
+          </div>
+          <div class="seatmap-dialog-actions">
+            <a id="seatmap-download" class="button button-quiet" href="#" target="_blank" rel="noreferrer">Open SVG ↗</a>
+            <button id="seatmap-close" class="seatmap-close" type="button" aria-label="Close theater layout">×</button>
+          </div>
+        </header>
+        <div id="seatmap-stage" class="seatmap-stage" aria-live="polite"></div>
+        <footer class="seatmap-dialog-footer">
+          <span>Source coordinates preserve aisles, row gaps, seat types, and physical modules.</span>
+          <span>Recommended seats are a ranking aid; availability can change at checkout.</span>
+        </footer>
+      </div>
+    </dialog>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/assets/app.js" defer></script>
   </body>
