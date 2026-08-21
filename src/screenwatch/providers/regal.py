@@ -39,6 +39,7 @@ from ..presentation import (
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
 from ..seating.model import Auditorium, SeatDataUnavailable
+from ..seating.sources.fandango import FandangoSeatSource, pick_showtime
 from ..seating.sources.regal import BOOKING_API, RegalSeatSource
 from ..service.venues import Venue
 from ..transport import Transport
@@ -78,6 +79,10 @@ class RegalProvider(ScopeReporting):
     ) -> None:
         self.adapter = RegalShowtimes()
         self.seats = RegalSeatSource()
+        # Regal's own seat page is behind a Cloudflare rule that increasingly
+        # answers a hard block rather than a challenge. Fandango sells the same
+        # seats and publishes the same map over plain JSON.
+        self.fandango = FandangoSeatSource()
         self.booking_api = booking_api
         self._browser = browser
         self.work_resolver = work_resolver or WorkResolver()
@@ -314,19 +319,79 @@ class RegalProvider(ScopeReporting):
                 f"Regal seat page via browser failed: {type(exc).__name__}: {exc}"
             ) from exc
 
-        if response.blocked:
-            raise SeatDataUnavailable(
-                f"Regal seat page blocked by Cloudflare (HTTP {response.status})"
+        if response.blocked or response.challenged or response.status >= 400:
+            # Regal will not serve this. Fandango sells the same seats for the
+            # same showing, so try there before reporting no seat data: a block
+            # is a firewall rule and no amount of retrying it will help.
+            why = (
+                f"blocked by Cloudflare (HTTP {response.status})"
+                if response.blocked
+                else f"unavailable (HTTP {response.status})"
             )
-        if response.challenged or response.status >= 400:
-            raise SeatDataUnavailable(
-                f"Regal seat page unavailable (HTTP {response.status})"
-            )
+            room = self._seats_via_fandango(screening, perf, transport)
+            if room is not None:
+                return room
+            raise SeatDataUnavailable(f"Regal seat page {why}, and Fandango had no map")
         return self.seats.parse(
             response.text,
             venue_id=screening.venue_id,
             screen_id=screening.screen_id or "",
         )
+
+    def _seats_via_fandango(self, screening, perf, transport) -> Auditorium | None:
+        """The same room, from Fandango, or None if that is not possible either.
+
+        Returns None rather than raising so the caller can report the *original*
+        reason Regal refused, which is the more useful thing to know.
+
+        The showing has to be identified before its seats mean anything, and the
+        only key the two sites share is the local start time. `perf` carries the
+        one screenwatch already resolved, so no extra Regal request is needed.
+        """
+        # No transport means no fallback: the caller is exercising the block
+        # path directly, and inventing a request here would be a surprise.
+        if transport is None:
+            return None
+        starts = getattr(perf, "starts_at_local", None)
+        if starts is None:
+            return None
+        # The theatre directory already knows this venue's real name, which is
+        # what Fandango's search needs; the venue id is a slug and matches worse.
+        # `getattr` because a directory entry is not guaranteed to carry one.
+        venue_name = next(
+            (
+                getattr(t, "name", None)
+                for t in self.theatres()
+                if getattr(t, "venue_id", None) == screening.venue_id
+            ),
+            None,
+        )
+        try:
+            theater = self.fandango.find_theater(
+                transport, venue_name or screening.venue_id.replace("-", " ")
+            )
+            if theater is None:
+                return None
+            candidates = self.fandango.showtimes(
+                transport, theater, starts.date(), "regal"
+            )
+            match = pick_showtime(
+                candidates,
+                title=getattr(perf, "title", None),
+                starts_at_local=starts,
+            )
+            if match is None:
+                return None
+            payload = self.fandango.seat_map(transport, theater, match.hash_code)
+            return self.fandango.parse(
+                payload,
+                venue_id=screening.venue_id,
+                screen_id=screening.screen_id or "",
+            )
+        except SeatDataUnavailable:
+            return None
+        except Exception:                # noqa: BLE001 - a fallback must not throw
+            return None
 
     def _theatre_code_for(self, venue_id: str) -> str | None:
         return next(

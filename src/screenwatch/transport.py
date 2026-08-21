@@ -102,9 +102,24 @@ class Transport:
         self._pacer = Pacer(min_interval_s=min_interval_s)
         self._etags: dict[str, str] = {}
 
-    def get(self, url: str, *, conditional: bool = False) -> Response:
+    def get(
+        self,
+        url: str,
+        *,
+        conditional: bool = False,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
+        """One paced, impersonated GET.
+
+        `headers` exists for read surfaces that check for something their own
+        front end sends. Fandango's `napi` endpoints want
+        `x-requested-with: XMLHttpRequest` and a referer, and refuse without
+        them; going around this transport to send them would lose the pacing and
+        the shared cookie jar, which are the two things that keep these reads
+        polite and working.
+        """
         started = time.monotonic()
-        resp = self._raw_get(url, conditional=conditional)
+        resp = self._raw_get(url, conditional=conditional, headers=headers)
 
         if resp.status_code == 304:
             return Response(url, 304, "", from_cache=True,
@@ -113,7 +128,7 @@ class Transport:
         traversed = False
         if resp.looks_queued:
             self._traverse_queue(url, resp.text)
-            resp = self._raw_get(url)
+            resp = self._raw_get(url, headers=headers)
             traversed = True
             if resp.looks_queued:
                 raise QueueTraversalError(
@@ -125,14 +140,22 @@ class Transport:
         resp.elapsed_ms = int((time.monotonic() - started) * 1000)
         return resp
 
-    def _raw_get(self, url: str, *, conditional: bool = False) -> Response:
+    def _raw_get(
+        self,
+        url: str,
+        *,
+        conditional: bool = False,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
         self._pacer.wait()
-        headers = {"accept-language": "en-US,en;q=0.9"}
+        sent = {"accept-language": "en-US,en;q=0.9"}
         if self._user_agent:
-            headers["user-agent"] = self._user_agent
+            sent["user-agent"] = self._user_agent
         if conditional and (etag := self._etags.get(url)):
-            headers["if-none-match"] = etag
-        r = self._session.get(url, headers=headers, timeout=self._timeout)
+            sent["if-none-match"] = etag
+        if headers:
+            sent.update(headers)
+        r = self._session.get(url, headers=sent, timeout=self._timeout)
         if etag := r.headers.get("etag"):
             self._etags[url] = etag
         return Response(url=str(r.url), status_code=r.status_code, text=r.text)
