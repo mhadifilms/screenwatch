@@ -242,3 +242,63 @@ class TestMatchingAShowing:
 
     def test_no_candidates_is_no_match(self):
         assert pick_showtime([], title="x", starts_at_local=datetime.now()) is None
+
+class TestRegalWithoutABrowser:
+    """A deployment can ship without Chromium and still read Regal rooms.
+
+    This is the shape the bridge's container ships in: Fandango needs no
+    browser, so the browser tier is an optional extra. Before this, a missing
+    Chromium raised straight past the fallback and the room was unreachable.
+    """
+
+    def test_a_missing_browser_falls_through_to_fandango(self, seatmap):
+        import json as _json
+        from datetime import datetime
+
+        from screenwatch.adapters.regal.showtimes import RegalPerformance
+        from screenwatch.browser import BrowserUnavailable
+        from screenwatch.providers.regal import RegalProvider
+
+        class NoBrowser:
+            @staticmethod
+            def visit(url, **kw):
+                raise BrowserUnavailable("playwright is not installed")
+
+        search_html = (
+            '<a href="/regal-hacienda-crossings-screenx-imax-and-rpx-AAOPK/'
+            'theater-page">y</a>'
+        )
+        showtimes = {
+            "viewModel": {"movies": [{
+                "title": "The Odyssey",
+                "variants": [{"amenityGroups": [{
+                    "hasReservedSeating": True,
+                    "showtimes": [{"showtimeHashCode": "v2-a", "id": 9,
+                                   "ticketingDate": "2026-08-02+17:00"}],
+                }]}],
+            }]}
+        }
+        transport = FakeTransport({
+            "/search": FakeResponse(search_html),
+            "/theater-page": FakeResponse("<html/>"),
+            "/napi/theaterMovieShowtimes/": FakeResponse(_json.dumps(showtimes)),
+            "/napi/seatMap/": FakeResponse(_json.dumps(seatmap)),
+        })
+
+        provider = RegalProvider(session=None, backoff_s=0, browser=NoBrowser())
+        provider._theatres = [type("T", (), {
+            "venue_id": "regal-x", "theatre_code": "1929",
+            "name": "Regal Hacienda Crossings"})()]
+        provider._seat_requests["regal:1"] = RegalPerformance(
+            performance_id="1", theatre_code="1929", movie_code="HO1",
+            title="The Odyssey",
+            starts_at_utc=datetime(2026, 8, 3, 0),
+            starts_at_local=datetime(2026, 8, 2, 17), auditorium="21",
+            attributes=(), sold_out=False,
+        )
+        option = type("O", (), {"screening": type("S", (), {
+            "venue_id": "regal-x", "screening_id": "regal:1", "screen_id": ""})()})()
+
+        room = provider.fetch_seats(option, transport=transport)
+        assert len(room.seats) == 152
+        assert room.geometry_confidence == 1.0

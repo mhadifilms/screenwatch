@@ -313,8 +313,17 @@ class RegalProvider(ScopeReporting):
                 wait_timeout_ms=12_000,
             )
         except BrowserUnavailable as exc:
+            # No browser at all. Fandango needs none, so this is not the end of
+            # the road: a deployment can legitimately ship without Chromium and
+            # still read Regal rooms.
+            room = self._seats_via_fandango(screening, perf, transport)
+            if room is not None:
+                return room
             raise SeatDataUnavailable(f"browser transport unavailable: {exc}") from exc
         except Exception as exc:
+            room = self._seats_via_fandango(screening, perf, transport)
+            if room is not None:
+                return room
             raise SeatDataUnavailable(
                 f"Regal seat page via browser failed: {type(exc).__name__}: {exc}"
             ) from exc
