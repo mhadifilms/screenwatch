@@ -56,6 +56,7 @@ class Response:
     from_cache: bool = False
     queue_traversed: bool = False
     elapsed_ms: int = 0
+    headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def looks_queued(self) -> bool:
@@ -158,7 +159,12 @@ class Transport:
         r = self._session.get(url, headers=sent, timeout=self._timeout)
         if etag := r.headers.get("etag"):
             self._etags[url] = etag
-        return Response(url=str(r.url), status_code=r.status_code, text=r.text)
+        return Response(
+            url=str(r.url),
+            status_code=r.status_code,
+            text=r.text,
+            headers=dict(r.headers),
+        )
 
     def _traverse_queue(self, original_url: str, interstitial_html: str) -> None:
         m = _QUEUE_REDIRECT.search(interstitial_html)

@@ -56,12 +56,100 @@ class SeatKind(Enum):
 
 
 class SeatDataUnavailable(RuntimeError):
-    """No seat grid obtainable for this screening.
+    """Compatibility base for a seat-map failure with a machine-readable code.
 
-    Distinct from "the screening is sold out" and from "the fetch failed" -
-    it means this venue or format simply does not expose seat data, so the
-    ranker should fall back to availability-only scoring rather than retry.
+    Interactive ranking deliberately catches this base class and degrades one
+    option.  Harvesting persists the concrete subclass so a later worker knows
+    whether to retry, use a browser, refresh discovery context, or stop.
     """
+
+    code = "seat_data_unavailable"
+    retryable = False
+    action = "review"
+
+    def __init__(self, message: str, *, context: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.context = dict(context or {})
+        self.raw_payload: bytes | None = None
+        self.raw_content_type = "application/octet-stream"
+        self.source_url: str | None = None
+        self.status_code: int | None = None
+
+    def with_capture(
+        self,
+        payload: bytes | str,
+        *,
+        content_type: str,
+        source_url: str | None = None,
+        status_code: int | None = None,
+    ) -> SeatDataUnavailable:
+        """Attach the exact response that caused this typed failure."""
+        self.raw_payload = payload.encode() if isinstance(payload, str) else payload
+        self.raw_content_type = content_type
+        self.source_url = source_url
+        self.status_code = status_code
+        return self
+
+    def to_failure(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "message": str(self),
+            "retryable": self.retryable,
+            "action": self.action,
+            "context": self.context,
+        }
+
+
+class PermanentNoSeatMap(SeatDataUnavailable):
+    code = "permanent_no_seat_map"
+    action = "do_not_retry"
+
+
+class TransientSourceFailure(SeatDataUnavailable):
+    code = "transient_source_failure"
+    retryable = True
+    action = "retry_later"
+
+
+class RateLimited(TransientSourceFailure):
+    code = "rate_limited"
+    action = "retry_with_backoff"
+
+
+class BrowserRequired(SeatDataUnavailable):
+    code = "browser_required"
+    retryable = True
+    action = "retry_through_browser"
+
+
+class BlockedBySource(SeatDataUnavailable):
+    code = "blocked_by_source"
+    action = "change_transport_or_review"
+
+
+class ParserDrift(SeatDataUnavailable):
+    code = "parser_drift"
+    action = "update_parser"
+
+
+class AmbiguousShowtimeMatch(SeatDataUnavailable):
+    code = "ambiguous_showtime_match"
+    action = "manual_review"
+
+
+class MissingProviderContext(SeatDataUnavailable):
+    code = "missing_provider_context"
+    action = "refresh_probe_context"
+
+
+def seat_failure(exc: Exception) -> dict[str, object]:
+    """Normalize legacy provider errors at the collector boundary."""
+    if isinstance(exc, SeatDataUnavailable):
+        return exc.to_failure()
+    return TransientSourceFailure(
+        f"{type(exc).__name__}: {exc}",
+        context={"exception_type": type(exc).__name__},
+    ).to_failure()
 
 
 @dataclass(frozen=True)
@@ -114,9 +202,11 @@ class Auditorium:
 
     @property
     def capacity(self) -> int:
+        if self.reported_capacity is not None:
+            return self.reported_capacity
         if self.seats:
             return sum(1 for s in self.seats if s.kind.is_bookable)
-        return self.reported_capacity or 0
+        return 0
 
     @property
     def available(self) -> int:

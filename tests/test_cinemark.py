@@ -365,6 +365,27 @@ class TestGeographyBootstrap:
         assert [v.venue_id for v in located] == ["cinemark-san-antonio-0"]
         store.close()
 
+    def test_restart_restores_theater_id_and_real_slug(self):
+        from screenwatch.service.store import Store
+
+        store = Store.memory()
+        store.put_venue_geo(
+            "cinemark-san-antonio-0",
+            "cinemark",
+            "Cinemark San Antonio",
+            29.48,
+            -98.58,
+            source_venue_id="1098",
+            source_slug="tx-san-antonio/cinemark-san-antonio-0",
+        )
+
+        provider = self.provider(store=store, bootstrap_limit=0)
+        provider._load_persisted_geo()
+        restored = provider._theatres["cinemark-san-antonio-0"]
+
+        assert restored.theater_id == "1098"
+        assert restored.slug == "tx-san-antonio/cinemark-san-antonio-0"
+
     def test_bootstrap_is_bounded(self):
         """Unbounded, this would fetch hundreds of pages per search."""
         from screenwatch.service.store import Store
@@ -434,7 +455,20 @@ class TestSeatMaps:
         """The class name mirrors it, but `available` is the authority —
         physical-distance buffers carry a normal seat type and are unavailable."""
         a = self.auditorium(seatmap_html)
-        assert a.available == 34 and a.capacity == 68
+        assert a.available == 34 and a.capacity == 64
+
+    def test_physical_auditorium_identity_and_capacity_survive(self, seatmap_html):
+        room = self.auditorium(seatmap_html)
+        assert room.screen_id == "1"
+        assert room.name == "Auditorium 1"
+        assert room.capacity == 64
+
+    def test_unavailable_and_buffer_seats_are_not_called_sold(self, seatmap_html):
+        from screenwatch.seating.model import SeatKind, SeatStatus
+
+        room = self.auditorium(seatmap_html)
+        assert not any(seat.status is SeatStatus.SOLD for seat in room.seats)
+        assert any(seat.kind is SeatKind.BLOCKED for seat in room.seats)
 
     def test_grid_position_comes_from_the_info_attribute(self, seatmap_html):
         """`info` is rowLabel,seatNumber,rowIndex,colIndex,showtimeId — so no

@@ -72,6 +72,18 @@ Adapters parse source-specific markup. Providers decide how to fetch and scope
 it. The service layer owns identity, persistence, watch state, and explanations.
 Transports should remain thin.
 
+Seat acquisition is replayable and does not accept a ranking `Option`. Every
+provider builds a durable `SeatProbe` during showtime discovery and implements
+`fetch(probe, transport) -> SeatCapture`. The capture carries the normalized
+room plus the unmodified source body. Search may reconcile a matching stored
+static topology with the current response; it must never reuse a past
+availability state as if it were live.
+
+`SearchService` remains title-led and budgeted. `HarvestService` is venue- or
+city-led, enumerates every title over its requested horizon, persists every
+probe before attempting it, and is the only path that claims exhaustive
+auditorium collection.
+
 ## Adding or changing metadata
 
 ### Venue and room evidence
@@ -107,6 +119,16 @@ Do not return an empty list when a source is blocked, malformed, or incomplete.
 Raise or record a named provider error so a caller can distinguish “no
 showtimes” from “the source was not readable.” If a provider cap is applied,
 record what was skipped in `clipped`.
+
+Seat failures use one of the concrete collector categories in
+`seating/model.py`. General admission, throttling, browser requirements,
+blocks, parser drift, ambiguous cross-provider matches, and missing durable
+context must not be collapsed into a single retry policy.
+
+For live changes, configure and run the self-hosted canaries described in
+[Live provider canaries](live-canaries.md). Never update a parser from a
+screenshot alone: retain the raw response and turn it into a narrow fixture
+with provenance.
 
 ### Tests
 

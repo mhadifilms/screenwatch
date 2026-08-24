@@ -11,12 +11,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from ..identity.show import canonical_show_id
 from ..identity.work import Work
 from ..models import Availability, Presentation
 from ..seating.groups import SeatGroup
 from ..seating.model import Auditorium
+
+if TYPE_CHECKING:
+    from ..seating.capture import SeatProbe
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,9 @@ class Screening:
     seats_available: int | None = None
     seats_capacity: int | None = None
     seats_sold: int | None = None
+    # Restart-safe provider context. Older/custom providers may omit this; the
+    # fallback method below still produces a minimal probe from public fields.
+    seat_probe: SeatProbe | None = None
 
     @property
     def canonical_screening_id(self) -> str:
@@ -82,6 +89,34 @@ class Screening:
         return tuple(
             SourceListing(source, self.availability, self.deeplink)
             for source in (self.sources or (self.chain,))
+        )
+
+    def durable_seat_probe(self, *, ticketing_platform: str | None = None):
+        from dataclasses import replace
+
+        from ..seating.capture import SeatProbe
+
+        if self.seat_probe is not None:
+            if ticketing_platform and not self.seat_probe.ticketing_platform:
+                return replace(self.seat_probe, ticketing_platform=ticketing_platform)
+            return self.seat_probe
+        return SeatProbe(
+            source=self.chain,
+            venue_id=self.venue_id,
+            source_venue_id=self.venue_id,
+            showtime_id=self.screening_id.split(":", 1)[-1],
+            booking_url=self.deeplink,
+            starts_at_local=self.starts_at_local,
+            title=self.work.title,
+            source_screen_id=self.screen_id,
+            ticketing_platform=ticketing_platform,
+            metadata={
+                "screening_id": self.screening_id,
+                "presentation": self.presentation.describe(),
+                "seats_available": self.seats_available,
+                "seats_capacity": self.seats_capacity,
+                "seats_sold": self.seats_sold,
+            },
         )
 
 

@@ -47,7 +47,8 @@ class TestParse:
 
     def test_theatre_entry_uses_official_slug_and_coordinates(self, amc_sitemap_theatres):
         entry = AmcSitemap().parse_theatres(amc_sitemap_theatres)[0]
-        assert entry.venue_id == f"amc-{entry.slug}"
+        assert entry.venue_id == entry.slug
+        assert not entry.venue_id.startswith("amc-amc-")
         assert entry.market
         assert entry.latitude is not None and entry.longitude is not None
 

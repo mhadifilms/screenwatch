@@ -75,7 +75,7 @@
     {
       "venue_id": "metrograph",
       "name": "Metrograph",
-      "url": "https://metrograph.com/",
+      "url": "https://metrograph.com/nyc/",
       "lat": 40.7148,
       "lon": -73.9899,
       "tz": "America/New_York",
@@ -86,7 +86,7 @@
     {
       "venue_id": "coolidge-corner",
       "name": "Coolidge Corner Theatre",
-      "url": "https://coolidge.org/",
+      "url": "https://coolidge.org/showtimes",
       "lat": 42.3421,
       "lon": -71.1211,
       "tz": "America/New_York",

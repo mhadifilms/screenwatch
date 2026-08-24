@@ -11,9 +11,15 @@ import json
 from datetime import date, datetime
 
 import pytest
-from conftest import load
 
-from screenwatch.seating.model import SeatDataUnavailable, SeatKind, SeatStatus
+from conftest import load
+from screenwatch.seating.capture import SeatProbe
+from screenwatch.seating.model import (
+    AmbiguousShowtimeMatch,
+    SeatDataUnavailable,
+    SeatKind,
+    SeatStatus,
+)
 from screenwatch.seating.sources.fandango import (
     FandangoSeatSource,
     FandangoShowtime,
@@ -57,7 +63,9 @@ class TestParsingASeatMap:
             kinds[seat.kind] = kinds.get(seat.kind, 0) + 1
         assert kinds[SeatKind.WHEELCHAIR] == 5
         assert kinds[SeatKind.COMPANION] == 4
-        assert kinds[SeatKind.STANDARD] == 143
+        assert kinds[SeatKind.STANDARD] == 104
+        assert kinds[SeatKind.BLOCKED] == 39
+        assert room.capacity == seatmap["totalSeatCount"]
 
     def test_status_follows_the_payloads_own_arithmetic(self, seatmap):
         """A is available, A+R is the inventory, so R is sold and O is neither.
@@ -227,6 +235,24 @@ class TestMatchingAShowing:
         )
         assert picked.hash_code == "right"
 
+    def test_same_title_and_time_is_ambiguous_instead_of_first_wins(self):
+        with pytest.raises(AmbiguousShowtimeMatch):
+            pick_showtime(
+                [self.show(14, 10, code="a"), self.show(14, 10, code="b")],
+                title="The Odyssey",
+                starts_at_local=datetime(2026, 8, 21, 14, 10),
+            )
+
+    def test_known_auditorium_resolves_an_ambiguous_time(self):
+        picked = pick_showtime(
+            [self.show(14, 10, code="a"), self.show(14, 10, code="b")],
+            title="The Odyssey",
+            starts_at_local=datetime(2026, 8, 21, 14, 10),
+            source_screen_id="21",
+            auditorium_id_for=lambda show: "21" if show.hash_code == "b" else "9",
+        )
+        assert picked.hash_code == "b"
+
     def test_a_distant_showing_is_not_a_match(self):
         assert pick_showtime(
             [self.show(18, 10)],
@@ -255,7 +281,6 @@ class TestRegalWithoutABrowser:
         import json as _json
         from datetime import datetime
 
-        from screenwatch.adapters.regal.showtimes import RegalPerformance
         from screenwatch.browser import BrowserUnavailable
         from screenwatch.providers.regal import RegalProvider
 
@@ -289,16 +314,18 @@ class TestRegalWithoutABrowser:
         provider._theatres = [type("T", (), {
             "venue_id": "regal-x", "theatre_code": "1929",
             "name": "Regal Hacienda Crossings"})()]
-        provider._seat_requests["regal:1"] = RegalPerformance(
-            performance_id="1", theatre_code="1929", movie_code="HO1",
-            title="The Odyssey",
-            starts_at_utc=datetime(2026, 8, 3, 0),
-            starts_at_local=datetime(2026, 8, 2, 17), auditorium="21",
-            attributes=(), sold_out=False,
+        probe = SeatProbe(
+            source="regal", venue_id="regal-x", source_venue_id="1929",
+            showtime_id="1", booking_url=None,
+            starts_at_local=datetime(2026, 8, 2, 17), title="The Odyssey",
+            source_screen_id="21",
+            metadata={
+                "movie_code": "HO1",
+                "source_title": "The Odyssey",
+                "venue_name": "Regal Hacienda Crossings",
+            },
         )
-        option = type("O", (), {"screening": type("S", (), {
-            "venue_id": "regal-x", "screening_id": "regal:1", "screen_id": ""})()})()
 
-        room = provider.fetch_seats(option, transport=transport)
+        room = provider.fetch(probe, transport=transport).auditorium
         assert len(room.seats) == 152
         assert room.geometry_confidence == 1.0

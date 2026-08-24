@@ -27,6 +27,7 @@ from ..ranking.diversify import diversify
 from ..ranking.explain import annotate, compare, narrate
 from ..ranking.fine import fine_rank
 from ..ranking.spec import GeoPoint, SearchSpec
+from ..seating.capture import SeatCapture, SeatProbe
 from ..seating.model import Auditorium, SeatDataUnavailable
 from ..transport import Transport
 from .serde import spec_to_json
@@ -43,7 +44,7 @@ class Provider(Protocol):
         self, spec: SearchSpec, venues: list[Venue], transport: Transport
     ) -> list[Screening]: ...
 
-    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium: ...
+    def fetch(self, probe: SeatProbe, transport: Transport) -> SeatCapture: ...
 
     # Optional. Providers whose API knows where its own venues are (Alamo
     # ships coordinates for every cinema in a market) implement this so the
@@ -151,14 +152,13 @@ class SearchService:
         discover = getattr(provider, "discover", None)
         if discover is None:
             return None
-        if full:
-            try:
-                if "full" in inspect.signature(discover).parameters:
-                    return discover(spec, full=True)
-            except (TypeError, ValueError):
-                # Builtins and unusual plugin callables may not expose a
-                # signature. Falling back keeps the provider seam compatible.
-                pass
+        try:
+            if "full" in inspect.signature(discover).parameters:
+                return discover(spec, full=full)
+        except (TypeError, ValueError):
+            # Builtins and unusual plugin callables may not expose a
+            # signature. Falling back keeps the provider seam compatible.
+            pass
         return discover(spec)
 
     def _register_discovered(self, discovered: list[Venue]) -> None:
@@ -322,7 +322,15 @@ class SearchService:
             if discover := getattr(provider, "discover", None):
                 try:
                     discovered = self._call_discover(
-                        provider, spec, full=spec.exhaustive
+                        provider,
+                        spec,
+                        # An explicit venue id is already the narrowest scope.
+                        # Forcing national discovery here made one-venue
+                        # harvests refresh all OSM cinemas before doing useful
+                        # work. Cached/configured exact venues are sufficient;
+                        # callers can run the directory refresh to seed an
+                        # arbitrary OSM id first.
+                        full=spec.exhaustive and not spec.location.allow,
                     ) or []
                     discovery_count = len(discovered)
                     self._register_discovered(discovered)
@@ -619,9 +627,31 @@ class SearchService:
             provider = self._provider_for(option.screening.chain)
             if provider is None:
                 raise SeatDataUnavailable(f"no provider for {option.screening.chain}")
+            venue = self.directory.get(option.screening.venue_id)
+            probe = option.screening.durable_seat_probe(
+                ticketing_platform=(venue.ticketing_platform if venue else None)
+            )
+            self.store.put_seat_probe(probe)
             try:
-                auditorium = provider.fetch_seats(option, self.transport)
-            except SeatDataUnavailable:
+                provider_fetch = getattr(provider, "fetch", None)
+                if provider_fetch is not None:
+                    captured = provider_fetch(probe, self.transport)
+                else:
+                    captured = provider.fetch_seats(option, self.transport)
+                capture = (
+                    captured
+                    if isinstance(captured, SeatCapture)
+                    else SeatCapture(
+                        probe=probe,
+                        auditorium=captured,
+                        source_url=probe.booking_url,
+                    )
+                )
+                capture = self.store.reuse_stored_geometry(capture)
+            except SeatDataUnavailable as exc:
+                self.store.record_harvest_failure(
+                    search_id, probe, exc, stage="interactive_search"
+                )
                 raise
             except Exception as exc:
                 # A seat fetch is an enrichment, never a precondition. Any
@@ -630,30 +660,19 @@ class SearchService:
                 # availability-only ranking instead of failing the whole
                 # search. Letting it propagate meant one blocked seat map
                 # returned zero results for every chain.
-                raise SeatDataUnavailable(
+                failure = SeatDataUnavailable(
                     f"{option.screening.chain} seat fetch failed: "
                     f"{type(exc).__name__}: {exc}"
-                ) from exc
+                )
+                self.store.record_harvest_failure(
+                    search_id, probe, failure, stage="interactive_search"
+                )
+                raise failure from exc
             fetched += 1
-            self.store.put_seat_snapshot(
-                option.screening.screening_id,
-                auditorium.available,
-                auditorium.capacity,
-                {
-                    "geometry_confidence": auditorium.geometry_confidence,
-                    "screen_id": auditorium.screen_id,
-                    "screen_name": auditorium.name,
-                    "row_count": auditorium.row_count,
-                    "row_lengths": list(auditorium.row_lengths),
-                    "has_grid": auditorium.has_grid,
-                },
-                venue_id=option.screening.venue_id,
-                source="|".join(option.screening.sources)
-                if option.screening.sources else f"{option.screening.chain}:seat-map",
-                source_url=option.screening.deeplink,
-                evidence_scope="screening-seat-map",
+            self.store.put_seat_capture(
+                capture, screening_id=option.screening.screening_id
             )
-            return auditorium
+            return capture.auditorium
 
         options = fine_rank(options, spec, fetch)
         options = diversify(options, per_group=spec.diversify_per_group)
@@ -702,6 +721,10 @@ class SearchService:
         observations = []
         for option in options:
             s = option.screening
+            venue = self.directory.get(s.venue_id)
+            self.store.put_seat_probe(s.durable_seat_probe(
+                ticketing_platform=(venue.ticketing_platform if venue else None)
+            ))
             self.store.put_work(s.work)
             self.store.upsert_screening(
                 s.screening_id,

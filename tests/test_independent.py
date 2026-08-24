@@ -19,6 +19,7 @@ from screenwatch.adapters.vista.links import (
 from screenwatch.identity.work import WorkRef
 from screenwatch.providers.independent import IndependentProvider, load_venues
 from screenwatch.ranking.spec import DateWindow, SearchSpec
+from screenwatch.seating.capture import SeatProbe
 from screenwatch.seating.model import SeatDataUnavailable
 
 VISTA_PAGE = """
@@ -150,8 +151,72 @@ class TestProvider:
 
     def test_seats_are_unavailable_with_a_reason(self):
         p = self.provider()
-        with pytest.raises(SeatDataUnavailable, match="platform adapter"):
-            p.fetch_seats(object(), transport=None)
+        probe = SeatProbe(
+            source="independent", venue_id="metrograph", source_venue_id="9999",
+            showtime_id="30418", booking_url=(
+                "https://t.metrograph.com/Ticketing/visSelectTickets.aspx?"
+                "cinemacode=9999&txtSessionId=30418"
+            ),
+            starts_at_local=datetime(2026, 8, 2, 11), title="Good Morning",
+            source_screen_id=None, ticketing_platform="vista",
+        )
+        with pytest.raises(SeatDataUnavailable, match="client-rendered"):
+            p.fetch(probe, transport=None)
+
+    def test_vista_order_gate_is_a_durable_context_boundary(self):
+        p = self.provider()
+        probe = SeatProbe(
+            source="independent", venue_id="metrograph", source_venue_id="9999",
+            showtime_id="30418", booking_url=(
+                "https://t.metrograph.com/Ticketing/visSelectTickets.aspx?"
+                "cinemacode=9999&txtSessionId=30418"
+            ),
+            starts_at_local=datetime(2026, 8, 2, 11), title="Good Morning",
+            source_screen_id=None, ticketing_platform="vista",
+        )
+
+        class TicketPage:
+            def get(self, url):
+                return type("Response", (), {
+                    "url": url,
+                    "status_code": 200,
+                    "headers": {"content-type": "text/html"},
+                    "text": (
+                        '<div id="select-tickets"></div>'
+                        '<div class="cinema-screen-name">Metrograph - Aud 01</div>'
+                        '<input id="txtEnableManualSeatSelection">'
+                        '<button id="ibtnOrderTickets">Next</button>'
+                    ),
+                })()
+
+        with pytest.raises(SeatDataUnavailable, match="adding a ticket") as caught:
+            p.fetch(probe, transport=TicketPage())
+        assert caught.value.context["auditorium_hint"] == "Metrograph - Aud 01"
+        assert caught.value.raw_payload
+
+    def test_agile_block_is_not_mislabeled_as_missing_seats(self):
+        p = self.provider()
+        probe = SeatProbe(
+            source="independent", venue_id="coolidge-corner",
+            source_venue_id="store.coolidge.org", showtime_id="1030371",
+            booking_url="https://store.coolidge.org/websales/pages/x",
+            starts_at_local=datetime(2026, 8, 24, 22), title="Example",
+            source_screen_id="MH1", ticketing_platform="agile",
+        )
+
+        class Blocked:
+            def get(self, url):
+                return type("Response", (), {
+                    "url": url,
+                    "status_code": 200,
+                    "headers": {"content-type": "text/html"},
+                    "text": "<iframe>Request unsuccessful. Incapsula incident ID</iframe>",
+                })()
+
+        with pytest.raises(SeatDataUnavailable, match="blocked") as caught:
+            p.fetch(probe, transport=Blocked())
+        assert caught.value.code == "blocked_by_source"
+        assert caught.value.raw_payload
 
 
 def test_shipped_venue_config_is_well_formed():
@@ -160,6 +225,10 @@ def test_shipped_venue_config_is_well_formed():
     for row in venues:
         assert row["venue_id"] and row["url"].startswith("http")
         assert row.get("tz")
+
+    by_id = {row["venue_id"]: row for row in venues}
+    assert by_id["metrograph"]["url"].endswith("/nyc/")
+    assert by_id["coolidge-corner"]["url"].endswith("/showtimes")
 
 
 AGILE_PAGE = """

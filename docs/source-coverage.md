@@ -16,7 +16,7 @@ reported to callers.
 | Regal | Official national directory payload | Theatre/showtime pages | Exact browser-rendered grid | Chromium is required for seat enrichment; `nearby` caps reads, `exhaustive` traverses the requested directory scope |
 | Cinemark | Official sitemap; page coordinates hydrate lazily | Sitemap and theatre pages | Exact seat grid | Seat page may require Chromium to clear a challenge; ticket routes are not guessed |
 | Apple Cinemas / C360 | Official locations endpoint | Open JSON after session warm-up | Estimated | Sold count and room shape are available; contiguous seats remain an estimate |
-| Independents | [OpenStreetMap `amenity=cinema` records](https://wiki.openstreetmap.org/wiki/Tag%3Aamenity%3Dcinema) queried through [Overpass](https://wiki.openstreetmap.org/wiki/Overpass_API/Language_Guide), plus curated routing overrides | Schema.org, Vista links, Agile links, or mapped own-site listings | Availability or unknown | OSM establishes a source-linked venue record; a venue without a mapped website remains directory-only |
+| Independents | [OpenStreetMap `amenity=cinema` records](https://wiki.openstreetmap.org/wiki/Tag%3Aamenity%3Dcinema) queried through [Overpass](https://wiki.openstreetmap.org/wiki/Overpass_API/Language_Guide), plus curated routing overrides | Schema.org, Vista links, Agile links, or mapped own-site listings | Routed by Vista, Agile, Veezi, Elevent, RTS, Fandango, or unknown | The collector persists the ticketing platform and a typed source boundary. It never parses a generic exhibitor page as an authoritative room. |
 
 Directory discovery is persisted separately from showtime search. A national
 directory row proves that the provider reported a venue; it does not prove that
@@ -50,6 +50,31 @@ The source can still decline a request, require Chromium, expose no website, or
 return incomplete markup. Those states are represented as source errors or
 unknown observations, never as fabricated empty inventory.
 
+`coverage: "exhaustive"` is a showtime-discovery policy, not an instruction to
+fetch every seat map. Full room collection is a separate operation:
+
+```bash
+screenwatch harvest --venue <venue-id> --days 45
+screenwatch harvest --city "<city>" --days 30
+```
+
+That path stores all replayable probes, attempts them without the interactive
+seat-map budget, deduplicates successful source room IDs, versions static
+topology, and reports per-category failures.
+
+## Ticketing-platform boundaries
+
+Independent exhibitors are not a seat backend. Their showtime links are routed
+to explicit Vista, Agile, Veezi, Elevent, RTS, or Fandango sources. The public
+[Veezi Screen](https://api.us.veezi.com/help/Screen) and
+[Session](https://api.useast.veezi.com/Help/Sessions) APIs require venue-issued
+access and expose metadata/counts rather than an anonymous geometry contract.
+Agile documents its [WebSales feed](https://support.agiletix.com/hc/en-us/articles/4442884394523-Feed-API-Parameters)
+and [reserved seating WebSales flow](https://help.agiletix.com/en_US/agile-ticketing-solutions-begin-here/new-reserved-seating-chart),
+but no anonymous full-map response is documented. Until a source-owned public
+response and fixture are available, Screenwatch records `missing_provider_context`
+or `browser_required`; it does not infer seats from generic DOM shapes.
+
 ## Measured source notes
 
 - AMC sitemaps are useful when the main site is blocked by Queue-it; the seat
@@ -80,3 +105,10 @@ unknown observations, never as fabricated empty inventory.
 
 A confirmed grid always outranks an estimate. The system stops at a booking URL
 and never selects a seat or creates a hold.
+
+## Live source health
+
+The self-hosted scheduled workflow is documented in
+[Live provider canaries](live-canaries.md). Exact-map targets must capture a
+map to pass. Failures upload redacted bodies, headers, screenshots/HAR where a
+browser was involved, the evidence database, and the typed parser/source error.

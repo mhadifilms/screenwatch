@@ -1,0 +1,56 @@
+name: Live provider canaries
+
+on:
+  schedule:
+    - cron: "23 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-maps:
+    name: Read-only seat-map canaries
+    runs-on: [self-hosted, screenwatch-live]
+    timeout-minutes: 45
+    env:
+      SCREENWATCH_CANARY_CONFIG: ${{ vars.SCREENWATCH_CANARY_CONFIG }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install application and Chromium
+        run: |
+          uv pip install --system -e ".[dev,api]"
+          playwright install chromium
+
+      - name: Require live target configuration
+        run: |
+          test -n "$SCREENWATCH_CANARY_CONFIG" || {
+            echo "Set repository variable SCREENWATCH_CANARY_CONFIG."
+            exit 2
+          }
+
+      - name: Run canaries
+        run: >-
+          python tools/live_provider_canaries.py
+          --config-json "$SCREENWATCH_CANARY_CONFIG"
+          --artifacts canary-artifacts
+
+      - name: Upload redacted diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenwatch-live-canaries-${{ github.run_id }}
+          path: canary-artifacts
+          if-no-files-found: warn
+          retention-days: 14

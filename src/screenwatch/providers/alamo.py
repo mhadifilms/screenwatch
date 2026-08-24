@@ -33,7 +33,8 @@ from ..presentation import (
 )
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
-from ..seating.model import Auditorium, SeatDataUnavailable
+from ..seating.capture import SeatProbe
+from ..seating.model import Auditorium, PermanentNoSeatMap
 from ..service.venues import Venue, local_today
 from ..transport import Transport
 from .scope import ScopeReporting
@@ -190,6 +191,23 @@ class AlamoProvider(ScopeReporting):
                         distance_km=venue.distance_km(spec.location.origin),
                         screen_id=str(session.screen_number or ""),
                         sources=(self.adapter.source,),
+                        seat_probe=SeatProbe(
+                            source=self.chain,
+                            venue_id=venue.venue_id,
+                            source_venue_id=cinema.cinema_id,
+                            showtime_id=session.session_id,
+                            booking_url=session.deeplink(cinema.slug),
+                            starts_at_local=session.starts_at_local,
+                            title=session.title,
+                            source_screen_id=(
+                                str(session.screen_number)
+                                if session.screen_number is not None else None
+                            ),
+                            metadata={
+                                "screening_id": f"alamo:{session.session_id}",
+                                "reserved_seating": session.reserved_seating,
+                            },
+                        ),
                     )
                 )
         return out
@@ -217,7 +235,7 @@ class AlamoProvider(ScopeReporting):
             return classify_token_fuzzy(token)
 
     # ------------------------------------------------------------------
-    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+    def fetch(self, probe: SeatProbe, transport: Transport):
         """Not available.
 
         Every Alamo session reports `reservedSeating: true`, so seat maps
@@ -225,6 +243,9 @@ class AlamoProvider(ScopeReporting):
         session endpoints reject GET. Raising the specific exception keeps
         Alamo options ranked on availability rather than dropped.
         """
-        raise SeatDataUnavailable(
+        raise PermanentNoSeatMap(
             "Alamo seat maps are not exposed by the public schedule API"
         )
+
+    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+        return self.fetch(option.screening.durable_seat_probe(), transport)

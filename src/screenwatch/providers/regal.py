@@ -13,7 +13,9 @@ for any path, and that homepage carries all 402 theatres with coordinates.
 
 from __future__ import annotations
 
+import json
 import time
+from dataclasses import replace
 from datetime import timedelta
 
 from curl_cffi import requests
@@ -38,7 +40,15 @@ from ..presentation import (
 )
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
-from ..seating.model import Auditorium, SeatDataUnavailable
+from ..seating.capture import SeatCapture, SeatProbe
+from ..seating.model import (
+    Auditorium,
+    BlockedBySource,
+    BrowserRequired,
+    MissingProviderContext,
+    SeatDataUnavailable,
+    TransientSourceFailure,
+)
 from ..seating.sources.fandango import FandangoSeatSource, pick_showtime
 from ..seating.sources.regal import BOOKING_API, RegalSeatSource
 from ..service.venues import Venue
@@ -95,11 +105,6 @@ class RegalProvider(ScopeReporting):
         self.backoff_s = backoff_s
         self._session = session or requests.Session(impersonate="chrome131")
         self._theatres: list[RegalTheatre] | None = None
-        # Keep the source's exact title and movie code beside each screening.
-        # Search may later replace `Screening.work.title` with a richer title
-        # from another provider; Regal's movie route must use Regal's own
-        # spelling.
-        self._seat_requests: dict[str, RegalPerformance] = {}
 
     # ------------------------------------------------------------------
     def _get(self, url: str) -> str:
@@ -190,7 +195,6 @@ class RegalProvider(ScopeReporting):
         by_id = {t.venue_id: t for t in self.theatres()}
 
         self._reset_scope()
-        self._seat_requests.clear()
         out: list[Screening] = []
         for venue in self._clip_venues(venues, exhaustive=spec.exhaustive):
             theatre = by_id.get(venue.venue_id)
@@ -226,7 +230,7 @@ class RegalProvider(ScopeReporting):
                     if not resolution.analysis.is_bookable:
                         continue
                     screening_id = f"regal:{perf.performance_id}"
-                    self._seat_requests[screening_id] = perf
+                    presentation = self._presentation(perf, venue.venue_id)
                     out.append(
                         Screening(
                             screening_id=screening_id,
@@ -236,7 +240,7 @@ class RegalProvider(ScopeReporting):
                             chain=self.chain,
                             starts_at_utc=perf.starts_at_utc,
                             starts_at_local=perf.starts_at_local,
-                            presentation=self._presentation(perf, venue.venue_id),
+                            presentation=presentation,
                             availability=(
                                 Availability.SOLD_OUT if perf.sold_out
                                 else Availability.SELLABLE
@@ -245,6 +249,26 @@ class RegalProvider(ScopeReporting):
                             distance_km=venue.distance_km(spec.location.origin),
                             screen_id=perf.auditorium,
                             sources=(self.adapter.source,),
+                            seat_probe=SeatProbe(
+                                source=self.chain,
+                                venue_id=venue.venue_id,
+                                source_venue_id=theatre.theatre_code,
+                                showtime_id=perf.performance_id,
+                                booking_url=perf.deeplink(theatre.path_name),
+                                starts_at_local=perf.starts_at_local,
+                                title=perf.title,
+                                source_screen_id=perf.auditorium or None,
+                                metadata={
+                                    "screening_id": screening_id,
+                                    "theatre_code": perf.theatre_code,
+                                    "theatre_path": theatre.path_name,
+                                    "movie_code": perf.movie_code,
+                                    "source_title": perf.title,
+                                    "venue_name": venue.name,
+                                    "presentation": presentation.describe(),
+                                    "attributes": list(perf.attributes),
+                                },
+                            ),
                         )
                     )
         return out
@@ -277,32 +301,40 @@ class RegalProvider(ScopeReporting):
             return classify_token_fuzzy(token)
 
     # ------------------------------------------------------------------
-    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+    def fetch(self, probe: SeatProbe, transport: Transport) -> SeatCapture:
         """Read the rendered seat grid from Regal's public movie page.
 
         This is the exact route the theatre page opens when a user clicks a
         showtime. It is a browser visit because the seat grid is produced by
         React after load; no seat is clicked and no hold is created.
         """
-        screening = option.screening
-        theatre = self._theatre_code_for(screening.venue_id)
+        theatre = str(
+            probe.metadata.get("theatre_code")
+            or probe.source_venue_id
+            or self._theatre_code_for(probe.venue_id)
+            or ""
+        )
         if not theatre:
-            raise SeatDataUnavailable(
-                f"unknown Regal theatre code for {screening.venue_id}"
+            raise MissingProviderContext(
+                f"unknown Regal theatre code for {probe.venue_id}"
             )
-        session_id = screening.screening_id.split(":", 1)[-1]
-        perf = self._seat_requests.get(screening.screening_id)
-        if perf is None:
-            raise SeatDataUnavailable(
-                f"Regal performance metadata missing for {screening.screening_id}; "
-                "run a fresh search before fetching seats"
+        source_title = str(probe.metadata.get("source_title") or probe.title or "")
+        movie_code = str(probe.metadata.get("movie_code") or "")
+        if not source_title or not movie_code or probe.starts_at_local is None:
+            raise MissingProviderContext(
+                f"Regal performance metadata incomplete for {probe.probe_id}",
+                context={
+                    "has_source_title": bool(source_title),
+                    "has_movie_code": bool(movie_code),
+                    "has_local_start": probe.starts_at_local is not None,
+                },
             )
         url = self.seats.movie_url(
-            title=perf.title,
-            movie_code=perf.movie_code,
-            date=perf.starts_at_local.date().isoformat(),
+            title=source_title,
+            movie_code=movie_code,
+            date=probe.starts_at_local.date().isoformat(),
             theatre_code=theatre,
-            performance_id=session_id,
+            performance_id=probe.showtime_id,
         )
 
         try:
@@ -313,18 +345,13 @@ class RegalProvider(ScopeReporting):
                 wait_timeout_ms=12_000,
             )
         except BrowserUnavailable as exc:
-            # No browser at all. Fandango needs none, so this is not the end of
-            # the road: a deployment can legitimately ship without Chromium and
-            # still read Regal rooms.
-            room = self._seats_via_fandango(screening, perf, transport)
-            if room is not None:
-                return room
-            raise SeatDataUnavailable(f"browser transport unavailable: {exc}") from exc
+            if transport is None:
+                raise BrowserRequired(f"browser transport unavailable: {exc}") from exc
+            return self._capture_via_fandango(probe, transport)
         except Exception as exc:
-            room = self._seats_via_fandango(screening, perf, transport)
-            if room is not None:
-                return room
-            raise SeatDataUnavailable(
+            if transport is not None:
+                return self._capture_via_fandango(probe, transport)
+            raise TransientSourceFailure(
                 f"Regal seat page via browser failed: {type(exc).__name__}: {exc}"
             ) from exc
 
@@ -332,75 +359,149 @@ class RegalProvider(ScopeReporting):
             # Regal will not serve this. Fandango sells the same seats for the
             # same showing, so try there before reporting no seat data: a block
             # is a firewall rule and no amount of retrying it will help.
+            if transport is not None:
+                return self._capture_via_fandango(probe, transport)
             why = (
-                f"blocked by Cloudflare (HTTP {response.status})"
-                if response.blocked
-                else f"unavailable (HTTP {response.status})"
+                "blocked by Cloudflare"
+                if response.blocked else "challenged by Cloudflare"
+                if response.challenged else "unavailable"
             )
-            room = self._seats_via_fandango(screening, perf, transport)
-            if room is not None:
-                return room
-            raise SeatDataUnavailable(f"Regal seat page {why}, and Fandango had no map")
-        return self.seats.parse(
-            response.text,
-            venue_id=screening.venue_id,
-            screen_id=screening.screen_id or "",
+            failure = BlockedBySource(
+                f"Regal seat page {why} (HTTP {response.status})"
+            )
+            raise failure.with_capture(
+                response.text,
+                content_type=response.headers.get("content-type", "text/html"),
+                source_url=response.url,
+                status_code=response.status,
+            )
+        try:
+            room = self.seats.parse(
+                response.text, venue_id=probe.venue_id,
+                screen_id=probe.source_screen_id or "",
+            )
+        except SeatDataUnavailable as exc:
+            exc.with_capture(
+                response.text,
+                content_type="text/html",
+                source_url=url,
+                status_code=response.status,
+            )
+            raise
+        return SeatCapture(
+            probe=probe,
+            auditorium=room,
+            raw_payload=response.text.encode(),
+            raw_content_type="text/html",
+            source_url=url,
+            status_code=response.status,
         )
 
-    def _seats_via_fandango(self, screening, perf, transport) -> Auditorium | None:
-        """The same room, from Fandango, or None if that is not possible either.
+    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+        """Compatibility wrapper for callers that still hold an Option."""
+        probe = option.screening.durable_seat_probe()
+        return self.fetch(probe, transport).auditorium
 
-        Returns None rather than raising so the caller can report the *original*
-        reason Regal refused, which is the more useful thing to know.
-
-        The showing has to be identified before its seats mean anything, and the
-        only key the two sites share is the local start time. `perf` carries the
-        one screenwatch already resolved, so no extra Regal request is needed.
-        """
-        # No transport means no fallback: the caller is exercising the block
-        # path directly, and inventing a request here would be a surprise.
-        if transport is None:
-            return None
-        starts = getattr(perf, "starts_at_local", None)
-        if starts is None:
-            return None
+    def _capture_via_fandango(
+        self, probe: SeatProbe, transport: Transport
+    ) -> SeatCapture:
+        """Fetch the same showing without suppressing match/fetch diagnostics."""
+        if probe.starts_at_local is None:
+            raise MissingProviderContext("Regal probe has no local start time")
         # The theatre directory already knows this venue's real name, which is
         # what Fandango's search needs; the venue id is a slug and matches worse.
-        # `getattr` because a directory entry is not guaranteed to carry one.
-        venue_name = next(
-            (
-                getattr(t, "name", None)
-                for t in self.theatres()
-                if getattr(t, "venue_id", None) == screening.venue_id
-            ),
-            None,
+        venue_name = str(
+            probe.metadata.get("venue_name") or probe.venue_id.replace("-", " ")
         )
+        theater = self.fandango.find_theater(transport, venue_name)
+        if theater is None:
+            raise MissingProviderContext(
+                f"Fandango theater match missing for {venue_name}"
+            )
+        candidates = self.fandango.showtimes(
+            transport, theater, probe.starts_at_local.date(), "regal"
+        )
+        payloads: dict[str, dict] = {}
+
+        def auditorium_id_for(candidate) -> str | None:
+            if candidate.hash_code not in payloads:
+                payloads[candidate.hash_code] = self.fandango.seat_map(
+                    transport, theater, candidate.hash_code
+                )
+            payload = payloads[candidate.hash_code]
+            value = payload.get("auditoriumId")
+            return str(value) if value is not None else None
+
         try:
-            theater = self.fandango.find_theater(
-                transport, venue_name or screening.venue_id.replace("-", " ")
-            )
-            if theater is None:
-                return None
-            candidates = self.fandango.showtimes(
-                transport, theater, starts.date(), "regal"
-            )
             match = pick_showtime(
                 candidates,
-                title=getattr(perf, "title", None),
-                starts_at_local=starts,
+                title=probe.title,
+                starts_at_local=probe.starts_at_local,
+                presentation=str(probe.metadata.get("presentation") or ""),
+                source_screen_id=probe.source_screen_id,
+                auditorium_id_for=auditorium_id_for,
             )
-            if match is None:
-                return None
+        except SeatDataUnavailable as exc:
+            evidence = {
+                "candidates": [
+                    {
+                        "hash_code": candidate.hash_code,
+                        "showtime_id": candidate.showtime_id,
+                        "title": candidate.title,
+                        "starts_at_local": (
+                            candidate.starts_at_local.isoformat()
+                            if candidate.starts_at_local else None
+                        ),
+                        "variant": candidate.variant,
+                        "amenities": list(candidate.amenities),
+                    }
+                    for candidate in candidates
+                ],
+                "candidate_maps": payloads,
+            }
+            exc.with_capture(
+                json.dumps(evidence, sort_keys=True),
+                content_type="application/json",
+                source_url=f"https://www.fandango.com{theater.path}",
+            )
+            raise
+        if match is None:
+            raise MissingProviderContext(
+                "Fandango has no matching showing for the Regal probe"
+            )
+        payload = payloads.get(match.hash_code)
+        if payload is None:
             payload = self.fandango.seat_map(transport, theater, match.hash_code)
-            return self.fandango.parse(
+        raw_payload = json.dumps(payload, sort_keys=True).encode()
+        try:
+            room = self.fandango.parse(
                 payload,
-                venue_id=screening.venue_id,
-                screen_id=screening.screen_id or "",
+                venue_id=probe.venue_id,
+                screen_id=probe.source_screen_id or "",
             )
-        except SeatDataUnavailable:
-            return None
-        except Exception:                # noqa: BLE001 - a fallback must not throw
-            return None
+        except SeatDataUnavailable as exc:
+            exc.with_capture(
+                raw_payload,
+                content_type="application/json",
+                source_url=(
+                    f"https://www.fandango.com/napi/seatMap/{match.hash_code}"
+                ),
+                status_code=200,
+            )
+            raise
+        capture_probe = replace(probe, ticketing_platform="fandango")
+        return SeatCapture(
+            probe=capture_probe,
+            auditorium=room,
+            source_layout_id=(
+                str(payload["auditoriumId"])
+                if payload.get("auditoriumId") is not None else None
+            ),
+            raw_payload=raw_payload,
+            raw_content_type="application/json",
+            source_url=f"https://www.fandango.com/napi/seatMap/{match.hash_code}",
+            status_code=200,
+        )
 
     def _theatre_code_for(self, venue_id: str) -> str | None:
         return next(

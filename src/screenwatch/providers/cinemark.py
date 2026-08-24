@@ -43,7 +43,15 @@ from ..presentation import assume_digital
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
 from ..robots import ROBOTS
-from ..seating.model import Auditorium, SeatDataUnavailable
+from ..seating.capture import SeatCapture, SeatProbe
+from ..seating.model import (
+    Auditorium,
+    BlockedBySource,
+    BrowserRequired,
+    MissingProviderContext,
+    SeatDataUnavailable,
+    TransientSourceFailure,
+)
 from ..seating.sources.cinemark import CinemarkSeatSource
 from ..service.venues import Venue
 from ..transport import Transport
@@ -100,7 +108,7 @@ class CinemarkProvider(ScopeReporting):
             self._slugs = self.adapter.theatre_slugs(self._get(SITEMAP))
         return self._slugs
 
-    def discover(self, spec: SearchSpec, *, full: bool = False) -> list[Venue]:
+    def discover(self, spec: SearchSpec, *, full: bool | None = None) -> list[Venue]:
         """Slug-only venues; coordinates arrive as pages get visited.
 
         The sitemap has no geography, and fetching 308 theatre pages to build
@@ -108,7 +116,7 @@ class CinemarkProvider(ScopeReporting):
         already visited keep their coordinates, so a repeated search in the
         same region gets progressively better distance ranking.
         """
-        full = full or spec.exhaustive
+        full = spec.exhaustive if full is None else full
         self._load_persisted_geo()
         plausible = self.slugs() if full else self._plausible_slugs(spec)
         if full and spec.location.origin is not None:
@@ -153,7 +161,8 @@ class CinemarkProvider(ScopeReporting):
             if row.get("lat") is None:
                 continue
             self._theatres[venue_id] = CinemarkTheatre(
-                theater_id="", slug=row.get("name") or venue_id,
+                theater_id=row.get("source_venue_id") or "",
+                slug=row.get("source_slug") or row.get("name") or venue_id,
                 name=row.get("name") or venue_id, lat=row["lat"], lon=row["lon"],
             )
 
@@ -189,6 +198,8 @@ class CinemarkProvider(ScopeReporting):
                 self.store.put_venue_geo(
                     theatre.venue_id, self.chain, theatre.name,
                     theatre.lat, theatre.lon,
+                    source_venue_id=theatre.theater_id,
+                    source_slug=theatre.slug,
                 )
 
     @staticmethod
@@ -262,6 +273,16 @@ class CinemarkProvider(ScopeReporting):
                 html = self._get(self.adapter.theatre_url(venue.market, day.isoformat()))
                 theatre = self.adapter.parse_theatre(html, venue.market)
                 self._theatres[theatre.venue_id] = theatre
+                if self.store is not None:
+                    self.store.put_venue_geo(
+                        theatre.venue_id,
+                        self.chain,
+                        theatre.name,
+                        theatre.lat,
+                        theatre.lon,
+                        source_venue_id=theatre.theater_id,
+                        source_slug=theatre.slug,
+                    )
                 out.extend(self._to_screenings(spec, venue, theatre, html))
         return out
 
@@ -299,6 +320,24 @@ class CinemarkProvider(ScopeReporting):
                     deeplink=self.robots.check_link(show.deeplink()),
                     distance_km=round(distance, 2) if distance is not None else None,
                     sources=(self.adapter.source,),
+                    seat_probe=SeatProbe(
+                        source=self.chain,
+                        venue_id=theatre.venue_id,
+                        source_venue_id=theatre.theater_id,
+                        showtime_id=show.showtime_id,
+                        booking_url=show.deeplink(),
+                        starts_at_local=show.starts_at_local,
+                        title=show.title,
+                        source_screen_id=None,
+                        metadata={
+                            "screening_id": f"cinemark:{show.showtime_id}",
+                            "theater_id": theatre.theater_id,
+                            "theater_slug": theatre.slug,
+                            "movie_id": show.movie_id,
+                            "seat_map_url": show.deeplink(),
+                            "print_type": show.print_type,
+                        },
+                    ),
                 )
             )
         return out
@@ -309,7 +348,7 @@ class CinemarkProvider(ScopeReporting):
         return assume_digital(presentation)
 
     # ------------------------------------------------------------------
-    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+    def fetch(self, probe: SeatProbe, transport: Transport) -> SeatCapture:
         """Full per-seat grid from the seat-picker page.
 
         A plain GET returns every seat with its availability. No login, no
@@ -326,26 +365,57 @@ class CinemarkProvider(ScopeReporting):
         `SeatDataUnavailable` - a chain-specific exception escaping here would
         take the whole search down with it.
         """
-        screening = option.screening
-        theater_id = self._theater_id_for(screening.venue_id)
-        showtime_id = screening.screening_id.split(":", 1)[-1]
+        theater_id = str(
+            probe.metadata.get("theater_id")
+            or probe.source_venue_id
+            or self._theater_id_for(probe.venue_id)
+            or ""
+        )
+        showtime_id = probe.showtime_id
         if not theater_id:
-            raise SeatDataUnavailable(
-                f"unknown Cinemark theater id for {screening.venue_id}"
+            raise MissingProviderContext(
+                f"unknown Cinemark theater id for {probe.venue_id}"
             )
-        url = self.seats.url(theater_id, showtime_id,
-                             page_url=screening.deeplink or "")
+        url = self.seats.url(
+            theater_id,
+            showtime_id,
+            page_url=str(
+                probe.metadata.get("seat_map_url") or probe.booking_url or ""
+            ),
+        )
         try:
             html = self._get(url)
         except CinemarkChallenged as exc:
             html = self._through_browser(url, exc)
         except Exception as exc:
-            raise SeatDataUnavailable(
+            raise TransientSourceFailure(
                 f"Cinemark seat map fetch failed: {type(exc).__name__}: {exc}"
             ) from exc
-        return self.seats.parse(
-            html, venue_id=screening.venue_id, screen_id=screening.screen_id or ""
+        try:
+            room = self.seats.parse(
+                html, venue_id=probe.venue_id, screen_id=probe.source_screen_id or ""
+            )
+        except SeatDataUnavailable as exc:
+            exc.with_capture(
+                html,
+                content_type="text/html",
+                source_url=url,
+                status_code=200,
+            )
+            raise
+        return SeatCapture(
+            probe=probe,
+            auditorium=room,
+            raw_payload=html.encode(),
+            raw_content_type="text/html",
+            source_url=url,
+            status_code=200,
         )
+
+    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+        """Compatibility wrapper for callers that still hold an Option."""
+        probe = option.screening.durable_seat_probe()
+        return self.fetch(probe, transport).auditorium
 
     def _through_browser(self, url: str, cause: Exception) -> str:
         """Second attempt at a challenged seat map, from a real browser."""
@@ -353,18 +423,24 @@ class CinemarkProvider(ScopeReporting):
             browser = self._browser or shared_browser()
             response = browser.visit(url)
         except BrowserUnavailable as exc:
-            raise SeatDataUnavailable(
+            raise BrowserRequired(
                 f"Cinemark challenged the seat map and no browser is "
                 f"available to clear it: {exc}"
             ) from cause
         except Exception as exc:                                # noqa: BLE001
-            raise SeatDataUnavailable(
+            raise TransientSourceFailure(
                 f"Cinemark seat map via browser failed: "
                 f"{type(exc).__name__}: {exc}"
             ) from cause
         if response.challenged or response.blocked:
-            raise SeatDataUnavailable(
+            failure = BlockedBySource(
                 "Cinemark's Cloudflare challenge survived the browser too"
+            )
+            raise failure.with_capture(
+                response.text,
+                content_type=response.headers.get("content-type", "text/html"),
+                source_url=response.url,
+                status_code=response.status,
             )
         return response.text
 

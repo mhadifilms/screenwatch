@@ -8,7 +8,7 @@ accessibility and ticketing policy into one array.
 
 from __future__ import annotations
 
-from datetime import UTC, date
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -23,6 +23,7 @@ from screenwatch.models import Attribute, Availability, Brand, Projection
 from screenwatch.presentation import known_tokens, normalize_token
 from screenwatch.providers.regal import RegalProvider
 from screenwatch.ranking.spec import DateWindow, SearchSpec
+from screenwatch.seating.capture import SeatProbe
 from screenwatch.seating.model import SeatDataUnavailable
 
 
@@ -198,17 +199,16 @@ class TestSeats:
         """Without a theatre code there is no URL to build, and inventing one
         would send the request to the wrong cinema."""
         provider = RegalProvider(session=FakeSession([directory_html]), backoff_s=0)
-        option = type("O", (), {"screening": type("S", (), {
-            "venue_id": "regal-not-a-real-venue", "screening_id": "regal:1",
-            "screen_id": "",
-        })()})()
+        probe = SeatProbe(
+            source="regal", venue_id="regal-not-a-real-venue",
+            source_venue_id=None, showtime_id="1", booking_url=None,
+            starts_at_local=datetime(2026, 8, 2, 17), title="X",
+            source_screen_id=None,
+        )
         with pytest.raises(SeatDataUnavailable, match="unknown Regal theatre code"):
-            provider.fetch_seats(option, transport=None)
+            provider.fetch(probe, transport=None)
 
     def test_browser_fetches_the_rendered_movie_page(self, directory_html, seatmap_html):
-        from datetime import datetime
-
-        from screenwatch.adapters.regal.showtimes import RegalPerformance
         from screenwatch.browser import BrowserResponse
 
         class FakeBrowser:
@@ -226,19 +226,18 @@ class TestSeats:
         provider._theatres = [type("T", (), {
             "venue_id": "regal-x", "theatre_code": "1929"
         })()]
-        provider._seat_requests["regal:259528"] = RegalPerformance(
-            performance_id="259528", theatre_code="1929", movie_code="HO00021207",
-            title="Spider-Man: Brand New Day",
-            starts_at_utc=datetime(2026, 8, 3, 2, 30),
-            starts_at_local=datetime(2026, 8, 2, 22, 30), auditorium="5",
-            attributes=("3D",), sold_out=False,
+        probe = SeatProbe(
+            source="regal", venue_id="regal-x", source_venue_id="1929",
+            showtime_id="259528", booking_url=None,
+            starts_at_local=datetime(2026, 8, 2, 22, 30),
+            title="Spider-Man: Brand New Day", source_screen_id="5",
+            metadata={
+                "movie_code": "HO00021207",
+                "source_title": "Spider-Man: Brand New Day",
+            },
         )
-        option = type("O", (), {"screening": type("S", (), {
-            "venue_id": "regal-x", "screening_id": "regal:259528",
-            "screen_id": "5",
-        })()})()
 
-        room = provider.fetch_seats(option, transport=None)
+        room = provider.fetch(probe, transport=None).auditorium
 
         assert room.available == 8
         assert len(room.seats) == 13
@@ -294,20 +293,15 @@ class TestBlockVsChallenge:
                                  browser=BlockedBrowser())
         provider._theatres = [type("T", (), {
             "venue_id": "regal-x", "theatre_code": "1929"})()]
-        from datetime import datetime
-
-        from screenwatch.adapters.regal.showtimes import RegalPerformance
-
-        provider._seat_requests["regal:1"] = RegalPerformance(
-            performance_id="1", theatre_code="1929", movie_code="HO1", title="X",
-            starts_at_utc=datetime(2026, 8, 2, 21),
-            starts_at_local=datetime(2026, 8, 2, 17), auditorium="1",
-            attributes=(), sold_out=False,
+        probe = SeatProbe(
+            source="regal", venue_id="regal-x", source_venue_id="1929",
+            showtime_id="1", booking_url=None,
+            starts_at_local=datetime(2026, 8, 2, 17), title="X",
+            source_screen_id="1",
+            metadata={"movie_code": "HO1", "source_title": "X"},
         )
-        option = type("O", (), {"screening": type("S", (), {
-            "venue_id": "regal-x", "screening_id": "regal:1", "screen_id": ""})()})()
         with pytest.raises(SeatDataUnavailable, match="blocked by Cloudflare"):
-            provider.fetch_seats(option, transport=None)
+            provider.fetch(probe, transport=None)
 
 
 class TestRegalSeatPlanParsing:

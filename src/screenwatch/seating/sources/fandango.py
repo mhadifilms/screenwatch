@@ -31,17 +31,24 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 from urllib.parse import quote
 
 from ..model import (
+    AmbiguousShowtimeMatch,
     Auditorium,
+    BlockedBySource,
+    ParserDrift,
+    PermanentNoSeatMap,
+    RateLimited,
     Seat,
     SeatDataUnavailable,
     SeatKind,
     SeatStatus,
+    TransientSourceFailure,
     mark_aisles,
     normalize_geometry,
 )
@@ -81,7 +88,7 @@ _STATUS = {
 # A showing is matched across two sites by its start time; nothing else is
 # reliable. Fifteen minutes is far wider than any clock skew and far narrower
 # than the gap between two showings of one film on one screen.
-MATCH_WINDOW_S = 900
+MATCH_WINDOW_S = 120
 
 
 def _fold(text: str) -> str:
@@ -114,6 +121,12 @@ class FandangoShowtime:
     title: str
     starts_at_local: datetime | None
     reserved_seating: bool
+    variant: str = ""
+    amenities: tuple[str, ...] = ()
+
+    @property
+    def presentation_text(self) -> str:
+        return " ".join((self.variant, *self.amenities)).strip()
 
 
 class FandangoSeatSource:
@@ -181,6 +194,10 @@ class FandangoSeatSource:
             for variant in movie.get("variants") or []:
                 for group in variant.get("amenityGroups") or []:
                     reserved = bool(group.get("hasReservedSeating"))
+                    variant_name = _metadata_label(variant)
+                    amenities = _metadata_items(group.get("amenities"))
+                    if not amenities:
+                        amenities = _metadata_items(group.get("amenityNames"))
                     for showtime in group.get("showtimes") or []:
                         hash_code = showtime.get("showtimeHashCode")
                         if not hash_code:
@@ -194,6 +211,11 @@ class FandangoSeatSource:
                                     showtime.get("ticketingDate")
                                 ),
                                 reserved_seating=reserved,
+                                variant=variant_name,
+                                amenities=tuple(dict.fromkeys([
+                                    *amenities,
+                                    *_metadata_items(showtime.get("amenities")),
+                                ])),
                             )
                         )
         return out
@@ -204,7 +226,7 @@ class FandangoSeatSource:
         url = f"{FANDANGO}/napi/seatMap/{quote(hash_code)}"
         payload = self._napi(transport, url, theater)
         if not isinstance(payload, dict) or not payload.get("seats"):
-            raise SeatDataUnavailable(
+            raise PermanentNoSeatMap(
                 "Fandango has no seat map for this showing (general admission?)"
             )
         return payload
@@ -227,16 +249,46 @@ class FandangoSeatSource:
             },
         )
         if response.status_code >= 400:
-            raise SeatDataUnavailable(
-                f"Fandango returned HTTP {response.status_code} for {url}"
+            message = f"Fandango returned HTTP {response.status_code} for {url}"
+            if response.status_code == 429:
+                failure = RateLimited(message)
+            elif response.status_code in {401, 403}:
+                failure = BlockedBySource(message)
+            elif response.status_code >= 500:
+                failure = TransientSourceFailure(message)
+            else:
+                failure = SeatDataUnavailable(message)
+            raise failure.with_capture(
+                response.text,
+                content_type=getattr(response, "headers", {}).get(
+                    "content-type", "text/plain"
+                ),
+                source_url=url,
+                status_code=response.status_code,
             )
         try:
             payload = json.loads(response.text)
         except ValueError as exc:
-            raise SeatDataUnavailable("Fandango returned a non-JSON body") from exc
+            failure = ParserDrift("Fandango returned a non-JSON body")
+            raise failure.with_capture(
+                response.text,
+                content_type=getattr(response, "headers", {}).get(
+                    "content-type", "text/plain"
+                ),
+                source_url=url,
+                status_code=response.status_code,
+            ) from exc
         if isinstance(payload, dict) and payload.get("error"):
-            raise SeatDataUnavailable(
+            failure = BlockedBySource(
                 f"Fandango refused: {payload.get('errorMessage') or payload['error']}"
+            )
+            raise failure.with_capture(
+                response.text,
+                content_type=getattr(response, "headers", {}).get(
+                    "content-type", "application/json"
+                ),
+                source_url=url,
+                status_code=response.status_code,
             )
         return payload
 
@@ -253,7 +305,7 @@ class FandangoSeatSource:
         """
         raw = payload.get("seats") or []
         if not raw:
-            raise SeatDataUnavailable("Fandango seat map contained no seats")
+            raise PermanentNoSeatMap("Fandango seat map contained no seats")
 
         rows = sorted({int(s.get("row") or 0) for s in raw})
         cols = sorted({int(s.get("column") or 0) for s in raw})
@@ -267,23 +319,29 @@ class FandangoSeatSource:
             row = int(entry.get("row") or 0)
             col = int(entry.get("column") or 0)
 
+            status_code = str(entry.get("status") or "").upper()
+            kind = _KIND.get(
+                str(entry.get("type") or "").lower(), SeatKind.STANDARD
+            )
+            if status_code == "O":
+                # Geometry padding/space. Keep it to preserve the provider's
+                # coordinate system, but never count or render it as a seat.
+                kind = SeatKind.BLOCKED
+
             seats.append(
                 Seat(
                     row_label=(label.group(1).upper() if label else str(row)),
                     row_index=row_index.get(row, 0),
                     col_label=(label.group(2) if label else str(col)),
                     col_index=col_index.get(col, 0),
-                    status=_STATUS.get(
-                        str(entry.get("status") or "").upper(), SeatStatus.UNAVAILABLE
-                    ),
-                    kind=_KIND.get(
-                        str(entry.get("type") or "").lower(), SeatKind.STANDARD
-                    ),
+                    status=_STATUS.get(status_code, SeatStatus.UNAVAILABLE),
+                    kind=kind,
                 )
             )
 
         auditorium_id = payload.get("auditoriumId")
-        return Auditorium(
+        parsed_capacity = sum(1 for seat in seats if seat.kind.is_bookable)
+        room = Auditorium(
             venue_id=venue_id,
             screen_id=screen_id or (str(auditorium_id) if auditorium_id else ""),
             # `infer_modules` is deliberately not applied: Fandango states the
@@ -292,7 +350,40 @@ class FandangoSeatSource:
             seats=normalize_geometry(mark_aisles(seats)),
             geometry_confidence=1.0,
             name=f"Auditorium {auditorium_id}" if auditorium_id else None,
+            reported_capacity=(
+                int(payload["totalSeatCount"])
+                if payload.get("totalSeatCount") is not None else None
+            ),
         )
+        reported_capacity = payload.get("totalSeatCount")
+        if reported_capacity is not None and parsed_capacity != int(reported_capacity):
+            raise ParserDrift(
+                "Fandango seat-map capacity mismatch: "
+                f"parsed {parsed_capacity}, source reported {reported_capacity}",
+                context={
+                    "parsed_capacity": parsed_capacity,
+                    "reported_capacity": int(reported_capacity),
+                    "auditorium_id": auditorium_id,
+                },
+            )
+        return room
+
+
+def _metadata_label(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return str(payload or "").strip()
+    for key in ("name", "label", "displayName", "description", "format"):
+        if payload.get(key):
+            return str(payload[key]).strip()
+    return ""
+
+
+def _metadata_items(payload: object) -> list[str]:
+    if payload is None:
+        return []
+    if not isinstance(payload, (list, tuple)):
+        payload = [payload]
+    return [label for item in payload if (label := _metadata_label(item))]
 
 
 def _parse_ticketing_date(value: str | None) -> datetime | None:
@@ -310,18 +401,21 @@ def pick_showtime(
     *,
     title: str | None,
     starts_at_local: datetime | None,
+    presentation: str | None = None,
+    source_screen_id: str | None = None,
+    auditorium_id_for: Callable[[FandangoShowtime], str | None] | None = None,
 ) -> FandangoShowtime | None:
     """Which Fandango showing is the one we already know about.
 
-    Start time decides it, because no theater runs two showings of anything in
-    the same minute; the title only breaks ties between screens showing the same
-    film at once. Without a start time to match on this returns None rather than
-    guessing: handing back the wrong auditorium is worse than handing back none,
-    and it would be indistinguishable from a correct answer.
+    Start time, title, and presentation metadata all participate. If multiple
+    candidates remain equally plausible, the caller may supply a map resolver
+    so their source auditorium ids can be compared. Ambiguity is otherwise a
+    named failure, never an arbitrary first item.
     """
     if not candidates or starts_at_local is None:
         return None
     wanted_title = _fold(title or "")
+    wanted_presentation = _fold(presentation or "")
 
     scored: list[tuple[float, FandangoShowtime]] = []
     for candidate in candidates:
@@ -333,9 +427,33 @@ def pick_showtime(
         score = 2.0 - (delta / MATCH_WINDOW_S)
         if wanted_title and candidate.title:
             score += _trigram_overlap(_fold(candidate.title), wanted_title)
+        if wanted_presentation and candidate.presentation_text:
+            score += _trigram_overlap(
+                _fold(candidate.presentation_text), wanted_presentation
+            )
         scored.append((score, candidate))
 
     if not scored:
         return None
     scored.sort(key=lambda pair: pair[0], reverse=True)
-    return scored[0][1]
+    best_score = scored[0][0]
+    tied = [candidate for score, candidate in scored if abs(score - best_score) < 1e-9]
+    if len(tied) == 1:
+        return tied[0]
+    if source_screen_id and auditorium_id_for is not None:
+        matching = [
+            candidate for candidate in tied
+            if auditorium_id_for(candidate) == str(source_screen_id)
+        ]
+        if len(matching) == 1:
+            return matching[0]
+    raise AmbiguousShowtimeMatch(
+        "multiple Fandango showtimes match the same title, time, and presentation",
+        context={
+            "candidate_hashes": [candidate.hash_code for candidate in tied],
+            "starts_at_local": starts_at_local.isoformat(),
+            "title": title,
+            "presentation": presentation,
+            "source_screen_id": source_screen_id,
+        },
+    )

@@ -30,10 +30,14 @@ from curl_cffi import requests
 
 from ..model import (
     Auditorium,
+    BlockedBySource,
+    ParserDrift,
+    PermanentNoSeatMap,
+    RateLimited,
     Seat,
-    SeatDataUnavailable,
     SeatKind,
     SeatStatus,
+    TransientSourceFailure,
     infer_modules,
     mark_aisles,
     normalize_geometry,
@@ -102,41 +106,63 @@ class AmcSeatSource:
                 timeout=timeout,
             )
         except Exception as exc:
-            raise SeatDataUnavailable(f"AMC seat fetch failed: {exc}") from exc
+            raise TransientSourceFailure(f"AMC seat fetch failed: {exc}") from exc
 
         if response.status_code != 200:
-            raise SeatDataUnavailable(
-                f"AMC seat fetch returned HTTP {response.status_code}"
+            message = f"AMC seat fetch returned HTTP {response.status_code}"
+            if response.status_code == 429:
+                failure = RateLimited(message)
+            elif response.status_code in {401, 403}:
+                failure = BlockedBySource(message)
+            else:
+                failure = TransientSourceFailure(message)
+            raise failure.with_capture(
+                response.text,
+                content_type=getattr(response, "headers", {}).get(
+                    "content-type", "text/plain"
+                ),
+                source_url=self.endpoint,
+                status_code=response.status_code,
             )
         try:
             return response.json()
         except json.JSONDecodeError as exc:
-            raise SeatDataUnavailable("AMC seat fetch returned non-JSON") from exc
+            failure = ParserDrift("AMC seat fetch returned non-JSON")
+            raise failure.with_capture(
+                response.text,
+                content_type=getattr(response, "headers", {}).get(
+                    "content-type", "text/plain"
+                ),
+                source_url=self.endpoint,
+                status_code=response.status_code,
+            ) from exc
 
     # ------------------------------------------------------------------
     @staticmethod
     def parse(payload: dict, *, showtime_id: str, venue_id: str = "") -> Auditorium:
         """Pure. Given a GraphQL response, produce a normalized Auditorium."""
         if errors := payload.get("errors"):
-            raise SeatDataUnavailable(
+            raise TransientSourceFailure(
                 f"AMC GraphQL error: {errors[0].get('message', 'unknown')}"
             )
 
         showtime = ((payload.get("data") or {}).get("viewer") or {}).get("showtime")
         if not showtime:
-            raise SeatDataUnavailable(f"AMC returned no showtime {showtime_id}")
+            raise TransientSourceFailure(f"AMC returned no showtime {showtime_id}")
 
         # General-admission houses genuinely have no seat map. That is a
         # permanent property of the screening, not a transient failure, so it
         # must not read as "the fetch broke".
         if showtime.get("isReservedSeating") is False:
-            raise SeatDataUnavailable(
+            raise PermanentNoSeatMap(
                 f"showtime {showtime_id} is general admission - no seat map exists"
             )
 
         layout = showtime.get("seatingLayout")
         if not layout or not layout.get("seats"):
-            raise SeatDataUnavailable(f"AMC returned no seating layout for {showtime_id}")
+            raise TransientSourceFailure(
+                f"AMC returned no seating layout for {showtime_id}"
+            )
 
         seats: list[Seat] = []
         for raw in layout["seats"]:
@@ -164,7 +190,7 @@ class AmcSeatSource:
             )
 
         if not seats:
-            raise SeatDataUnavailable(
+            raise ParserDrift(
                 f"AMC layout for {showtime_id} contained only padding cells"
             )
 

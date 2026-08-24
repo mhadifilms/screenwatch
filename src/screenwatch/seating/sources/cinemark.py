@@ -27,8 +27,9 @@ import re
 
 from ..model import (
     Auditorium,
+    BlockedBySource,
+    ParserDrift,
     Seat,
-    SeatDataUnavailable,
     SeatKind,
     SeatStatus,
     infer_modules,
@@ -44,6 +45,11 @@ SEAT_MAP = (
 _CHALLENGE = "Just a moment"
 _SEAT = re.compile(r"<button([^>]*\bclass=\"[^\"]*seatBlock[^\"]*\"[^>]*)>", re.IGNORECASE)
 _ATTR = re.compile(r'([a-zA-Z\-]+)="([^"]*)"')
+_AUDITORIUM = re.compile(
+    r'<div[^>]*class="[^"]*auditoriumNumber[^"]*"[^>]*>\s*([^<]+?)\s*</div>',
+    re.IGNORECASE,
+)
+_AUDITORIUM_SIZE = re.compile(r'"auditorium_size"\s*:\s*"?(\d+)', re.IGNORECASE)
 
 _KIND = {
     "seat": SeatKind.STANDARD,
@@ -79,9 +85,24 @@ class CinemarkSeatSource:
     @staticmethod
     def parse(html: str, *, venue_id: str, screen_id: str = "") -> Auditorium:
         if _CHALLENGE in html:
-            raise SeatDataUnavailable("Cloudflare challenge instead of the seat map")
+            raise BlockedBySource("Cloudflare challenge instead of the seat map")
+
+        decoded = html_lib.unescape(html)
+        auditorium_match = _AUDITORIUM.search(decoded)
+        auditorium_name = (
+            html_lib.unescape(auditorium_match.group(1)).strip()
+            if auditorium_match else None
+        )
+        parsed_screen_id = screen_id
+        if auditorium_name:
+            number = re.search(r"\b(\d+)\b", auditorium_name)
+            if number:
+                parsed_screen_id = number.group(1)
+        size_match = _AUDITORIUM_SIZE.search(decoded)
+        reported_capacity = int(size_match.group(1)) if size_match else None
 
         seats: list[Seat] = []
+        source_capacity = 0
         for match in _SEAT.finditer(html):
             attrs = _attrs(match.group(1))
             info = (attrs.get("info") or "").split(",")
@@ -97,10 +118,25 @@ class CinemarkSeatSource:
                 continue
 
             kind = _KIND.get((attrs.get("seattype") or "seat").lower(), SeatKind.STANDARD)
+            # Cinemark's auditorium_size is a fixed-seat count: wheelchair
+            # spaces are excluded, while a temporarily blocked fixed seat is
+            # still part of the room's physical capacity.
+            if kind is not SeatKind.WHEELCHAIR:
+                source_capacity += 1
             # `available` is the authority; the class name merely mirrors it,
             # and physical-distance buffers are unavailable with a normal type.
             available = (attrs.get("available") or "").lower() == "true"
-            status = SeatStatus.AVAILABLE if available else SeatStatus.SOLD
+            physical_buffer = (
+                (attrs.get("physicaldistancebuffer") or "").lower() == "true"
+                or "physicaldistancebuffer" in classes.lower()
+            )
+            if physical_buffer:
+                kind = SeatKind.BLOCKED
+                status = SeatStatus.UNAVAILABLE
+            else:
+                # Cinemark exposes available/unavailable, not a reliable
+                # sold/house/broken distinction. Do not manufacture "sold".
+                status = SeatStatus.AVAILABLE if available else SeatStatus.UNAVAILABLE
 
             seats.append(
                 Seat(
@@ -114,14 +150,27 @@ class CinemarkSeatSource:
             )
 
         if not seats:
-            raise SeatDataUnavailable(
+            raise ParserDrift(
                 "no seat buttons in the Cinemark seat map - markup changed, or "
                 "this showing is general admission"
             )
 
-        return Auditorium(
+        room = Auditorium(
             venue_id=venue_id,
-            screen_id=screen_id,
+            screen_id=parsed_screen_id,
             seats=normalize_geometry(mark_aisles(infer_modules(seats))),
             geometry_confidence=1.0,
+            name=auditorium_name,
+            reported_capacity=reported_capacity,
         )
+        if reported_capacity is not None and source_capacity != reported_capacity:
+            raise ParserDrift(
+                "Cinemark seat-map capacity mismatch: "
+                f"parsed {source_capacity}, source reported {reported_capacity}",
+                context={
+                    "parsed_capacity": source_capacity,
+                    "reported_capacity": reported_capacity,
+                    "screen_id": parsed_screen_id,
+                },
+            )
+        return room

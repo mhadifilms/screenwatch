@@ -28,6 +28,8 @@ from urllib.parse import urlencode
 
 from ..model import (
     Auditorium,
+    BlockedBySource,
+    ParserDrift,
     Seat,
     SeatDataUnavailable,
     SeatKind,
@@ -181,11 +183,11 @@ class RegalSeatSource:
     @staticmethod
     def _parse_html(html: str, *, venue_id: str, screen_id: str) -> Auditorium:
         if any(marker in html for marker in ("Attention Required", "Sorry, you have been blocked")):
-            raise SeatDataUnavailable("Regal seat page was blocked by Cloudflare")
+            raise BlockedBySource("Regal seat page was blocked by Cloudflare")
         parser = _RenderedSeatParser()
         parser.feed(html)
         if not parser.seats:
-            raise SeatDataUnavailable(
+            raise ParserDrift(
                 "Regal seat page HTML had no rendered seat buttons - page shape "
                 "changed, or this showing is general admission"
             )
@@ -252,7 +254,7 @@ class RegalSeatSource:
                         # sold would hide every seat behind it - the failure
                         # this whole module exists to avoid. Raising loses the
                         # showing instead, which is visible and recoverable.
-                        raise SeatDataUnavailable(
+                        raise ParserDrift(
                             f"unrecognised Regal seat status {status!r} in row "
                             f"{row_label or row_index} - schema changed"
                         )

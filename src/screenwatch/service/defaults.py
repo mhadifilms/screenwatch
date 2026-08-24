@@ -32,7 +32,9 @@ def default_resolver(store=None) -> WorkResolver:
     return WorkResolver(TmdbCatalog.from_env(), store=store)
 
 
-def default_providers(resolver: WorkResolver | None = None, *, store=None) -> list:
+def default_providers(
+    resolver: WorkResolver | None = None, *, store=None, browser=None
+) -> list:
     resolver = resolver or default_resolver()
 
     from ..providers.alamo import AlamoProvider
@@ -45,18 +47,20 @@ def default_providers(resolver: WorkResolver | None = None, *, store=None) -> li
     return [
         AmcProvider(resolver),
         AlamoProvider(resolver),
-        RegalProvider(resolver),
-        CinemarkProvider(resolver, store=store),
+        RegalProvider(resolver, browser=browser),
+        CinemarkProvider(resolver, store=store, browser=browser),
         C360Provider(resolver, store=store),
-        IndependentProvider(resolver),
+        IndependentProvider(resolver, store=store),
     ]
 
 
-def default_service(db: str = DEFAULT_DB) -> tuple[SearchService, WatchService, Store]:
+def default_service(
+    db: str = DEFAULT_DB, *, browser=None
+) -> tuple[SearchService, WatchService, Store]:
     store = Store(db)
     resolver = default_resolver(store)
     search = SearchService(
-        providers=default_providers(resolver, store=store),
+        providers=default_providers(resolver, store=store, browser=browser),
         store=store,
         resolver=resolver,
     )

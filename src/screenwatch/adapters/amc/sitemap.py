@@ -66,7 +66,7 @@ class TheatreEntry:
 
     @property
     def venue_id(self) -> str:
-        return f"amc-{self.slug}"
+        return self.slug if self.slug.startswith("amc-") else f"amc-{self.slug}"
 
     @property
     def key(self) -> str:

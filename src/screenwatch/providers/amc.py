@@ -8,6 +8,7 @@ source's.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -21,7 +22,8 @@ from ..presentation import UnknownFormatError, assume_digital
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
 from ..resolver import Resolver
-from ..seating.model import Auditorium
+from ..seating.capture import SeatCapture, SeatProbe
+from ..seating.model import Auditorium, SeatDataUnavailable
 from ..seating.sources.amc import AmcSeatSource
 from ..service.venues import Venue
 from ..transport import Transport
@@ -42,6 +44,7 @@ class AmcProvider(ScopeReporting):
         self.work_resolver = work_resolver or WorkResolver()
         self.max_days = max_days
         self.max_venues = max_venues
+        self._theatre_ids: dict[str, str] = {}
 
     def discover(self, spec: SearchSpec) -> list[Venue]:
         """Discover the national AMC directory from AMC's official sitemap.
@@ -54,6 +57,9 @@ class AmcProvider(ScopeReporting):
         """
         entries = self.sitemap.parse_theatres(
             self.sitemap.fetch(self._transport_for_discovery(), which="theatres")
+        )
+        self._theatre_ids.update(
+            {entry.venue_id: entry.theatre_id for entry in entries}
         )
         return [
             Venue(
@@ -163,12 +169,29 @@ class AmcProvider(ScopeReporting):
                     deeplink=fact.deeplink,
                     distance_km=venue.distance_km(spec.location.origin),
                     sources=fact.sources,
+                    seat_probe=SeatProbe(
+                        source=self.chain,
+                        venue_id=venue.venue_id,
+                        source_venue_id=(
+                            self._theatre_ids.get(venue.venue_id) or venue.venue_id
+                        ),
+                        showtime_id=str(fact.external_id),
+                        booking_url=fact.deeplink,
+                        starts_at_local=fact.key.starts_at_utc.astimezone(tz)
+                                                             .replace(tzinfo=None),
+                        title=fact.title,
+                        source_screen_id=None,
+                        metadata={
+                            "screening_id": f"amc:{fact.external_id}",
+                            "venue_name": venue.name,
+                        },
+                    ),
                 )
             )
         return screenings
 
     # ------------------------------------------------------------------
-    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+    def fetch(self, probe: SeatProbe, transport: Transport) -> SeatCapture:
         """Seat grid from AMC's public GraphQL schema.
 
         Deliberately does not go through `transport`: this endpoint is not
@@ -179,8 +202,32 @@ class AmcProvider(ScopeReporting):
         Watching a sold-out screening for returns therefore has to key off the
         showtime `status` flipping back, not off seat-level diffs.
         """
-        showtime_id = option.screening.screening_id.split(":", 1)[-1]
-        return self.seats.fetch(showtime_id, venue_id=option.screening.venue_id)
+        payload = self.seats._post(int(probe.showtime_id), 30)
+        raw_payload = json.dumps(payload, sort_keys=True).encode()
+        try:
+            room = self.seats.parse(
+                payload, showtime_id=probe.showtime_id, venue_id=probe.venue_id
+            )
+        except SeatDataUnavailable as exc:
+            exc.with_capture(
+                raw_payload,
+                content_type="application/json",
+                source_url=self.seats.endpoint,
+                status_code=200,
+            )
+            raise
+        return SeatCapture(
+            probe=probe,
+            auditorium=room,
+            raw_payload=raw_payload,
+            raw_content_type="application/json",
+            source_url=self.seats.endpoint,
+            status_code=200,
+        )
+
+    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+        """Compatibility wrapper for callers that still hold an Option."""
+        return self.fetch(option.screening.durable_seat_probe(), transport).auditorium
 
 
 def _days(start: date, end: date) -> list[date]:

@@ -26,8 +26,9 @@ from __future__ import annotations
 import contextlib
 import json
 import pathlib
+import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 DEFAULT_PROFILE = pathlib.Path.home() / ".screenwatch" / "browser-profile"
 DEFAULT_TIMEOUT_MS = 45_000
@@ -53,6 +54,7 @@ class BrowserResponse:
     url: str
     status: int
     text: str
+    headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def challenged(self) -> bool:
@@ -84,14 +86,19 @@ class BrowserTransport:
         headless: bool = True,
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
         challenge_wait_ms: int = 12_000,
+        record_har_path: pathlib.Path | str | None = None,
     ) -> None:
         self.profile_dir = pathlib.Path(profile_dir)
         self.headless = headless
         self.timeout_ms = timeout_ms
         self.challenge_wait_ms = challenge_wait_ms
+        self.record_har_path = (
+            pathlib.Path(record_har_path) if record_har_path is not None else None
+        )
         self._playwright = None
         self._context = None
         self._page = None
+        self._last_response: BrowserResponse | None = None
 
     # ------------------------------------------------------------------
     def _ensure(self):
@@ -117,6 +124,9 @@ class BrowserTransport:
                     viewport={"width": 1440, "height": 900},
                     locale="en-US",
                     args=["--disable-blink-features=AutomationControlled"],
+                    record_har_path=(
+                        str(self.record_har_path) if self.record_har_path else None
+                    ),
                 )
                 self._context.set_default_timeout(self.timeout_ms)
                 self._page = (
@@ -160,11 +170,14 @@ class BrowserTransport:
                 )
         body = page.content()
 
-        return BrowserResponse(
+        result = BrowserResponse(
             url=page.url,
             status=response.status if response else 0,
             text=body,
+            headers=(response.all_headers() if response else {}),
         )
+        self._last_response = result
+        return result
 
     def fetch_json(self, url: str, *, origin: str | None = None) -> BrowserResponse:
         """Call a JSON endpoint from *inside* the page.
@@ -183,14 +196,111 @@ class BrowserTransport:
                     headers: {accept: 'application/json, text/plain, */*'},
                     credentials: 'include',
                 });
-                return {status: r.status, body: await r.text()};
+                return {
+                    status: r.status,
+                    body: await r.text(),
+                    headers: Object.fromEntries(r.headers.entries()),
+                };
             }""",
             url,
         )
-        return BrowserResponse(url=url, status=result["status"], text=result["body"])
+        response = BrowserResponse(
+            url=url,
+            status=result["status"],
+            text=result["body"],
+            headers=result["headers"],
+        )
+        self._last_response = response
+        return response
+
+    def save_diagnostics(
+        self, directory: pathlib.Path | str, *, label: str = "browser"
+    ) -> dict[str, str]:
+        """Save the current page body, headers-equivalent metadata and image.
+
+        HAR recording is configured at construction and is finalized by
+        :meth:`close`. This method is safe to call after a parser failure while
+        the exact failing page is still open.
+        """
+        page = self._ensure()
+        destination = pathlib.Path(directory)
+        destination.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^a-zA-Z0-9_.-]+", "-", label).strip("-") or "browser"
+        html_path = destination / f"{safe}.html"
+        screenshot_path = destination / f"{safe}.png"
+        metadata_path = destination / f"{safe}.metadata.json"
+        with contextlib.suppress(Exception):
+            page.wait_for_load_state("domcontentloaded", timeout=5_000)
+        try:
+            body = page.content()
+        except Exception:  # noqa: BLE001 - diagnostics must survive navigation races
+            body = self._last_response.text if self._last_response else ""
+        html_path.write_text(body, encoding="utf-8")
+        with contextlib.suppress(Exception):
+            page.screenshot(path=str(screenshot_path), full_page=True)
+        try:
+            title = page.title()
+        except Exception:  # noqa: BLE001 - title is optional diagnostic metadata
+            title = None
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "url": page.url,
+                    "title": title,
+                    "status": (
+                        self._last_response.status if self._last_response else None
+                    ),
+                    "response_headers": {
+                        key: value
+                        for key, value in (
+                            self._last_response.headers.items()
+                            if self._last_response else ()
+                        )
+                        if key.lower() not in {
+                            "authorization", "cookie", "set-cookie"
+                        }
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "body": str(html_path),
+            "metadata": str(metadata_path),
+            **(
+                {"screenshot": str(screenshot_path)}
+                if screenshot_path.exists() else {}
+            ),
+            **({"har": str(self.record_har_path)} if self.record_har_path else {}),
+        }
 
     def text(self, url: str) -> str:
         return self.visit(url).text
+
+    @property
+    def started(self) -> bool:
+        return self._page is not None
+
+    def _redact_har(self) -> None:
+        """Remove credentials while retaining failure-useful HAR evidence."""
+        path = self.record_har_path
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return
+        sensitive = {"authorization", "cookie", "set-cookie", "proxy-authorization"}
+        for entry in payload.get("log", {}).get("entries", []):
+            for side in (entry.get("request", {}), entry.get("response", {})):
+                for header in side.get("headers", []):
+                    if str(header.get("name", "")).lower() in sensitive:
+                        header["value"] = "[redacted]"
+                if "cookies" in side:
+                    side["cookies"] = []
+        path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
 
     # ------------------------------------------------------------------
     def close(self) -> None:
@@ -198,7 +308,9 @@ class BrowserTransport:
             with contextlib.suppress(Exception):
                 if closer is not None:
                     closer.close() if hasattr(closer, "close") else closer.stop()
+        self._redact_har()
         self._context = self._page = self._playwright = None
+        self._last_response = None
 
     def __enter__(self) -> BrowserTransport:
         return self

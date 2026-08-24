@@ -12,6 +12,7 @@ estimate is deliberately pessimistic.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import UTC, timedelta
 from zoneinfo import ZoneInfo
@@ -35,7 +36,8 @@ from ..models import Availability
 from ..presentation import assume_digital
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
-from ..seating.model import Auditorium, SeatDataUnavailable
+from ..seating.capture import SeatCapture, SeatProbe
+from ..seating.model import Auditorium, MissingProviderContext, ParserDrift
 from ..service.venues import Venue, local_today
 from ..transport import Transport
 from .scope import WATCH_MAX_DAYS, ScopeReporting
@@ -225,6 +227,21 @@ class C360Provider(ScopeReporting):
             screen_id=show.screen_id,
             sources=(self.adapter.source,),
             seats_sold=show.seats_sold,
+            seat_probe=SeatProbe(
+                source=self.chain,
+                venue_id=venue.venue_id,
+                source_venue_id=loc.location_id,
+                showtime_id=show.show_id,
+                booking_url=show.deeplink(),
+                starts_at_local=show.starts_at_local,
+                title=show.title,
+                source_screen_id=show.screen_id,
+                metadata={
+                    "screening_id": f"c360:{show.show_id}",
+                    "seats_sold": show.seats_sold,
+                    "location_id": loc.location_id,
+                },
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -235,7 +252,7 @@ class C360Provider(ScopeReporting):
             )
         return self._screens[screen_id]
 
-    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+    def fetch(self, probe: SeatProbe, transport: Transport) -> SeatCapture:
         """Room shape plus an exact free-seat count - but not a seat grid.
 
         C360 publishes the auditorium layout and how many seats are sold, and
@@ -247,21 +264,36 @@ class C360Provider(ScopeReporting):
         seats, and the ranker estimates group feasibility instead of drawing a
         map it cannot actually see.
         """
-        screening = option.screening
-        if not screening.screen_id:
-            raise SeatDataUnavailable("c360 showing carries no screen id")
+        if not probe.source_screen_id:
+            raise MissingProviderContext("c360 showing carries no screen id")
 
-        shape = self.screen(screening.screen_id)
-        capacity = shape.bookable_seats
-        sold = screening.seats_sold
-        if not capacity or sold is None:
-            raise SeatDataUnavailable(
-                f"no usable seat count for c360 show {screening.screening_id}"
+        raw = self._json(SCREEN_BY_ID.format(screen=probe.source_screen_id))
+        raw_payload = json.dumps(raw, sort_keys=True).encode()
+        try:
+            shape = self.adapter.parse_screen(raw)
+        except Exception as exc:
+            failure = ParserDrift(
+                f"c360 screen response changed: {type(exc).__name__}: {exc}"
             )
-        available = max(capacity - sold, 0)
+            raise failure.with_capture(
+                raw_payload,
+                content_type="application/json",
+                source_url=self.base + SCREEN_BY_ID.format(
+                    screen=probe.source_screen_id
+                ),
+                status_code=200,
+            ) from exc
+        self._screens[probe.source_screen_id] = shape
+        capacity = shape.bookable_seats
+        sold = probe.metadata.get("seats_sold")
+        if not capacity or sold is None:
+            raise ParserDrift(
+                f"no usable seat count for c360 probe {probe.probe_id}"
+            )
+        available = max(capacity - int(sold), 0)
 
-        return Auditorium(
-            venue_id=screening.venue_id,
+        room = Auditorium(
+            venue_id=probe.venue_id,
             screen_id=shape.screen_id,
             seats=(),
             geometry_confidence=0.0,
@@ -270,3 +302,16 @@ class C360Provider(ScopeReporting):
             row_lengths=tuple(count for _, count in shape.rows),
             name=shape.name,
         )
+        return SeatCapture(
+            probe=probe,
+            auditorium=room,
+            source_layout_id=shape.screen_id,
+            raw_payload=raw_payload,
+            raw_content_type="application/json",
+            source_url=self.base + SCREEN_BY_ID.format(screen=probe.source_screen_id),
+            status_code=200,
+        )
+
+    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+        """Compatibility wrapper for callers that still hold an Option."""
+        return self.fetch(option.screening.durable_seat_probe(), transport).auditorium

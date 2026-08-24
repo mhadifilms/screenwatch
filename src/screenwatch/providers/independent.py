@@ -59,7 +59,12 @@ from ..models import Availability
 from ..presentation import assume_digital
 from ..ranking.candidate import Option, Screening
 from ..ranking.spec import GeoPoint, SearchSpec
-from ..seating.model import Auditorium, SeatDataUnavailable
+from ..seating.capture import SeatCapture, SeatProbe
+from ..seating.model import Auditorium
+from ..seating.sources.platforms import (
+    PlatformSeatRouter,
+    detect_ticketing_platform,
+)
 from ..service.venues import Venue
 from ..transport import Transport
 from .scope import ScopeReporting
@@ -111,6 +116,7 @@ class IndependentProvider(ScopeReporting):
         osm_directory: OsmCinemaDirectory | None = None,
         discovery_transport: Transport | None = None,
         osm_enabled: bool = True,
+        seat_router: PlatformSeatRouter | None = None,
     ) -> None:
         self.work_resolver = work_resolver or WorkResolver()
         self._config = venues if venues is not None else load_venues()
@@ -119,11 +125,13 @@ class IndependentProvider(ScopeReporting):
         self.osm = osm_directory or OsmCinemaDirectory()
         self._discovery_transport = discovery_transport
         self.osm_enabled = osm_enabled
+        self.seat_router = seat_router or PlatformSeatRouter()
         self._osm_rows: dict[str, dict] = {}
         self.incomplete: dict[str, str] = {}
 
     # ------------------------------------------------------------------
-    def discover(self, spec: SearchSpec, *, full: bool = False) -> list[Venue]:
+    def discover(self, spec: SearchSpec, *, full: bool | None = None) -> list[Venue]:
+        full = spec.exhaustive if full is None else full
         self._load_cached_osm_rows()
         rows = {
             row["venue_id"]: {
@@ -138,7 +146,7 @@ class IndependentProvider(ScopeReporting):
             rows[key] = merged
         if self.osm_enabled:
             try:
-                cinemas = self._discover_osm(spec, full=full or spec.exhaustive)
+                cinemas = self._discover_osm(spec, full=full)
                 for cinema in cinemas:
                     row = self._osm_row(cinema)
                     self._osm_rows[row["venue_id"]] = row
@@ -160,6 +168,7 @@ class IndependentProvider(ScopeReporting):
                     if row.get("lat") is not None else None
                 ),
                 market=row.get("url"),          # the page to read, not a market
+                ticketing_platform=row.get("ticketing_platform"),
                 url=row.get("url"),
                 venue_type=row.get("venue_type") or "cinema",
                 markup=row.get("markup"),
@@ -291,34 +300,43 @@ class IndependentProvider(ScopeReporting):
             window = spec.window(today)
             adapter = JsonLdScreenings(venue.venue_id, url=row["url"])
             observations = []
+            structured_error: str | None = None
             try:
                 observations = adapter.parse(html, strict=False)
             except IncompleteStructuredData as exc:
                 # Named, not swallowed: decorative markup needs a fallback,
                 # which is a different problem from a quiet night.
                 self.incomplete[venue.venue_id] = str(exc)
-                self._note_error(
+                structured_error = (
                     f"venue {venue.venue_id} incomplete structured data: {exc}"
                 )
             except ParseError:
-                self._note_error(f"venue {venue.venue_id} structured data parse failed")
+                structured_error = (
+                    f"venue {venue.venue_id} structured data parse failed"
+                )
             except Exception as exc:                            # noqa: BLE001
-                self._note_error(
+                structured_error = (
                     f"venue {venue.venue_id} parser failed: {type(exc).__name__}: {exc}"
                 )
 
             if not observations and has_vista_links(html):
-                out.extend(self._from_vista(spec, venue, html, tz, window, today))
-                continue
+                found = self._from_vista(spec, venue, html, tz, window, today)
+                if found:
+                    out.extend(found)
+                    continue
             if not observations and has_agile_links(html):
-                out.extend(self._from_agile(spec, venue, html, tz, window, today))
-                continue
+                found = self._from_agile(spec, venue, html, tz, window, today)
+                if found:
+                    out.extend(found)
+                    continue
             if not observations:
                 found = self._from_listing(spec, venue, html, tz, window, today,
                                            row["url"])
                 if found:
                     out.extend(found)
                     continue
+                if structured_error:
+                    self._note_error(structured_error)
             for obs in observations:
                 local = obs.key.starts_at_utc.astimezone(tz).replace(tzinfo=None)
                 if not window.contains(local.date()):
@@ -343,6 +361,30 @@ class IndependentProvider(ScopeReporting):
                         deeplink=obs.deeplink,
                         distance_km=venue.distance_km(spec.location.origin),
                         sources=(obs.source,),
+                        seat_probe=SeatProbe(
+                            source=self.chain,
+                            venue_id=venue.venue_id,
+                            source_venue_id=venue.venue_id,
+                            showtime_id=(
+                                f"{obs.key.movie_id}:"
+                                f"{int(obs.key.starts_at_utc.timestamp())}"
+                            ),
+                            booking_url=obs.deeplink,
+                            starts_at_local=local,
+                            title=obs.title,
+                            source_screen_id=None,
+                            ticketing_platform=(
+                                venue.ticketing_platform
+                                or detect_ticketing_platform(obs.deeplink)
+                            ),
+                            metadata={
+                                "screening_id": (
+                                    f"{venue.venue_id}:{obs.key.movie_id}:"
+                                    f"{int(obs.key.starts_at_utc.timestamp())}"
+                                ),
+                                "venue_name": venue.name,
+                            },
+                        ),
                     )
                 )
         return out
@@ -373,6 +415,23 @@ class IndependentProvider(ScopeReporting):
                     deeplink=show.url,
                     distance_km=venue.distance_km(spec.location.origin),
                     sources=("vista:links",),
+                    seat_probe=SeatProbe(
+                        source=self.chain,
+                        venue_id=venue.venue_id,
+                        source_venue_id=show.cinema_code,
+                        showtime_id=show.session_id,
+                        booking_url=show.url,
+                        starts_at_local=show.starts_at_local,
+                        title=show.title,
+                        source_screen_id=None,
+                        ticketing_platform="vista",
+                        metadata={
+                            "screening_id": f"vista:{show.screening_key}",
+                            "host": show.host,
+                            "cinema_code": show.cinema_code,
+                            "venue_name": venue.name,
+                        },
+                    ),
                 )
             )
         return out
@@ -418,6 +477,31 @@ class IndependentProvider(ScopeReporting):
                     deeplink=show.url,
                     distance_km=venue.distance_km(spec.location.origin),
                     sources=("listing:own-site",),
+                    seat_probe=SeatProbe(
+                        source=self.chain,
+                        venue_id=venue.venue_id,
+                        source_venue_id=venue.venue_id,
+                        showtime_id=(
+                            f"{int(show.starts_at_local.timestamp())}:"
+                            f"{resolution.analysis.match_key}"
+                        ),
+                        booking_url=show.url,
+                        starts_at_local=show.starts_at_local,
+                        title=show.title,
+                        source_screen_id=None,
+                        ticketing_platform=(
+                            venue.ticketing_platform
+                            or detect_ticketing_platform(show.url)
+                        ),
+                        metadata={
+                            "screening_id": (
+                                f"listing:{venue.venue_id}:"
+                                f"{int(show.starts_at_local.timestamp())}:"
+                                f"{resolution.analysis.match_key}"
+                            ),
+                            "venue_name": venue.name,
+                        },
+                    ),
                 )
             )
         return out
@@ -459,22 +543,35 @@ class IndependentProvider(ScopeReporting):
                     distance_km=venue.distance_km(spec.location.origin),
                     screen_id=show.screen or "",
                     sources=("agile:links",),
+                    seat_probe=SeatProbe(
+                        source=self.chain,
+                        venue_id=venue.venue_id,
+                        source_venue_id=show.host,
+                        showtime_id=show.event_id,
+                        booking_url=show.url,
+                        starts_at_local=show.starts_at_local,
+                        title=show.title,
+                        source_screen_id=show.screen,
+                        ticketing_platform="agile",
+                        metadata={
+                            "screening_id": f"agile:{show.host}:{show.event_id}",
+                            "host": show.host,
+                            "sales_state": show.sales_state,
+                            "venue_name": venue.name,
+                        },
+                    ),
                 )
             )
         return out
 
     # ------------------------------------------------------------------
-    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
-        """Independents almost never publish seat data.
+    def fetch(self, probe: SeatProbe, transport: Transport) -> SeatCapture:
+        """Delegate seat extraction by ticketing platform, not exhibitor."""
+        return self.seat_router.fetch(probe, transport)
 
-        Many are unreserved seating entirely, and the ones that do reserve run
-        a ticketing platform - Elevent, Agile, Veezi - whose adapter is the
-        right place for seats, not this generic one.
-        """
-        raise SeatDataUnavailable(
-            "schema.org markup carries no seat data; a platform adapter is "
-            "needed for reserved-seating independents"
-        )
+    def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
+        probe = option.screening.durable_seat_probe()
+        return self.fetch(probe, transport).auditorium
 
 
 def _looks_like_chain(cinema: OsmCinema) -> bool:

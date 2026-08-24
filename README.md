@@ -44,6 +44,9 @@ as a permanent room fact.
   Cinemas/C360, and configured independent venues.
 - Two-phase ranking: inexpensive showtime ranking first, then real seat-map
   retrieval for the highest-value candidates.
+- A separate exhaustive auditorium harvester that enumerates every title in a
+  venue/date scope, persists replayable probes, and has no ranking seat-map
+  budget.
 - Certified party-seat optimization: exhaustive proofs on tractable maps,
   bounded robust/Pareto search on large maps, uncertainty-aware fairness,
   relationship and module constraints, and meaningfully different alternatives.
@@ -60,6 +63,9 @@ as a permanent room fact.
 - Durable watches for new screenings, sold-out-to-available transitions, seat
   returns, newly appearing seat maps, and party-sized groups becoming
   possible.
+- Durable physical auditoriums, source aliases, versioned static layouts,
+  individual seat topology, raw source captures, and separate live
+  availability observations in SQLite.
 - A low-cost AMC catalog signal for release radar. Catalog presence is clearly
   labeled as an early signal, not proof that tickets are on sale.
 - National source discovery plus venue filtering by city, radius, chain, venue
@@ -87,7 +93,7 @@ playwright install chromium
 Start the local app:
 
 ```bash
-screenwatch --port 8787
+screenwatch serve --port 8787
 ```
 
 Open [http://127.0.0.1:8787](http://127.0.0.1:8787). The app is local-only by
@@ -129,16 +135,38 @@ curl -s http://127.0.0.1:8787/v1/search \
 
 Search responses include `coverage`, `complete`, `clipped`, `provider_errors`,
 provider timings, source handles, seat-data type, and an explanation for each
-option. Use `coverage: "exhaustive"` for a national or long-horizon crawl;
+option. Use `coverage: "exhaustive"` for complete showtime discovery in the
+requested scope;
 use `coverage: "nearby"` for the fast bounded mode. `coverage: "auto"`
 selects exhaustive behavior for an explicitly scoped city, radius, chain, or
-venue search and keeps an unscoped query cheap.
+venue search and keeps an unscoped query cheap. Search remains title-driven
+and deliberately enriches only its highest-value candidates; use the harvester
+when the goal is to map rooms.
 
-In-memory search sessions retain renderable seat maps for 30 minutes and are
-bounded to 32 entries. Their lightweight search audit remains in SQLite after
-the renderable session expires. `/v1/health` reports live-session capacity and
-the bounded seating-optimizer cache, which automatically misses whenever the
-seat map or request changes.
+In-memory search sessions retain directly renderable search results for 30
+minutes and are bounded to 32 entries. Complete captures now also persist as
+raw evidence, versioned static topology, and time-varying availability in
+SQLite. Normal search reconciles a current source response with a matching
+stored static layout, but never presents stored availability as current.
+`/v1/health` reports live-session capacity and the bounded seating-optimizer
+cache, which automatically misses whenever the seat map or request changes.
+
+## Collect auditorium maps
+
+Collection is venue- or city-driven rather than movie-driven:
+
+```bash
+screenwatch harvest --venue amc-metreon-16 --days 45
+screenwatch harvest --city "San Francisco" --days 30
+screenwatch rooms --venue amc-metreon-16
+```
+
+The collector saves every discovered `SeatProbe` before attempting a map,
+prioritizes low-occupancy and far-future showtimes, stops refetching a known
+source room after a successful layout, and reports whether the requested run
+was complete or partial. Failures retain machine-readable retry policy such as
+`permanent_no_seat_map`, `rate_limited`, `browser_required`, `parser_drift`,
+or `ambiguous_showtime_match`.
 
 ## MCP
 
@@ -171,19 +199,20 @@ Detailed request and response examples live in [API and MCP](docs/api.md) and
 ## Architecture
 
 ```text
-provider adapters
-      ↓
-source observations + provenance
-      ↓
-canonical title / venue / screening identity
-      ↓
-normalized presentation + seat model
-      ↓
-phase-A ranking → phase-B seat enrichment → explanations
-      ↓
-SQLite evidence store
-      ↓
-HTTP API · MCP · local app · scheduler
+provider and ticketing-platform adapters
+                ↓
+source observations + durable SeatProbe context
+                ↓
+      ┌─────────┴─────────┐
+      ↓                   ↓
+SearchService        HarvestService
+title-led ranking    venue/city room collection
+bounded enrichment  every discovered probe
+      └─────────┬─────────┘
+                ↓
+physical auditoriums + versioned layouts + live observations + raw captures
+                ↓
+HTTP API · MCP · local app · scheduler · rooms CLI
 ```
 
 The important boundary is that an observation is not automatically a fact.
@@ -204,8 +233,15 @@ The important operating boundaries are:
 - Independent venue discovery is national and source-linked through
   OpenStreetMap; the curated JSON file only supplies parser and routing
   overrides for known venues.
+- Independent showtime discovery remains exhibitor-oriented, while seat
+  acquisition routes by the detected ticketing platform. Vista, Agile,
+  Veezi, Elevent, RTS, and Fandango now produce platform-specific collection
+  outcomes instead of collapsing into a generic independent failure. A
+  platform without a verified public geometry contract remains a typed,
+  actionable failure rather than a guessed map.
 - `coverage: "exhaustive"` removes Screenwatch's venue/day caps for the
-  requested scope and makes national/long-horizon searches possible. Upstream
+  requested showtime scope. `screenwatch harvest` is the exhaustive seat-map
+  collector and does not inherit the interactive ranking budget. Upstream
   outages, bot challenges, missing websites, and provider-side limits remain
   visible in `complete`, `clipped`, and `provider_errors` rather than being
   mistaken for no inventory.

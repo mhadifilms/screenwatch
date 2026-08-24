@@ -9,13 +9,23 @@ WAL mode, one writer, no ORM. The access patterns are small and known.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from ..identity.work import TitleLink, Work
+from ..seating.capture import (
+    SeatCapture,
+    SeatProbe,
+    availability_payload,
+    layout_fingerprint,
+    static_layout_payload,
+)
+from ..seating.model import Auditorium, Seat, SeatKind, seat_failure
 
 DEFAULT_USER = "local"
 
@@ -80,6 +90,148 @@ CREATE TABLE IF NOT EXISTS seat_snapshots (
     payload      TEXT NOT NULL,
     PRIMARY KEY (screening_id, captured_at)
 );
+
+-- A probe is everything needed to reproduce one seat request after restart.
+CREATE TABLE IF NOT EXISTS seat_probes (
+    probe_id             TEXT PRIMARY KEY,
+    source               TEXT NOT NULL,
+    venue_id             TEXT NOT NULL,
+    source_venue_id      TEXT,
+    showtime_id          TEXT NOT NULL,
+    booking_url          TEXT,
+    starts_at_local      TEXT,
+    title                TEXT,
+    source_screen_id     TEXT,
+    ticketing_platform   TEXT,
+    metadata             TEXT NOT NULL DEFAULT '{}',
+    status               TEXT NOT NULL DEFAULT 'pending',
+    attempts             INTEGER NOT NULL DEFAULT 0,
+    last_failure_code    TEXT,
+    first_seen           TEXT NOT NULL,
+    last_seen            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seat_probes_venue
+    ON seat_probes(venue_id, status, starts_at_local);
+
+CREATE TABLE IF NOT EXISTS auditoriums (
+    auditorium_id       TEXT PRIMARY KEY,
+    venue_id            TEXT NOT NULL,
+    display_name        TEXT,
+    first_seen          TEXT NOT NULL,
+    last_seen           TEXT NOT NULL,
+    verification_status TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auditoriums_venue ON auditoriums(venue_id);
+
+CREATE TABLE IF NOT EXISTS auditorium_aliases (
+    source           TEXT NOT NULL,
+    source_venue_id  TEXT NOT NULL,
+    source_screen_id TEXT NOT NULL,
+    auditorium_id    TEXT NOT NULL,
+    first_seen       TEXT NOT NULL,
+    last_seen        TEXT NOT NULL,
+    PRIMARY KEY (source, source_venue_id, source_screen_id)
+);
+
+CREATE TABLE IF NOT EXISTS layouts (
+    layout_hash        TEXT PRIMARY KEY,
+    source_layout_id   TEXT,
+    seat_count         INTEGER NOT NULL,
+    normalized_payload TEXT NOT NULL,
+    first_seen         TEXT NOT NULL,
+    last_seen          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS layout_seats (
+    layout_hash      TEXT NOT NULL,
+    row_label        TEXT NOT NULL,
+    row_index        INTEGER NOT NULL,
+    col_label        TEXT NOT NULL,
+    col_index        INTEGER NOT NULL,
+    kind             TEXT NOT NULL,
+    x                REAL NOT NULL,
+    y                REAL NOT NULL,
+    aisle_adjacent   INTEGER NOT NULL,
+    module_id        TEXT,
+    module_position  INTEGER,
+    module_size      INTEGER,
+    module_required  INTEGER NOT NULL,
+    PRIMARY KEY (layout_hash, row_index, col_index, row_label, col_label)
+);
+
+CREATE TABLE IF NOT EXISTS auditorium_layouts (
+    auditorium_id TEXT NOT NULL,
+    layout_hash   TEXT NOT NULL,
+    valid_from    TEXT NOT NULL,
+    valid_until   TEXT,
+    PRIMARY KEY (auditorium_id, layout_hash, valid_from)
+);
+CREATE INDEX IF NOT EXISTS idx_auditorium_layouts_current
+    ON auditorium_layouts(auditorium_id, valid_until);
+
+CREATE TABLE IF NOT EXISTS raw_captures (
+    capture_id    TEXT PRIMARY KEY,
+    probe_id      TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    url           TEXT,
+    status_code   INTEGER,
+    content_type  TEXT NOT NULL,
+    body_hash     TEXT NOT NULL,
+    body          BLOB,
+    local_path    TEXT,
+    captured_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_raw_captures_probe
+    ON raw_captures(probe_id, captured_at DESC);
+
+CREATE TABLE IF NOT EXISTS seat_observations (
+    observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    screening_id   TEXT NOT NULL,
+    probe_id        TEXT NOT NULL,
+    auditorium_id  TEXT NOT NULL,
+    layout_hash     TEXT NOT NULL,
+    raw_capture_id  TEXT,
+    captured_at     TEXT NOT NULL,
+    payload         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seat_observations_screening
+    ON seat_observations(screening_id, captured_at DESC);
+
+CREATE TABLE IF NOT EXISTS harvest_runs (
+    run_id               TEXT PRIMARY KEY,
+    venue_id             TEXT,
+    city                 TEXT,
+    date_start           TEXT NOT NULL,
+    date_end             TEXT NOT NULL,
+    started_at           TEXT NOT NULL,
+    finished_at          TEXT,
+    showtimes_discovered INTEGER NOT NULL DEFAULT 0,
+    probes_attempted     INTEGER NOT NULL DEFAULT 0,
+    maps_captured        INTEGER NOT NULL DEFAULT 0,
+    screens_discovered   INTEGER NOT NULL DEFAULT 0,
+    failures             INTEGER NOT NULL DEFAULT 0,
+    failure_counts       TEXT NOT NULL DEFAULT '{}',
+    completion_status    TEXT NOT NULL DEFAULT 'running'
+);
+
+CREATE TABLE IF NOT EXISTS harvest_failures (
+    failure_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        TEXT NOT NULL,
+    probe_id      TEXT NOT NULL,
+    provider      TEXT NOT NULL,
+    stage         TEXT NOT NULL,
+    code          TEXT NOT NULL,
+    retryable     INTEGER NOT NULL,
+    action        TEXT NOT NULL,
+    message       TEXT NOT NULL,
+    source_url    TEXT,
+    status_code   INTEGER,
+    raw_capture_id TEXT,
+    context       TEXT NOT NULL DEFAULT '{}',
+    captured_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harvest_failures_run
+    ON harvest_failures(run_id, code);
 
 CREATE TABLE IF NOT EXISTS watches (
     watch_id       TEXT PRIMARY KEY,
@@ -153,6 +305,8 @@ CREATE TABLE IF NOT EXISTS venue_geo (
     name       TEXT,
     lat        REAL,
     lon        REAL,
+    source_venue_id TEXT,
+    source_slug TEXT,
     updated_at TEXT NOT NULL
 );
 
@@ -331,6 +485,23 @@ class Store:
             "UPDATE directory_venues SET observed_at=updated_at "
             "WHERE observed_at IS NULL"
         )
+
+        venue_geo_columns = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(venue_geo)")
+        }
+        for name in ("source_venue_id", "source_slug"):
+            if name not in venue_geo_columns:
+                self._conn.execute(f"ALTER TABLE venue_geo ADD COLUMN {name} TEXT")
+
+        failure_columns = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(harvest_failures)")
+        }
+        if "raw_capture_id" not in failure_columns:
+            self._conn.execute(
+                "ALTER TABLE harvest_failures ADD COLUMN raw_capture_id TEXT"
+            )
 
     @contextmanager
     def tx(self):
@@ -584,6 +755,631 @@ class Store:
             for key in ("source", "source_url", "evidence_scope", "screen_id"):
                 if payload.get(key) is not None:
                     item[key] = payload[key]
+            out.append(item)
+        return out
+
+    # ----------------------------------------------------- durable seat maps
+    def put_seat_probe(self, probe: SeatProbe, *, status: str = "pending") -> str:
+        now = _now()
+        with self.tx() as c:
+            c.execute(
+                """INSERT INTO seat_probes
+                   (probe_id, source, venue_id, source_venue_id, showtime_id,
+                    booking_url, starts_at_local, title, source_screen_id,
+                    ticketing_platform, metadata, status, first_seen, last_seen)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(probe_id) DO UPDATE SET
+                     booking_url=COALESCE(excluded.booking_url, seat_probes.booking_url),
+                     starts_at_local=COALESCE(excluded.starts_at_local,
+                                              seat_probes.starts_at_local),
+                     title=COALESCE(excluded.title, seat_probes.title),
+                     source_screen_id=COALESCE(excluded.source_screen_id,
+                                               seat_probes.source_screen_id),
+                     ticketing_platform=COALESCE(excluded.ticketing_platform,
+                                                 seat_probes.ticketing_platform),
+                     metadata=excluded.metadata,
+                     status=CASE WHEN seat_probes.status='captured'
+                                 THEN seat_probes.status ELSE excluded.status END,
+                     last_seen=excluded.last_seen""",
+                (
+                    probe.probe_id,
+                    probe.source,
+                    probe.venue_id,
+                    probe.source_venue_id,
+                    probe.showtime_id,
+                    probe.booking_url,
+                    probe.starts_at_local.isoformat() if probe.starts_at_local else None,
+                    probe.title,
+                    probe.source_screen_id,
+                    probe.ticketing_platform,
+                    json.dumps(probe.metadata, sort_keys=True, default=str),
+                    status,
+                    now,
+                    now,
+                ),
+            )
+        return probe.probe_id
+
+    def get_seat_probe(self, probe_id: str) -> SeatProbe | None:
+        row = self._conn.execute(
+            "SELECT * FROM seat_probes WHERE probe_id=?", (probe_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return SeatProbe.from_dict({
+            **dict(row),
+            "metadata": json.loads(row["metadata"] or "{}"),
+        })
+
+    def mark_seat_probe_status(self, probe_id: str, status: str) -> None:
+        with self.tx() as c:
+            c.execute(
+                "UPDATE seat_probes SET status=?, last_seen=? WHERE probe_id=?",
+                (status, _now(), probe_id),
+            )
+
+    def seat_probes(
+        self,
+        *,
+        venue_id: str | None = None,
+        statuses: tuple[str, ...] = ("pending", "retry"),
+        limit: int = 1000,
+    ) -> list[SeatProbe]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if venue_id:
+            clauses.append("venue_id=?")
+            params.append(venue_id)
+        if statuses:
+            marks = ",".join("?" for _ in statuses)
+            clauses.append(f"status IN ({marks})")
+            params.extend(statuses)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(limit, 100_000)))
+        rows = self._conn.execute(
+            f"SELECT * FROM seat_probes {where} "
+            "ORDER BY starts_at_local, probe_id LIMIT ?",
+            params,
+        ).fetchall()
+        return [
+            SeatProbe.from_dict({
+                **dict(row),
+                "metadata": json.loads(row["metadata"] or "{}"),
+            })
+            for row in rows
+        ]
+
+    def _raw_capture_path(
+        self, body_hash: str, payload: bytes, content_type: str
+    ) -> str | None:
+        if self.path == ":memory:" or not payload:
+            return None
+        suffix = {
+            "application/json": ".json",
+            "text/html": ".html",
+        }.get(content_type.split(";", 1)[0].lower(), ".bin")
+        db_path = pathlib.Path(self.path).resolve()
+        directory = db_path.parent / f"{db_path.stem}.captures"
+        directory.mkdir(parents=True, exist_ok=True)
+        destination = directory / f"{body_hash}{suffix}"
+        if not destination.exists():
+            destination.write_bytes(payload)
+        return str(destination)
+
+    @staticmethod
+    def _auditorium_id(c, capture: SeatCapture, captured_at: str) -> tuple[str, str]:
+        probe = capture.probe
+        room = capture.auditorium
+        source_venue_id = probe.source_venue_id or probe.venue_id
+        source_screen_id = room.screen_id or probe.source_screen_id or ""
+        if source_screen_id:
+            alias = c.execute(
+                """SELECT auditorium_id FROM auditorium_aliases
+                   WHERE source=? AND source_venue_id=? AND source_screen_id=?""",
+                (probe.source, source_venue_id, source_screen_id),
+            ).fetchone()
+            if alias:
+                return str(alias["auditorium_id"]), "source_id_verified"
+            identity = f"{probe.venue_id}|{probe.source}|{source_venue_id}|{source_screen_id}"
+            status = "source_id_verified"
+        else:
+            # A map without a source room id is an observation, not proof that
+            # another showtime with the same geometry used the same room.
+            identity = f"{probe.venue_id}|unidentified|{probe.probe_id}|{captured_at}"
+            status = "unidentified_observation"
+        digest = hashlib.sha256(identity.encode()).hexdigest()[:24]
+        return f"aud_{digest}", status
+
+    def put_seat_capture(
+        self,
+        capture: SeatCapture,
+        *,
+        screening_id: str | None = None,
+    ) -> dict[str, object]:
+        """Persist raw evidence, static geometry, and live state atomically."""
+        probe = capture.probe
+        room = capture.auditorium
+        self.put_seat_probe(probe)
+        captured_at = capture.captured_at.astimezone(UTC).isoformat()
+        layout_hash = layout_fingerprint(room)
+        static_payload = static_layout_payload(room)
+        live_payload = availability_payload(room)
+        body_hash = hashlib.sha256(capture.raw_payload).hexdigest()
+        capture_seed = (
+            f"{probe.probe_id}|{captured_at}|{body_hash}|{capture.source_url or ''}"
+        )
+        raw_capture_id = f"capture_{hashlib.sha256(capture_seed.encode()).hexdigest()[:24]}"
+        local_path = self._raw_capture_path(
+            body_hash, capture.raw_payload, capture.raw_content_type
+        )
+        observed_screening = (
+            screening_id
+            or str(probe.metadata.get("screening_id") or "")
+            or f"{probe.source}:{probe.showtime_id}"
+        )
+
+        with self.tx() as c:
+            c.execute(
+                """INSERT OR IGNORE INTO raw_captures
+                   (capture_id, probe_id, source, url, status_code, content_type,
+                    body_hash, body, local_path, captured_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    raw_capture_id,
+                    probe.probe_id,
+                    probe.ticketing_platform or probe.source,
+                    capture.source_url or probe.booking_url,
+                    capture.status_code,
+                    capture.raw_content_type,
+                    body_hash,
+                    capture.raw_payload if local_path is None else None,
+                    local_path,
+                    captured_at,
+                ),
+            )
+            auditorium_id, verification = self._auditorium_id(c, capture, captured_at)
+            c.execute(
+                """INSERT INTO auditoriums
+                   (auditorium_id, venue_id, display_name, first_seen, last_seen,
+                    verification_status)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(auditorium_id) DO UPDATE SET
+                     display_name=COALESCE(excluded.display_name,
+                                           auditoriums.display_name),
+                     last_seen=excluded.last_seen,
+                     verification_status=excluded.verification_status""",
+                (
+                    auditorium_id,
+                    probe.venue_id,
+                    room.name,
+                    captured_at,
+                    captured_at,
+                    verification,
+                ),
+            )
+            source_screen_id = room.screen_id or probe.source_screen_id or ""
+            if source_screen_id:
+                c.execute(
+                    """INSERT INTO auditorium_aliases
+                       (source, source_venue_id, source_screen_id, auditorium_id,
+                        first_seen, last_seen)
+                       VALUES (?,?,?,?,?,?)
+                       ON CONFLICT(source, source_venue_id, source_screen_id)
+                       DO UPDATE SET auditorium_id=excluded.auditorium_id,
+                                     last_seen=excluded.last_seen""",
+                    (
+                        probe.source,
+                        probe.source_venue_id or probe.venue_id,
+                        source_screen_id,
+                        auditorium_id,
+                        captured_at,
+                        captured_at,
+                    ),
+                )
+            c.execute(
+                """INSERT INTO layouts
+                   (layout_hash, source_layout_id, seat_count, normalized_payload,
+                    first_seen, last_seen)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(layout_hash) DO UPDATE SET
+                     source_layout_id=COALESCE(excluded.source_layout_id,
+                                               layouts.source_layout_id),
+                     last_seen=excluded.last_seen""",
+                (
+                    layout_hash,
+                    capture.source_layout_id,
+                    room.capacity,
+                    json.dumps(static_payload, sort_keys=True, separators=(",", ":")),
+                    captured_at,
+                    captured_at,
+                ),
+            )
+            c.executemany(
+                """INSERT OR IGNORE INTO layout_seats
+                   (layout_hash, row_label, row_index, col_label, col_index, kind,
+                    x, y, aisle_adjacent, module_id, module_position, module_size,
+                    module_required)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        layout_hash,
+                        seat["row_label"],
+                        seat["row_index"],
+                        seat["col_label"],
+                        seat["col_index"],
+                        seat["kind"],
+                        seat["x"],
+                        seat["y"],
+                        int(bool(seat["aisle_adjacent"])),
+                        seat["module_id"],
+                        seat["module_position"],
+                        seat["module_size"],
+                        int(bool(seat["module_required"])),
+                    )
+                    for seat in static_payload["seats"]
+                ],
+            )
+            current = c.execute(
+                """SELECT layout_hash FROM auditorium_layouts
+                   WHERE auditorium_id=? AND valid_until IS NULL
+                   ORDER BY valid_from DESC LIMIT 1""",
+                (auditorium_id,),
+            ).fetchone()
+            if current is None or current["layout_hash"] != layout_hash:
+                c.execute(
+                    """UPDATE auditorium_layouts SET valid_until=?
+                       WHERE auditorium_id=? AND valid_until IS NULL""",
+                    (captured_at, auditorium_id),
+                )
+                c.execute(
+                    """INSERT INTO auditorium_layouts
+                       (auditorium_id, layout_hash, valid_from, valid_until)
+                       VALUES (?,?,?,NULL)""",
+                    (auditorium_id, layout_hash, captured_at),
+                )
+            c.execute(
+                """INSERT INTO seat_observations
+                   (screening_id, probe_id, auditorium_id, layout_hash,
+                    raw_capture_id, captured_at, payload)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (
+                    observed_screening,
+                    probe.probe_id,
+                    auditorium_id,
+                    layout_hash,
+                    raw_capture_id,
+                    captured_at,
+                    json.dumps(live_payload, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+            c.execute(
+                "INSERT OR REPLACE INTO seat_snapshots VALUES (?,?,?,?,?)",
+                (
+                    observed_screening,
+                    captured_at,
+                    room.available,
+                    room.capacity,
+                    json.dumps({
+                        "geometry_confidence": room.geometry_confidence,
+                        "screen_id": room.screen_id,
+                        "screen_name": room.name,
+                        "row_count": room.row_count,
+                        "row_lengths": list(room.row_lengths),
+                        "has_grid": room.has_grid,
+                        "layout_hash": layout_hash,
+                        "auditorium_id": auditorium_id,
+                        "raw_capture_id": raw_capture_id,
+                        "source": probe.ticketing_platform or probe.source,
+                        "source_url": capture.source_url or probe.booking_url,
+                        "evidence_scope": "screening-seat-map",
+                        "observed_at": captured_at,
+                    }, sort_keys=True),
+                ),
+            )
+            c.execute(
+                """UPDATE seat_probes
+                   SET status='captured', attempts=attempts+1,
+                       last_failure_code=NULL, last_seen=? WHERE probe_id=?""",
+                (captured_at, probe.probe_id),
+            )
+            self._insert_venue_observation(
+                c,
+                venue_id=probe.venue_id,
+                kind="room_layout",
+                subject_key=auditorium_id,
+                payload={
+                    "screening_id": observed_screening,
+                    "screen_id": source_screen_id,
+                    "screen_name": room.name,
+                    "layout_hash": layout_hash,
+                    "available": room.available,
+                    "capacity": room.capacity,
+                    "raw_capture_id": raw_capture_id,
+                },
+                source=probe.ticketing_platform or probe.source,
+                source_url=capture.source_url or probe.booking_url,
+                observed_at=captured_at,
+                evidence_scope="screening-seat-map",
+                confidence=1.0,
+            )
+        return {
+            "probe_id": probe.probe_id,
+            "auditorium_id": auditorium_id,
+            "layout_hash": layout_hash,
+            "raw_capture_id": raw_capture_id,
+            "raw_capture_path": local_path,
+        }
+
+    def reuse_stored_geometry(self, capture: SeatCapture) -> SeatCapture:
+        """Reconcile a live capture with the current durable room layout.
+
+        Availability is never loaded from SQLite here. When a live source
+        supplies a full grid, the stored topology is reused only after its
+        static fingerprint matches exactly; the live statuses are then laid
+        over that topology. When a live source supplies counts but no grid,
+        the cached room contributes only row lengths. This keeps normal search
+        from pretending that an old availability observation is current.
+        """
+        probe = capture.probe
+        room = capture.auditorium
+        source_screen_id = room.screen_id or probe.source_screen_id or ""
+        if not source_screen_id:
+            return capture
+        row = self._conn.execute(
+            """SELECT l.normalized_payload
+               FROM auditorium_aliases aa
+               JOIN auditorium_layouts al
+                 ON al.auditorium_id=aa.auditorium_id
+                AND al.valid_until IS NULL
+               JOIN layouts l ON l.layout_hash=al.layout_hash
+               WHERE aa.source=? AND aa.source_venue_id=?
+                 AND aa.source_screen_id=?
+               ORDER BY al.valid_from DESC LIMIT 1""",
+            (
+                probe.source,
+                probe.source_venue_id or probe.venue_id,
+                source_screen_id,
+            ),
+        ).fetchone()
+        if row is None:
+            return capture
+        try:
+            cached = json.loads(row["normalized_payload"])
+        except (TypeError, json.JSONDecodeError):
+            return capture
+
+        if room.has_grid:
+            if static_layout_payload(room) != cached:
+                # A changed source layout must flow through persistence so the
+                # current version is closed and a new interval is created.
+                return capture
+            statuses = {
+                (seat.row_label, seat.row_index, seat.col_label, seat.col_index):
+                    seat.status
+                for seat in room.seats
+            }
+            seats = tuple(
+                Seat(
+                    row_label=str(item["row_label"]),
+                    row_index=int(item["row_index"]),
+                    col_label=str(item["col_label"]),
+                    col_index=int(item["col_index"]),
+                    status=statuses[(
+                        str(item["row_label"]), int(item["row_index"]),
+                        str(item["col_label"]), int(item["col_index"]),
+                    )],
+                    kind=SeatKind(str(item["kind"])),
+                    x=float(item["x"]),
+                    y=float(item["y"]),
+                    aisle_adjacent=bool(item["aisle_adjacent"]),
+                    module_id=item.get("module_id"),
+                    module_position=item.get("module_position"),
+                    module_size=item.get("module_size"),
+                    module_required=bool(item.get("module_required")),
+                )
+                for item in cached.get("seats", [])
+            )
+            return replace(capture, auditorium=Auditorium(
+                venue_id=room.venue_id,
+                screen_id=room.screen_id,
+                seats=seats,
+                geometry_confidence=float(cached.get(
+                    "geometry_confidence", room.geometry_confidence
+                )),
+                reported_available=room.reported_available,
+                name=room.name,
+                reported_capacity=room.reported_capacity,
+                row_lengths=tuple(cached.get("row_lengths") or room.row_lengths),
+            ))
+
+        if room.row_lengths:
+            return capture
+        row_counts: dict[int, int] = {}
+        for item in cached.get("seats", []):
+            if str(item.get("kind")) != SeatKind.BLOCKED.value:
+                index = int(item["row_index"])
+                row_counts[index] = row_counts.get(index, 0) + 1
+        row_lengths = tuple(row_counts[index] for index in sorted(row_counts))
+        if not row_lengths:
+            row_lengths = tuple(int(value) for value in cached.get("row_lengths", []))
+        if not row_lengths:
+            return capture
+        return replace(capture, auditorium=Auditorium(
+            venue_id=room.venue_id,
+            screen_id=room.screen_id,
+            seats=(),
+            geometry_confidence=float(cached.get(
+                "geometry_confidence", room.geometry_confidence
+            )),
+            reported_available=room.reported_available,
+            name=room.name,
+            reported_capacity=room.reported_capacity,
+            row_lengths=row_lengths,
+        ))
+
+    def record_harvest_failure(
+        self,
+        run_id: str,
+        probe: SeatProbe,
+        exc: Exception,
+        *,
+        stage: str = "fetch",
+        status_code: int | None = None,
+    ) -> dict[str, object]:
+        self.put_seat_probe(probe)
+        failure = seat_failure(exc)
+        captured_at = _now()
+        raw_payload = getattr(exc, "raw_payload", None)
+        source_url = getattr(exc, "source_url", None) or probe.booking_url
+        effective_status = status_code or getattr(exc, "status_code", None)
+        raw_capture_id = None
+        raw_capture_path = None
+        body_hash = None
+        if raw_payload is not None:
+            body_hash = hashlib.sha256(raw_payload).hexdigest()
+            raw_capture_id = (
+                "capture_"
+                + hashlib.sha256(
+                    f"failure|{probe.probe_id}|{captured_at}|{body_hash}".encode()
+                ).hexdigest()[:24]
+            )
+            raw_capture_path = self._raw_capture_path(
+                body_hash,
+                raw_payload,
+                getattr(exc, "raw_content_type", "application/octet-stream"),
+            )
+            failure["context"] = {
+                **dict(failure["context"]),
+                "raw_capture_id": raw_capture_id,
+                "raw_capture_path": raw_capture_path,
+            }
+        with self.tx() as c:
+            if raw_capture_id is not None:
+                c.execute(
+                    """INSERT INTO raw_captures
+                       (capture_id, probe_id, source, url, status_code, content_type,
+                        body_hash, body, local_path, captured_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        raw_capture_id,
+                        probe.probe_id,
+                        probe.ticketing_platform or probe.source,
+                        source_url,
+                        effective_status,
+                        getattr(exc, "raw_content_type", "application/octet-stream"),
+                        body_hash,
+                        raw_payload if raw_capture_path is None else None,
+                        raw_capture_path,
+                        captured_at,
+                    ),
+                )
+            c.execute(
+                """INSERT INTO harvest_failures
+                   (run_id, probe_id, provider, stage, code, retryable, action,
+                    message, source_url, status_code, raw_capture_id, context,
+                    captured_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    run_id,
+                    probe.probe_id,
+                    probe.ticketing_platform or probe.source,
+                    stage,
+                    failure["code"],
+                    int(bool(failure["retryable"])),
+                    failure["action"],
+                    failure["message"],
+                    source_url,
+                    effective_status,
+                    raw_capture_id,
+                    json.dumps(failure["context"], sort_keys=True, default=str),
+                    captured_at,
+                ),
+            )
+            c.execute(
+                """UPDATE seat_probes
+                   SET status=?, attempts=attempts+1, last_failure_code=?, last_seen=?
+                   WHERE probe_id=?""",
+                (
+                    "retry" if failure["retryable"] else "failed",
+                    failure["code"],
+                    captured_at,
+                    probe.probe_id,
+                ),
+            )
+        return failure
+
+    def create_harvest_run(
+        self,
+        run_id: str,
+        *,
+        venue_id: str | None,
+        city: str | None,
+        date_start: str,
+        date_end: str,
+    ) -> None:
+        with self.tx() as c:
+            c.execute(
+                """INSERT INTO harvest_runs
+                   (run_id, venue_id, city, date_start, date_end, started_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (run_id, venue_id, city, date_start, date_end, _now()),
+            )
+
+    def finish_harvest_run(
+        self,
+        run_id: str,
+        *,
+        showtimes_discovered: int,
+        probes_attempted: int,
+        maps_captured: int,
+        screens_discovered: int,
+        failure_counts: dict[str, int],
+        completion_status: str,
+    ) -> None:
+        with self.tx() as c:
+            c.execute(
+                """UPDATE harvest_runs SET
+                   finished_at=?, showtimes_discovered=?, probes_attempted=?,
+                   maps_captured=?, screens_discovered=?, failures=?,
+                   failure_counts=?, completion_status=? WHERE run_id=?""",
+                (
+                    _now(),
+                    showtimes_discovered,
+                    probes_attempted,
+                    maps_captured,
+                    screens_discovered,
+                    sum(failure_counts.values()),
+                    json.dumps(failure_counts, sort_keys=True),
+                    completion_status,
+                    run_id,
+                ),
+            )
+
+    def rooms(self, venue_id: str) -> list[dict[str, object]]:
+        rows = self._conn.execute(
+            """SELECT a.*, al.layout_hash, l.seat_count, l.normalized_payload,
+                      al.valid_from
+               FROM auditoriums a
+               LEFT JOIN auditorium_layouts al
+                 ON al.auditorium_id=a.auditorium_id AND al.valid_until IS NULL
+               LEFT JOIN layouts l ON l.layout_hash=al.layout_hash
+               WHERE a.venue_id=? ORDER BY a.display_name, a.auditorium_id""",
+            (venue_id,),
+        ).fetchall()
+        out: list[dict[str, object]] = []
+        for row in rows:
+            aliases = self._conn.execute(
+                """SELECT source, source_venue_id, source_screen_id
+                   FROM auditorium_aliases WHERE auditorium_id=?
+                   ORDER BY source, source_screen_id""",
+                (row["auditorium_id"],),
+            ).fetchall()
+            item = dict(row)
+            item["aliases"] = [dict(alias) for alias in aliases]
+            item["layout"] = (
+                json.loads(item.pop("normalized_payload"))
+                if item.get("normalized_payload") else None
+            )
             out.append(item)
         return out
 
@@ -1005,12 +1801,43 @@ class Store:
             )
 
     # ---------------------------------------------------------- venue geo
-    def put_venue_geo(self, venue_id: str, chain: str, name: str | None,
-                      lat: float | None, lon: float | None) -> None:
+    def put_venue_geo(
+        self,
+        venue_id: str,
+        chain: str,
+        name: str | None,
+        lat: float | None,
+        lon: float | None,
+        *,
+        source_venue_id: str | None = None,
+        source_slug: str | None = None,
+    ) -> None:
         with self.tx() as c:
             c.execute(
-                "INSERT OR REPLACE INTO venue_geo VALUES (?,?,?,?,?,?)",
-                (venue_id, chain, name, lat, lon, _now()),
+                """INSERT INTO venue_geo
+                   (venue_id, chain, name, lat, lon, source_venue_id,
+                    source_slug, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(venue_id) DO UPDATE SET
+                     chain=excluded.chain,
+                     name=COALESCE(excluded.name, venue_geo.name),
+                     lat=COALESCE(excluded.lat, venue_geo.lat),
+                     lon=COALESCE(excluded.lon, venue_geo.lon),
+                     source_venue_id=COALESCE(excluded.source_venue_id,
+                                              venue_geo.source_venue_id),
+                     source_slug=COALESCE(excluded.source_slug,
+                                          venue_geo.source_slug),
+                     updated_at=excluded.updated_at""",
+                (
+                    venue_id,
+                    chain,
+                    name,
+                    lat,
+                    lon,
+                    source_venue_id,
+                    source_slug,
+                    _now(),
+                ),
             )
 
     def venue_geo(self, chain: str) -> dict[str, dict]:
