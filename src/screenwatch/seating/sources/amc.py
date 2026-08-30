@@ -88,7 +88,16 @@ class AmcSeatSource:
     source = "amc:seating-graphql"
     tier = 3
 
-    def __init__(self, endpoint: str = ENDPOINT, impersonate: str = "chrome131") -> None:
+    def __init__(self, endpoint: str = ENDPOINT, impersonate: str = "chrome150") -> None:
+        """Build the AMC client with a browser profile accepted from cloud hosts.
+
+        AMC's Cloudflare edge started rejecting the older Chrome 131 TLS
+        fingerprint from Render with HTTP 403 while continuing to accept the
+        exact same GraphQL query from residential addresses. Chrome 150 is not
+        cosmetic here: it was verified from the production container against
+        the public seating endpoint, so changing it without a live cloud
+        canary can strand every AMC booking before room capture.
+        """
         self.endpoint = endpoint
         self._session = requests.Session(impersonate=impersonate)
 

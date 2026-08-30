@@ -33,6 +33,18 @@ def auditorium(payload):
 
 
 class TestParsing:
+    def test_default_transport_uses_cloud_accepted_browser_profile(self, monkeypatch):
+        seen = []
+
+        monkeypatch.setattr(
+            "screenwatch.seating.sources.amc.requests.Session",
+            lambda *, impersonate: seen.append(impersonate),
+        )
+
+        AmcSeatSource()
+
+        assert seen == ["chrome150"]
+
     def test_drops_padding_and_keeps_real_seats(self, payload, auditorium):
         cells = payload["data"]["viewer"]["showtime"]["seatingLayout"]["seats"]
         assert len(cells) == 448
