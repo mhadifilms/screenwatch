@@ -147,7 +147,7 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
                      if seed else "Unseeded: current screenings will be reported too."),
         }
 
-    @server.tool(description="List active monitors and what each is watching for.")
+    @server.tool(description="List active monitors, health, and what each is watching for.")
     def list_watches() -> dict:
         # An object rather than a bare list: the SDK wraps non-object returns
         # in a synthetic envelope, so every tool here returns a dict to keep
@@ -159,6 +159,11 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
                 "cadence_s": w["cadence_s"],
                 "last_run": w["last_run"],
                 "last_hit": w["last_hit"],
+                "last_success": w["last_success"],
+                "last_error": w["last_error"],
+                "last_warning": w["last_warning"],
+                "error_count": w["error_count"],
+                "webhook": bool(w["webhook"]),
                 "spec": spec_to_dict(spec_from_json(w["spec"])),
             }
             for w in watches.list()
@@ -169,10 +174,18 @@ def build_server(search: SearchService, watches: WatchService) -> MCPServer:
         return {"cancelled": watches.cancel(watch_id)}
 
     @server.tool(
-        description="Run every monitor whose cadence has elapsed and return any "
-                    "undelivered hits."
+        description="Acknowledge alert ids after the client has actually handled them."
     )
-    def poll_watches(acknowledge: bool = True) -> dict:
+    def acknowledge_hits(hit_ids: list[int]) -> dict:
+        watches.acknowledge(hit_ids)
+        return {"acknowledged": hit_ids}
+
+    @server.tool(
+        description="Run every monitor whose cadence has elapsed and return any "
+                    "unacknowledged hits. Polling is non-destructive by default; "
+                    "acknowledge them explicitly after handling."
+    )
+    def poll_watches(acknowledge: bool = False) -> dict:
         fresh = watches.run_due()
         pending = watches.pending()
         if acknowledge:

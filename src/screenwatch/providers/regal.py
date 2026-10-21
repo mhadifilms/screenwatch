@@ -89,6 +89,11 @@ class RegalProvider(ScopeReporting):
         self.backoff_s = backoff_s
         self._session = session or requests.Session(impersonate="chrome131")
         self._theatres: list[RegalTheatre] | None = None
+        # Keep the source's exact title and movie code beside each screening.
+        # Search may later replace `Screening.work.title` with a richer title
+        # from another provider; Regal's movie route must use Regal's own
+        # spelling.
+        self._seat_requests: dict[str, RegalPerformance] = {}
 
     # ------------------------------------------------------------------
     def _get(self, url: str) -> str:
@@ -174,6 +179,7 @@ class RegalProvider(ScopeReporting):
         by_id = {t.venue_id: t for t in self.theatres()}
 
         self._reset_scope()
+        self._seat_requests.clear()
         out: list[Screening] = []
         for venue in self._clip_venues(venues):
             theatre = by_id.get(venue.venue_id)
@@ -189,9 +195,11 @@ class RegalProvider(ScopeReporting):
                 )
                 if not resolution.analysis.is_bookable:
                     continue
+                screening_id = f"regal:{perf.performance_id}"
+                self._seat_requests[screening_id] = perf
                 out.append(
                     Screening(
-                        screening_id=f"regal:{perf.performance_id}",
+                        screening_id=screening_id,
                         work=resolution.work,
                         venue_id=venue.venue_id,
                         venue_name=venue.name,
@@ -240,19 +248,11 @@ class RegalProvider(ScopeReporting):
 
     # ------------------------------------------------------------------
     def fetch_seats(self, option: Option, transport: Transport) -> Auditorium:
-        """Seat plan from Regal's booking API, issued from a browser context.
+        """Read the rendered seat grid from Regal's public movie page.
 
-        The endpoint is a plain GET - no cart, no hold - but it sits behind
-        Cloudflare, so the request goes out from inside a real page rather
-        than a standalone client.
-
-        Unverified against a live response. Cloudflare denies `/api/*` on both
-        regmovies hosts regardless of client - measured: `experience.
-        regmovies.com/about` returns 200 while `/api/tickets` returns 403 in
-        the same session, and the browser transport gets the same 403. It is a
-        path rule, not an IP ban and not a timed one, so waiting changes
-        nothing. The parser is written from the schema Vista returns and has
-        not yet met one.
+        This is the exact route the theatre page opens when a user clicks a
+        showtime. It is a browser visit because the seat grid is produced by
+        React after load; no seat is clicked and no hold is created.
         """
         screening = option.screening
         theatre = self._theatre_code_for(screening.venue_id)
@@ -261,33 +261,46 @@ class RegalProvider(ScopeReporting):
                 f"unknown Regal theatre code for {screening.venue_id}"
             )
         session_id = screening.screening_id.split(":", 1)[-1]
-        url = self.seats.url(theatre, session_id, base=self.booking_api)
+        perf = self._seat_requests.get(screening.screening_id)
+        if perf is None:
+            raise SeatDataUnavailable(
+                f"Regal performance metadata missing for {screening.screening_id}; "
+                "run a fresh search before fetching seats"
+            )
+        url = self.seats.movie_url(
+            title=perf.title,
+            movie_code=perf.movie_code,
+            date=perf.starts_at_local.date().isoformat(),
+            theatre_code=theatre,
+            performance_id=session_id,
+        )
 
         try:
             browser = self._browser or shared_browser()
-            response = browser.fetch_json(url, origin=self.booking_api)
+            response = browser.visit(
+                url,
+                wait_for_selector="button[id^='seat-']",
+                wait_timeout_ms=12_000,
+            )
         except BrowserUnavailable as exc:
             raise SeatDataUnavailable(f"browser transport unavailable: {exc}") from exc
+        except Exception as exc:
+            raise SeatDataUnavailable(
+                f"Regal seat page via browser failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
         if response.blocked:
-            # A firewall rule, not a challenge: waiting will not clear it, so
-            # say so rather than implying a retry would help.
             raise SeatDataUnavailable(
-                f"Regal /api/* is denied by a Cloudflare path rule "
-                f"(HTTP {response.status}) - not a solvable challenge and not "
-                "time-limited; other paths on the same host serve normally"
+                f"Regal seat page blocked by Cloudflare (HTTP {response.status})"
             )
         if response.challenged or response.status >= 400:
             raise SeatDataUnavailable(
-                f"Regal seat plan unavailable (HTTP {response.status})"
+                f"Regal seat page unavailable (HTTP {response.status})"
             )
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise SeatDataUnavailable("Regal seat plan was not JSON") from exc
-
         return self.seats.parse(
-            payload, venue_id=screening.venue_id, screen_id=screening.screen_id or ""
+            response.text,
+            venue_id=screening.venue_id,
+            screen_id=screening.screen_id or "",
         )
 
     def _theatre_code_for(self, venue_id: str) -> str | None:

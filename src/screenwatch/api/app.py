@@ -117,17 +117,27 @@ def create_app(search: SearchService, watches: WatchService) -> FastAPI:
         ]
 
     @app.delete("/v1/watches/{watch_id}")
-    def cancel_watch(watch_id: str) -> dict:
-        if not watches.cancel(watch_id):
+    def cancel_watch(watch_id: str, uid: str = Depends(user)) -> dict:
+        if not watches.cancel(watch_id, user_id=uid):
             raise HTTPException(404, "unknown watch_id")
         return {"cancelled": True}
 
+    @app.post("/v1/watches/acknowledge")
+    def acknowledge_hits(body: dict, uid: str = Depends(user)) -> dict:
+        hit_ids = body.get("hit_ids") or []
+        if not all(isinstance(hit_id, int) for hit_id in hit_ids):
+            raise HTTPException(422, "hit_ids must be integers")
+        watches.acknowledge(hit_ids, user_id=uid)
+        return {"acknowledged": hit_ids}
+
     @app.post("/v1/watches/poll")
-    def poll(uid: str = Depends(user), acknowledge: bool = True) -> dict:
+    def poll(uid: str = Depends(user), acknowledge: bool = False) -> dict:
         hits = watches.run_due(user_id=uid)
         pending = watches.pending(uid)
         if acknowledge:
-            watches.acknowledge([h["hit_id"] for h in pending])
+            watches.acknowledge(
+                [h["hit_id"] for h in pending], user_id=uid
+            )
         return {"new_hits": len(hits), "hits": [h["payload"] for h in pending]}
 
     @app.get("/v1/booking-link/{option_id}")

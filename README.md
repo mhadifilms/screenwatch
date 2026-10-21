@@ -117,7 +117,7 @@ row*, so a short centred front row stays centred.
 | **AMC** | full grid, per-seat status | pick actual seats, score position and cohesion |
 | **Cinemark** | full grid, per-seat status | same |
 | **C360** | exact sold count + auditorium shape | **estimate** whether the party can sit together |
-| Regal | none reachable | availability ranking *(parser written, no live response — see below)* |
+| Regal | full rendered grid, per-seat status | pick actual seats, score position and cohesion *(browser required)* |
 | Alamo | sold-out flag only — no count exists | availability ranking |
 | Independents | none | availability ranking |
 
@@ -171,13 +171,19 @@ the adapter has to absorb, each of which cost debugging:
 **A sold-out showing returns no layout at all.** Watching one for returns has
 to key off the showtime `status` flipping back, not off seat-level diffs.
 
+Regal's seat surface is the public movie/showtime page, not its blocked JSON
+endpoint. A theatre-page showtime click yields a route with `date`, `site` and
+`id`; the hydrated page renders `seat-*` buttons with row/column ids, labels,
+availability, companion seats and accessible seats. The browser reads that
+DOM without selecting anything, so it does not create a hold.
+
 ## Coverage
 
 | Source | Showtimes | Seats | Notes |
 |---|---|---|---|
 | **AMC** | ✅ two corroborating parsers | ✅ GraphQL | Queue-it traversal, sitemap tripwire |
 | **Alamo Drafthouse** | ✅ 19 markets, 34 cinemas | ✗ not exposed | One open request per market; self-discovers venues and coordinates |
-| **Regal** | ✅ 402 theatres nationally | ✗ no reachable surface | `__NEXT_DATA__` blob; Cloudflare challenge is intermittent, cleared by retry |
+| **Regal** | ✅ 402 theatres nationally | ✅ rendered full grid | `__NEXT_DATA__` showtimes plus browser-rendered movie page; raw `/api/*` route is blocked |
 | **Cinemark** | ✅ 307 theatres nationally | ✅ full grid | ASP.NET page; `data-json-model` joined to rendered showtime divs. Seat page needs the browser to clear a challenge |
 | **Independents** | ✅ schema.org, Vista, Agile **or** own-site links | ✗ | 393 showtimes across IFC / Metrograph / Roxie / Coolidge / Music Box. Film Forum's markup is decorative and is reported as such |
 | **C360 / Apple Cinemas** | ✅ 14 venues | ⚠ **counts + room shape** | Warm the session on the landing page, then an open JSON API |
@@ -192,7 +198,7 @@ API's own vocabulary instead of waiting to meet a surprise in production.
 
 ```bash
 uv venv && uv pip install -e '.[dev,api]'
-python -m pytest                      # 566 tests, offline
+python -m pytest                      # 586 tests, offline
 ruff check src tests                  # ruleset pinned in pyproject.toml
 ```
 
@@ -208,7 +214,7 @@ claude mcp add screenwatch -- "$PWD/.venv/bin/python" -m screenwatch.mcp.server
 | `find_screenings` | ranked options with reasons and tradeoffs |
 | `get_seatmap` | unicode grid or SVG, recommended seats highlighted |
 | `explain_ranking` | pairwise component comparison |
-| `create_watch` / `list_watches` / `cancel_watch` / `poll_watches` | monitors |
+| `create_watch` / `list_watches` / `cancel_watch` / `poll_watches` / `acknowledge_hits` | monitors and durable alerts |
 | `get_booking_link` | final URL — **hard stop** |
 
 Always-on monitors:
@@ -323,30 +329,32 @@ jittered, and one watch throwing never stops the others.
 A watch seeds its seen-set at creation with everything already on sale, so
 *"some 70mm already dropped — tell me about NEW Dune 3 70mm IMAX in the Bay
 Area"* fires only on genuinely new screenings. Hits persist before delivery,
-so a disconnected client or a failed webhook loses nothing.
+so a disconnected client or a failed webhook loses nothing. Watches also
+track sold-out showings in their baseline automatically, so a return is labeled
+`tickets_returned` rather than misreported as a brand-new screening. They also
+compare the last known state of each showing: a sold-out performance becoming
+buyable, seats returning, a seat map appearing, or a contiguous party-sized
+group becoming possible generates an alert even though the screening id did
+not change. Every alert includes `alert_type`, `changes`, `previous`, `current`,
+priority, the recommended seats, and a booking link.
+
+Polling is non-destructive by default: `poll_watches` and `POST
+/v1/watches/poll` leave alerts pending until the client explicitly calls
+`acknowledge_hits` or `POST /v1/watches/acknowledge`. Webhooks are an independent
+channel, so a successful webhook never consumes a poll alert; failed webhooks
+retry with durable exponential backoff. `list_watches` exposes
+`last_success`, `last_error`, `last_warning`, and `error_count`, so a dead or
+partially clipped provider is visible instead of looking like a quiet day.
 
 ## What is not built
 
 Stated plainly, because a plausible-looking gap is worse than a named one.
 
-* **Regal seat maps.** `GET {booking_api}/api/GetSeatPlan?theatreCode=&
-  sessionId=` was recovered from Regal's own bundle, and the parser is written
-  against the Vista schema that endpoint returns, but **no live response has
-  ever been parsed**.
-
-  The obstacle moved while this was being built, which is worth recording
-  because the earlier diagnosis was wrong. It used to be a Cloudflare 403 on
-  `/api/*`, and was described here as a path rule. It is not one now: the same
-  URL returns **200 with the 784KB Next.js app shell**. Every path on
-  `webbooking.regmovies.com` does — it is client-side routing, so an unknown
-  route is indistinguishable from a known one from outside, and the endpoint
-  cannot be confirmed by probing. The parser rejects HTML rather than
-  pretending, and Regal falls back to availability-only ranking.
-
-  Bundle recon to find the real route needs a browser session on the booking
-  flow, and plain Playwright is Cloudflare-blocked on regmovies (curl_cffi's
-  TLS impersonation is what works for the showtime pages, and it cannot run
-  JavaScript). That is the open thread.
+* **Regal's raw seat API.** `GET {booking_api}/api/GetSeatPlan` remains blocked
+  and is deliberately not used. Seat maps now come from the public,
+  browser-rendered movie/showtime page instead. A Chromium runtime is required
+  for this enrichment; without one, Regal correctly falls back to
+  availability-only ranking.
 * **Regal booking links go to the theatre page, not the showing.** There is no
   per-performance page — `/showtimes/{performance_id}` 404s — so the deeplink
   is the dated theatre page, which lists the showing among that day's others.

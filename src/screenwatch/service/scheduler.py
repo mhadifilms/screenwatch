@@ -141,6 +141,10 @@ class Scheduler:
                 # A watch that throws must not stop the loop; the run is
                 # recorded either way so it backs off rather than hot-spinning.
                 self.store.touch_watch(row["watch_id"])
+        deliver_due = getattr(self.watches, "deliver_due", None)
+        if deliver_due is not None:
+            with contextlib.suppress(Exception):
+                deliver_due(user_id=self.user_id)
         if hits and self.on_hits:
             self.on_hits(hits)
         return hits
@@ -167,9 +171,14 @@ def describe_hits(hits: list[WatchHit]) -> str:
     lines = [f"{len(hits)} new screening(s):"]
     for hit in hits:
         p = hit.payload()
+        alert_type = p.get("alert_type", "new_screening").replace("_", " ")
+        changes = ", ".join(p.get("changes", ()))
+        detail = f" [{changes}]" if changes else ""
+        seats = f" — {p['seats']}" if p.get("seats") else ""
         lines.append(
-            f"  {p['title']} — {p['presentation']} — {p['venue']} "
-            f"{p['starts_at_local']}  {p['booking_link'] or ''}"
+            f"  {alert_type}{detail}: {p['title']} — {p['presentation']} — "
+            f"{p['venue']} — {p['starts_at_local']}{seats}  "
+            f"{p['booking_link'] or ''}"
         )
     return "\n".join(lines)
 
